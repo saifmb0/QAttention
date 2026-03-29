@@ -92,28 +92,11 @@ import triton.language as tl
 # ---------------------------------------------------------------------------
 
 
-@triton.jit
-def _is_ancestor_bary(
-    node_i,
-    node_j,
-    b:         tl.constexpr,
-    MAX_DEPTH: tl.constexpr,
-):
-    """
-    Element-wise: True where node_j is an ancestor of node_i (inclusive).
-
-    Complete b-ary tree, BFS (level-order) numbering, root = 0.
-        parent(k) = (k − 1) // b    for k > 0
-
-    The loop is statically unrolled at compile time (MAX_DEPTH is constexpr).
-    Zero memory accesses; cost = MAX_DEPTH integer mul-adds per element pair.
-    """
-    cur   = node_i
-    found = (cur == node_j)
-    for _ in range(MAX_DEPTH):          # compile-time unroll
-        cur   = tl.where(cur > 0, (cur - 1) // b, 0)
-        found = found | (cur == node_j)
-    return found
+# _is_ancestor_bary is inlined directly into _ragged_attn_split_kernel
+# to avoid inter-kernel call complications across Triton versions.
+# The logic: start from node_i, walk up the parent chain MAX_DEPTH times,
+# checking if any ancestor equals node_j (inclusive of node_i itself).
+# parent(k) = (k-1)//b  for a complete b-ary BFS-ordered tree.
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +106,7 @@ def _is_ancestor_bary(
 # the autotune choice and gives 4–5 CTAs/SM at D=64 (11 KB SRAM/CTA).
 # BLOCK_N is autotuned to find the best KV-tile width for each head size.
 
-_BLOCK_M = 16
+_BLOCK_M = 16   # exported for wrapper arithmetic
 
 _SPLIT_AUTOTUNE_CONFIGS = [
     triton.Config({"BLOCK_N": 16}, num_warps=2, num_stages=4),
@@ -177,10 +160,9 @@ def _ragged_attn_split_kernel(
     HEAD_DIM:         tl.constexpr,
     BRANCHING_FACTOR: tl.constexpr,
     MAX_DEPTH:        tl.constexpr,
+    BLOCK_M:          tl.constexpr,   # fixed = 16, passed explicitly
     BLOCK_N:          tl.constexpr,   # autotuned
 ):
-    BLOCK_M: tl.constexpr = _BLOCK_M
-
     pid0     = tl.program_id(0)   # seq_idx * H + head_idx
     q_tile   = tl.program_id(1)   # tile index along Q axis
     split_id = tl.program_id(2)   # KV split chunk
@@ -200,7 +182,8 @@ def _ragged_attn_split_kernel(
     n_kv_tiles   = (seq_len + BLOCK_N - 1) // BLOCK_N
     kv_per_split = (n_kv_tiles + SPLIT_N - 1) // SPLIT_N
     kv_tile_lo   = split_id * kv_per_split
-    kv_tile_hi   = tl.minimum(kv_tile_lo + kv_per_split, n_kv_tiles)
+    hi_raw       = kv_tile_lo + kv_per_split
+    kv_tile_hi   = tl.where(hi_raw < n_kv_tiles, hi_raw, n_kv_tiles)
 
     m_range = tl.arange(0, BLOCK_M)
     d_range = tl.arange(0, HEAD_DIM)
@@ -234,13 +217,16 @@ def _ragged_attn_split_kernel(
         # QK^T [BLOCK_M, BLOCK_N]  —  fp16 × fp16 → fp32 accumulation
         s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * scale
 
-        # ---- Analytic tree mask — zero global-memory reads ----
-        q_idx  = (m_range + q_off)[:, None]                   # [BLOCK_M, 1]
-        kv_idx = (tl.arange(0, BLOCK_N) + n_off)[None, :]     # [1, BLOCK_N]
-        attend = _is_ancestor_bary(
-            q_idx, kv_idx,
-            b=BRANCHING_FACTOR, MAX_DEPTH=MAX_DEPTH,
-        )
+        # ---- Analytic tree mask (inlined ancestor walk) ----
+        # For BFS-ordered complete b-ary tree: parent(k) = (k-1) // b
+        # attend[i,j] = True iff node j is an ancestor-or-self of node i
+        q_idx  = (m_range + q_off)[:, None]               # [BLOCK_M, 1]
+        kv_idx = (tl.arange(0, BLOCK_N) + n_off)[None, :] # [1, BLOCK_N]
+        cur    = q_idx  # walk up from query node; stays [BLOCK_M, 1]
+        attend = (cur == kv_idx)  # check self     → [BLOCK_M, BLOCK_N]
+        for _step in range(MAX_DEPTH):   # unrolled: MAX_DEPTH == tree depth
+            cur    = tl.where(cur > 0, (cur - 1) // BRANCHING_FACTOR, 0)
+            attend = attend | (cur == kv_idx)
         attend = attend & valid_q[:, None] & kv_mask[None, :]
         s      = tl.where(attend, s, float("-inf"))
 
@@ -320,8 +306,8 @@ def _ragged_attn_reduce_kernel(
 
     d_range = tl.arange(0, HEAD_DIM)
 
-    m_g: tl.float32 = float("-inf")
-    l_g: tl.float32 = 0.0
+    m_g = tl.full([1], float("-inf"), dtype=tl.float32)[0]
+    l_g = tl.full([1], 0.0,           dtype=tl.float32)[0]
     acc = tl.zeros([HEAD_DIM], dtype=tl.float32)
 
     for sp in range(SPLIT_N_KEY):          # statically unrolled
@@ -471,6 +457,7 @@ def ragged_attention(
         HEAD_DIM=D,
         BRANCHING_FACTOR=branching_factor,
         MAX_DEPTH=max_depth,
+        BLOCK_M=_BLOCK_M,
     )
 
     # ---- Pass 2 — per-token reduction ----
