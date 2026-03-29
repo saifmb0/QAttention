@@ -89,15 +89,39 @@ import triton.language as tl
 
 # ---------------------------------------------------------------------------
 # SM75 autotune configs
-# Key: HEAD_DIM only — does NOT include branching_factor/depth/SPLIT_N so
-# Triton only compiles once per head size across the entire test sweep.
+#
+# Two regimes observed in benchmark.csv:
+#
+#   Small N (≤ 40 tokens, b≤3 d≤3):
+#     ~0.2 ms dispatch floor regardless of block size.
+#     GPU has only B×H CTAs; at B=1, H=8 that's 8 CTAs on 40 SMs.
+#     Small blocks (16×16) maximise occupancy per SM (11 KB SRAM → 4–5 CTAs/SM).
+#
+#   Large N (b=4, d=5 → N=1365):
+#     Kernel is HBM-bandwidth-bound at BLOCK=16:
+#       arithmetic intensity = 2×16×16×D / (2×16×D×2 bytes) = 8 FLOPs/byte
+#       × T4 HBM 300 GB/s → ~2.4 TFLOPS ceiling
+#       observed: ~1.2 TFLOPS  (fits — bandwidth limited)
+#     With BLOCK=64:
+#       intensity = 2×64×64×D / (2×64×D×2) = 32 FLOPs/byte → ~9 TFLOPS
+#     With BLOCK=128:
+#       intensity = 2×128×128×D / (2×128×D×2) = 128 FLOPs/byte → roof limited
+#
+# Key includes BRANCHING_FACTOR and MAX_DEPTH because these are tl.constexpr
+# args that produce different compiled kernels.  Autotune runs once per unique
+# (BRANCHING_FACTOR, MAX_DEPTH, HEAD_DIM) triple then caches the result.
 # ---------------------------------------------------------------------------
 
 _SM75_CONFIGS = [
-    triton.Config({"BLOCK_M": 16, "BLOCK_N": 16}, num_warps=2, num_stages=3),
-    triton.Config({"BLOCK_M": 16, "BLOCK_N": 32}, num_warps=2, num_stages=3),
+    # -- Small-N regime: high occupancy --
+    triton.Config({"BLOCK_M": 16, "BLOCK_N": 16}, num_warps=2, num_stages=2),
+    triton.Config({"BLOCK_M": 16, "BLOCK_N": 32}, num_warps=2, num_stages=2),
     triton.Config({"BLOCK_M": 32, "BLOCK_N": 16}, num_warps=4, num_stages=2),
     triton.Config({"BLOCK_M": 32, "BLOCK_N": 32}, num_warps=4, num_stages=2),
+    # -- Large-N regime: high arithmetic intensity --
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2),
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 32}, num_warps=4, num_stages=2),
+    triton.Config({"BLOCK_M": 32, "BLOCK_N": 64}, num_warps=4, num_stages=2),
 ]
 
 
@@ -111,7 +135,11 @@ _SM75_CONFIGS = [
 #             iterates over all KV tiles for that sequence.
 # ---------------------------------------------------------------------------
 
-@triton.autotune(configs=_SM75_CONFIGS, key=["HEAD_DIM"])
+@triton.autotune(
+    configs=_SM75_CONFIGS,
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH"],
+    # Autotune runs once per unique triple; results are cached across calls.
+)
 @triton.jit
 def _ragged_attn_kernel(
     Q_ptr, K_ptr, V_ptr, O_ptr,
@@ -161,6 +189,10 @@ def _ragged_attn_kernel(
     l_i = tl.zeros([BLOCK_M],              dtype=tl.float32)
     acc = tl.zeros([BLOCK_M, HEAD_DIM],    dtype=tl.float32)
 
+    # q_idx is the sequence-local tree-node index for each query position.
+    # Hoisted outside the KV loop — does not depend on n_off.
+    q_idx = (m_range + q_off)[:, None]   # [BLOCK_M, 1]
+
     n_kv_blocks = (seq_len + BLOCK_N - 1) // BLOCK_N
 
     for n in range(n_kv_blocks):
@@ -179,14 +211,17 @@ def _ragged_attn_kernel(
         s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * scale
 
         # ---- analytic tree mask (inlined ancestor walk) ----
-        # BFS-ordered b-ary tree: parent(k) = (k-1) // b for k > 0.
-        # attend[i,j] = True iff j is an ancestor-or-self of i.
-        q_idx  = (m_range + q_off)[:, None]               # [BLOCK_M, 1]
-        kv_idx = (tl.arange(0, BLOCK_N) + n_off)[None, :] # [1, BLOCK_N]
-        cur    = q_idx                                     # walk from i upward
-        attend = (cur == kv_idx)
-        for _step in range(MAX_DEPTH):                     # unrolled at compile time
-            cur    = tl.where(cur > 0, (cur - 1) // BRANCHING_FACTOR, 0)
+        # BFS-ordered b-ary tree: parent(k) = (k-1) // b for all k.
+        # For k=0: (0-1)//b would underflow; tl.maximum(..., 0) clamps it
+        # without a branch predicate, avoiding the tl.where eager-evaluation
+        # issue where an uncommitted branch can produce a spurious result on
+        # certain Triton/PTX versions for non-power-of-2 BRANCHING_FACTORs.
+        kv_idx = (tl.arange(0, BLOCK_N) + n_off)[None, :]  # [1, BLOCK_N]
+        cur    = q_idx                                       # [BLOCK_M, 1]
+        attend = (cur == kv_idx)                             # [BLOCK_M, BLOCK_N]
+        for _step in range(MAX_DEPTH):   # fully unrolled (MAX_DEPTH is constexpr)
+            cur    = tl.maximum((cur - 1) // BRANCHING_FACTOR,
+                                tl.zeros_like(cur))
             attend = attend | (cur == kv_idx)
 
         attend = attend & valid_q[:, None] & kv_mask[None, :]
