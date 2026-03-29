@@ -49,8 +49,8 @@ fi
 # ─── 1. System packages ───────────────────────────────────────────────────────
 info "Updating system packages …"
 if command -v apt-get &>/dev/null; then
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq git curl wget build-essential python3-pip python3-venv
+    apt-get update -qq
+    apt-get install -y -qq git curl wget build-essential python3-pip python3-venv
 fi
 
 # ─── 2. Python environment ────────────────────────────────────────────────────
