@@ -167,14 +167,15 @@ def run_correctness_check(
           for _ in range(batch_size)]
 
     # ---- Ragged kernel ----
-    Q_r, K_r, V_r, cu_seqlens, packed_masks, cu_mask_offsets = pack_inputs(
-        qs, ks, vs, masks_np
-    )
+    Q_r, K_r, V_r, cu_seqlens = pack_inputs(qs, ks, vs)
     Q_r = Q_r.to(device)
     K_r = K_r.to(device)
     V_r = V_r.to(device)
 
-    O_ragged = ragged_attention(Q_r, K_r, V_r, cu_seqlens, packed_masks, cu_mask_offsets)
+    O_ragged = ragged_attention(
+        Q_r, K_r, V_r, cu_seqlens,
+        branching_factor=branching_factor, max_depth=depth,
+    )
     # Split back into per-sequence tensors
     ragged_outs = []
     start = 0

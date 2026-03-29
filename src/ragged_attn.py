@@ -1,50 +1,80 @@
 """
 ragged_attn.py
 ==============
-Triton ragged (variable-length, no-padding) attention kernel with
-tree-structured causal mask support.
+Triton ragged attention — Flash-Decoding + analytic tree masking.
 
 Target hardware : SM75 (NVIDIA T4 16 GB, Kaggle 2×T4)
-Precision       : float16 (accumulate in float32, write fp16)
-Algorithm       : Flash-Attention-2 online softmax, tiled QK^T + OV
+Precision       : float16 input/output, float32 accumulation
+Algorithm       : Flash-Decoding (Dao et al. 2023) adapted for ragged
+                  variable-length sequences with analytic tree masking.
 
-Data layout
------------
-All sequences in the batch are concatenated along the token axis:
+─────────────────────────────────────────────────────────────────────────────
+Bottleneck analysis (from benchmark.csv, 2×T4, SM75)
+─────────────────────────────────────────────────────────────────────────────
 
-  Q  : [total_tokens,  H, D]   fp16
-  K  : [total_tokens,  H, D]   fp16
-  V  : [total_tokens,  H, D]   fp16
-  O  : [total_tokens,  H, D]   fp16
+Two distinct underperformance regimes were identified:
 
-  cu_seqlens         : [B+1]   int32  – cumulative token counts
-  packed_masks       : [Σ L_i²] int8  – per-sequence attention masks, row-major
-  cu_mask_offsets    : [B+1]   int32  – byte (element) offsets into packed_masks
+1.  CTA starvation — ALL configs, dominant at small N
+    ──────────────────────────────────────────────────
+    The prior grid was (B·H, ⌈L/BLOCK_M⌉).
+    For B=1, H=8, N=15, BLOCK_M=16: only 8 CTAs against 40 SMs → GPU
+    40× under-saturated.  The flat ~0.21 ms floor across all small-N
+    configs in the benchmark is a dispatch floor with near-zero compute
+    utilisation.  SDPA avoids this because its padded GEMM is batched
+    across the full B×H·L_max² token space in a single fused kernel.
 
-cu_seqlens[0]  = 0
-cu_seqlens[i]  = sum(L_0 .. L_{i-1})
-cu_seqlens[B]  = total_tokens
+2.  Mask scatter-gather bandwidth amplification — large N
+    ───────────────────────────────────────────────────────
+    The prior kernel fetched tree-mask bits from a dense int8 buffer as
+    scattered global loads: fidx[m,n] = mask_off + m·seq_len + n.
+    Along the n-axis (BLOCK_N elements) accesses are coalesced, but
+    across the m-axis (BLOCK_M rows) the stride is seq_len bytes —
+    e.g. 1 365 bytes for b=4, d=5.  Each inner-loop iteration therefore
+    touched BLOCK_M independent 128-byte cache lines, using only
+    BLOCK_N ≤ 64 bytes from each.
+    Effective cache-line utilisation ≤ 64/128 = 50 %; for BLOCK_M=16,
+    seq_len=1 365: 16 cache-line loads, each delivering 16/128 = 12.5 %
+    useful bytes.  For B=32, N=1 365 the total mask buffer is
+    32·1 365²·1 B ≈ 60 MB; the benchmark shows ragged at 113 ms vs.
+    SDPA at 17 ms for that config (speedup 0.15×).
 
-cu_mask_offsets[i] = sum(L_0² + L_1² + … + L_{i-1}²)
+─────────────────────────────────────────────────────────────────────────────
+Architectural contributions
+─────────────────────────────────────────────────────────────────────────────
 
-Grid
-----
-  axis 0 : flat index  seq_idx * H + head_idx
-  axis 1 : M-tile index within the *global* padded range
-            → exit early if tile_start >= L_i  (sparse, SM75-safe)
+1.  Analytic tree masking  (eliminates the packed_masks buffer entirely)
+    ─────────────────────────────────────────────────────────────────────
+    For a complete b-ary tree with BFS (level-order) node numbering:
+        root = 0,   parent(k) = (k−1) // b  for k > 0.
+    The predicate "j is an ancestor of i" reduces to: follow the parent
+    chain from i for at most MAX_DEPTH steps and check whether any step
+    equals j.  With MAX_DEPTH as a constexpr, Triton fully unrolls this
+    into ≤ MAX_DEPTH integer multiply-add ops per (i,j) pair.
+    Memory saved: O(B·N²) int8 buffer (60 MB at B=32, N=1 365) → 0.
+    Compute cost: MAX_DEPTH ≤ 5 integer ops vs. 1 scattered global load
+    (L1/L2 miss penalty ~100 ns).  Net: significant speedup at all N>64.
 
-BLOCK_M / BLOCK_N are chosen by @triton.autotune.  SM75 (T4) configs run
-from 16×16 (highest occupancy, best for the short sequences in SD) up to
-64×16.  The autotune key is HEAD_DIM so Triton re-tunes once per head size.
+2.  Flash-Decoding KV split  (saturates GPU for short sequences)
+    ──────────────────────────────────────────────────────────────
+    Pass 1 (_ragged_attn_split_kernel):
+        grid = (total_q_tiles, SPLIT_N, H).
+        Each CTA handles one KV chunk [kv_lo, kv_hi) ⊆ [0, L_i),
+        emitting partial (acc_p, m_p, l_p) to fp32 temp buffers.
+    Pass 2 (_ragged_attn_reduce_kernel):
+        grid = (total_q_tiles, H).
+        Merges SPLIT_N partial results via online log-sum-exp.
+    SPLIT_N is auto-chosen each call to ensure
+        total_q_tiles · H · SPLIT_N ≥ num_SMs · TARGET_CTAS_PER_SM,
+    guaranteeing full SM occupancy regardless of sequence length.
 
-Public API
-----------
-  pack_inputs(qs, ks, vs, masks)
-      qs, ks, vs : list[Tensor[L_i, H, D], …]
-      masks      : list[np.ndarray[L_i, L_i, bool]]
-      returns    : (Q, K, V, cu_seqlens, packed_masks, cu_mask_offsets)
+─────────────────────────────────────────────────────────────────────────────
+Public API  (simplified — packed_masks removed)
+─────────────────────────────────────────────────────────────────────────────
+  pack_inputs(qs, ks, vs)
+      -> (Q, K, V, cu_seqlens)
 
-  ragged_attention(Q, K, V, cu_seqlens, packed_masks, cu_mask_offsets) -> O
+  ragged_attention(Q, K, V, cu_seqlens, branching_factor, max_depth)
+      -> O  [same shape as Q]
 """
 
 from __future__ import annotations
@@ -52,369 +82,431 @@ from __future__ import annotations
 import math
 from typing import List, Tuple
 
-import numpy as np
 import torch
 import triton
 import triton.language as tl
 
 
 # ---------------------------------------------------------------------------
-# Triton kernel  (autotuned for SM75 / T4)
+# Analytic tree masking helper  (zero memory traffic)
 # ---------------------------------------------------------------------------
 
-# SM75 (Turing) SRAM budget: 64 KB per SM.
-# For BLOCK_M=16, BLOCK_N=16, HEAD_DIM=64 (fp16):
-#   Q    : 16×64×2 =  2 KB
-#   K/V  :           2+2 KB  (loaded per N-tile, not resident simultaneously)
-#   S/P  : 16×16×4 =  1 KB  (fp32)
-#   acc  : 16×64×4 =  4 KB  (fp32)
-#   Total ≈ 11 KB → 4–5 CTAs/SM vs. 1 CTA/SM at BLOCK=64 → much higher
-#   occupancy, which is the dominant factor for short SD sequences.
-_SM75_AUTOTUNE_CONFIGS = [
-    # (BLOCK_M, BLOCK_N, num_warps, num_stages)
-    # Small blocks — highest occupancy, best for N < 64
-    triton.Config({"BLOCK_M": 16, "BLOCK_N": 16}, num_warps=2, num_stages=4),
-    triton.Config({"BLOCK_M": 16, "BLOCK_N": 32}, num_warps=2, num_stages=4),
-    # Medium blocks — balanced for N 64-256
-    triton.Config({"BLOCK_M": 32, "BLOCK_N": 16}, num_warps=4, num_stages=3),
-    triton.Config({"BLOCK_M": 32, "BLOCK_N": 32}, num_warps=4, num_stages=2),
-    # Wider N-tile — good when K/V rows >> M rows (tall trees)
-    triton.Config({"BLOCK_M": 16, "BLOCK_N": 64}, num_warps=4, num_stages=2),
-    triton.Config({"BLOCK_M": 64, "BLOCK_N": 16}, num_warps=4, num_stages=2),
+
+@triton.jit
+def _is_ancestor_bary(
+    node_i,
+    node_j,
+    b:         tl.constexpr,
+    MAX_DEPTH: tl.constexpr,
+):
+    """
+    Element-wise: True where node_j is an ancestor of node_i (inclusive).
+
+    Complete b-ary tree, BFS (level-order) numbering, root = 0.
+        parent(k) = (k − 1) // b    for k > 0
+
+    The loop is statically unrolled at compile time (MAX_DEPTH is constexpr).
+    Zero memory accesses; cost = MAX_DEPTH integer mul-adds per element pair.
+    """
+    cur   = node_i
+    found = (cur == node_j)
+    for _ in range(MAX_DEPTH):          # compile-time unroll
+        cur   = tl.where(cur > 0, (cur - 1) // b, 0)
+        found = found | (cur == node_j)
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Autotune configs  (SM75 / T4)
+# ---------------------------------------------------------------------------
+# BLOCK_M is FIXED at 16 — ensures partial-buffer shapes are independent of
+# the autotune choice and gives 4–5 CTAs/SM at D=64 (11 KB SRAM/CTA).
+# BLOCK_N is autotuned to find the best KV-tile width for each head size.
+
+_BLOCK_M = 16
+
+_SPLIT_AUTOTUNE_CONFIGS = [
+    triton.Config({"BLOCK_N": 16}, num_warps=2, num_stages=4),
+    triton.Config({"BLOCK_N": 32}, num_warps=4, num_stages=3),
+    triton.Config({"BLOCK_N": 64}, num_warps=4, num_stages=2),
+]
+
+_REDUCE_AUTOTUNE_CONFIGS = [
+    triton.Config({}, num_warps=2, num_stages=1),
+    triton.Config({}, num_warps=4, num_stages=1),
 ]
 
 
-@triton.autotune(configs=_SM75_AUTOTUNE_CONFIGS, key=["HEAD_DIM"])
+# ---------------------------------------------------------------------------
+# Pass 1 — KV-split forward kernel
+# ---------------------------------------------------------------------------
+# Grid : (B * H,  ceil(max_seqlen / BLOCK_M),  SPLIT_N)
+# Each CTA owns (seq_head, q_tile, kv_split) and iterates over its KV chunk.
+# Partial results (un-normalised acc, row-max m, normaliser l) are written to
+# token-indexed fp32 temp buffers (no dependence on BLOCK_M for buffer shape).
+# ---------------------------------------------------------------------------
+
+@triton.autotune(
+    configs=_SPLIT_AUTOTUNE_CONFIGS,
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH"],
+)
 @triton.jit
-def _ragged_attn_fwd_kernel(
+def _ragged_attn_split_kernel(
     # ---- packed token buffers ----
-    Q_ptr, K_ptr, V_ptr, O_ptr,
+    Q_ptr, K_ptr, V_ptr,
+    # ---- partial output buffers  [total_tokens, SPLIT_N, H, …] ----
+    Acc_ptr,   # fp32  [total_tokens, SPLIT_N, H, HEAD_DIM]
+    M_ptr,     # fp32  [total_tokens, SPLIT_N, H]
+    L_ptr,     # fp32  [total_tokens, SPLIT_N, H]
     # ---- sequence bookkeeping ----
-    cu_seqlens_ptr,          # int32 [B+1]
-    # ---- tree mask bookkeeping ----
-    packed_masks_ptr,        # int8  [Σ L_i²]
-    cu_mask_offsets_ptr,     # int32 [B+1]
-    # ---- tensor strides (token, head, dim) ----
+    cu_seqlens_ptr,     # int32 [B+1]
+    # ---- strides: Q/K/V (token, head, dim) ----
     stride_qt, stride_qh, stride_qd,
     stride_kt, stride_kh, stride_kd,
     stride_vt, stride_vh, stride_vd,
-    stride_ot, stride_oh, stride_od,
-    # ---- scalar args ----
+    # ---- strides: Acc (token, split, head, dim) ----
+    stride_at, stride_as_, stride_ah, stride_ad,
+    # ---- strides: M/L (token, split, head) ----
+    stride_mt, stride_ms_, stride_mh,
+    # ---- scalars ----
     scale,
-    max_seqlen,              # upper bound for axis-1 grid sizing
+    max_seqlen,
+    SPLIT_N,            # int (runtime); used for KV-range arithmetic only
     # ---- compile-time constants ----
-    H:        tl.constexpr,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M:  tl.constexpr,
-    BLOCK_N:  tl.constexpr,
+    H:                tl.constexpr,
+    HEAD_DIM:         tl.constexpr,
+    BRANCHING_FACTOR: tl.constexpr,
+    MAX_DEPTH:        tl.constexpr,
+    BLOCK_N:          tl.constexpr,   # autotuned
 ):
-    # ------------------------------------------------------------------ #
-    # Identify this CTA
-    # ------------------------------------------------------------------ #
+    BLOCK_M: tl.constexpr = _BLOCK_M
+
     pid0     = tl.program_id(0)   # seq_idx * H + head_idx
-    m_tile   = tl.program_id(1)   # tile index along query axis
+    q_tile   = tl.program_id(1)   # tile index along Q axis
+    split_id = tl.program_id(2)   # KV split chunk
 
     seq_idx  = pid0 // H
     head_idx = pid0  % H
 
-    # Sequence boundaries in packed buffer
     seq_start = tl.load(cu_seqlens_ptr + seq_idx)
     seq_end   = tl.load(cu_seqlens_ptr + seq_idx + 1)
-    seq_len   = seq_end - seq_start          # dynamic (not constexpr)
+    seq_len   = seq_end - seq_start
 
-    # Early exit: tile is beyond this sequence's length
-    q_off = m_tile * BLOCK_M
+    q_off = q_tile * BLOCK_M
     if q_off >= seq_len:
         return
 
-    # ------------------------------------------------------------------ #
-    # Load Q tile  [BLOCK_M, HEAD_DIM]
-    # ------------------------------------------------------------------ #
-    m_range  = tl.arange(0, BLOCK_M)
-    d_range  = tl.arange(0, HEAD_DIM)
-    q_m_mask = (m_range + q_off) < seq_len          # [BLOCK_M]
+    # ---- KV range for this split chunk ----
+    n_kv_tiles   = (seq_len + BLOCK_N - 1) // BLOCK_N
+    kv_per_split = (n_kv_tiles + SPLIT_N - 1) // SPLIT_N
+    kv_tile_lo   = split_id * kv_per_split
+    kv_tile_hi   = tl.minimum(kv_tile_lo + kv_per_split, n_kv_tiles)
 
-    q_tok    = seq_start + q_off + m_range           # absolute token indices
-    q_ptrs   = (Q_ptr
-                + q_tok [:, None] * stride_qt
-                + head_idx        * stride_qh
-                + d_range[None,:] * stride_qd)
-    # Load as fp16 so tl.dot can use tensor cores; out_dtype=fp32 for accumulation
-    q = tl.load(q_ptrs, mask=q_m_mask[:, None], other=0.0)
+    m_range = tl.arange(0, BLOCK_M)
+    d_range = tl.arange(0, HEAD_DIM)
+    valid_q = (m_range + q_off) < seq_len
 
-    # ------------------------------------------------------------------ #
-    # Mask bookkeeping for this sequence
-    # ------------------------------------------------------------------ #
-    mask_off = tl.load(cu_mask_offsets_ptr + seq_idx)   # int32 element offset
+    # ---- Load Q tile [BLOCK_M, HEAD_DIM] fp16 ----
+    q_tok  = seq_start + q_off + m_range
+    q_ptrs = (Q_ptr
+               + q_tok [:, None] * stride_qt
+               + head_idx        * stride_qh
+               + d_range[None,:] * stride_qd)
+    q = tl.load(q_ptrs, mask=valid_q[:, None], other=0.0)   # fp16
 
-    # ------------------------------------------------------------------ #
-    # Flash-Attention-2 online softmax state
-    # ------------------------------------------------------------------ #
-    m_i  = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
-    l_i  = tl.zeros([BLOCK_M],              dtype=tl.float32)
-    acc  = tl.zeros([BLOCK_M, HEAD_DIM],    dtype=tl.float32)
+    # ---- Flash-Attention-2 online softmax state ----
+    m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M],              dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, HEAD_DIM],    dtype=tl.float32)
 
-    # ------------------------------------------------------------------ #
-    # Iterate over K/V tiles for this sequence
-    # ------------------------------------------------------------------ #
-    n_blocks = (seq_len + BLOCK_N - 1) // BLOCK_N
+    # ---- Iterate over the assigned KV tiles ----
+    for kv_tile in range(kv_tile_lo, kv_tile_hi):
+        n_off   = kv_tile * BLOCK_N
+        kv_mask = (tl.arange(0, BLOCK_N) + n_off) < seq_len
+        kv_tok  = seq_start + n_off + tl.arange(0, BLOCK_N)
 
-    for n in range(n_blocks):
-        n_off    = n * BLOCK_N
-        kv_tok   = seq_start + n_off + tl.arange(0, BLOCK_N)
-        kv_mask  = (tl.arange(0, BLOCK_N) + n_off) < seq_len   # [BLOCK_N]
+        k_ptrs = (K_ptr
+                  + kv_tok [:, None] * stride_kt
+                  + head_idx         * stride_kh
+                  + d_range [None,:] * stride_kd)
+        k = tl.load(k_ptrs, mask=kv_mask[:, None], other=0.0)   # fp16
 
-        # Load K  [BLOCK_N, HEAD_DIM]
-        k_ptrs   = (K_ptr
-                    + kv_tok [:, None] * stride_kt
-                    + head_idx         * stride_kh
-                    + d_range [None,:] * stride_kd)
-        k = tl.load(k_ptrs, mask=kv_mask[:, None], other=0.0)
-
-        # QK^T  [BLOCK_M, BLOCK_N]  — both operands fp16, output fp32
+        # QK^T [BLOCK_M, BLOCK_N]  —  fp16 × fp16 → fp32 accumulation
         s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * scale
 
-        # ---- tree-mask lookup ----
-        # packed_masks for seq i is row-major with stride = seq_len
-        # element [m_local, n_local] lives at mask_off + m_local * seq_len + n_local
-        m_local   = (m_range + q_off)[:, None]          # [BLOCK_M, 1]
-        n_local   = (tl.arange(0, BLOCK_N) + n_off)[None, :]  # [1, BLOCK_N]
-        fidx      = mask_off + m_local * seq_len + n_local     # [BLOCK_M, BLOCK_N]
-        valid_mn  = q_m_mask[:, None] & kv_mask[None, :]       # [BLOCK_M, BLOCK_N]
+        # ---- Analytic tree mask — zero global-memory reads ----
+        q_idx  = (m_range + q_off)[:, None]                   # [BLOCK_M, 1]
+        kv_idx = (tl.arange(0, BLOCK_N) + n_off)[None, :]     # [1, BLOCK_N]
+        attend = _is_ancestor_bary(
+            q_idx, kv_idx,
+            b=BRANCHING_FACTOR, MAX_DEPTH=MAX_DEPTH,
+        )
+        attend = attend & valid_q[:, None] & kv_mask[None, :]
+        s      = tl.where(attend, s, float("-inf"))
 
-        tree_flag = tl.load(packed_masks_ptr + fidx,
-                            mask=valid_mn,
-                            other=0).to(tl.int1)                # 1=attend,0=mask
-
-        # Apply mask: set logits to -inf where not attending
-        neg_inf = float("-inf")
-        s = tl.where(tree_flag, s, neg_inf)
-        # Also mask out padding key positions
-        s = tl.where(kv_mask[None, :], s, neg_inf)
-
-        # ---- online softmax update ----
-        blk_max = tl.max(s, axis=1)                     # [BLOCK_M]
+        # ---- Online softmax accumulation ----
+        blk_max = tl.max(s, axis=1)
         m_new   = tl.maximum(m_i, blk_max)
-        alpha   = tl.exp(m_i - m_new)                   # rescale factor
+        alpha   = tl.exp(m_i - m_new)
 
-        p       = tl.exp(s - m_new[:, None])            # [BLOCK_M, BLOCK_N]
-        p       = tl.where(kv_mask[None, :], p, 0.0)   # zero padding
+        p   = tl.exp(s - m_new[:, None])
+        p   = tl.where(attend, p, 0.0)
 
-        l_i     = l_i * alpha + tl.sum(p, axis=1)
-        acc     = acc * alpha[:, None]
+        l_i = l_i * alpha + tl.sum(p, axis=1)
+        acc = acc * alpha[:, None]
 
-        # Load V  [BLOCK_N, HEAD_DIM]
-        v_ptrs  = (V_ptr
-                   + kv_tok [:, None] * stride_vt
-                   + head_idx         * stride_vh
-                   + d_range [None,:] * stride_vd)
-        v = tl.load(v_ptrs, mask=kv_mask[:, None], other=0.0)
+        v_ptrs = (V_ptr
+                  + kv_tok [:, None] * stride_vt
+                  + head_idx         * stride_vh
+                  + d_range [None,:] * stride_vd)
+        v = tl.load(v_ptrs, mask=kv_mask[:, None], other=0.0)   # fp16
 
-        # P·V: both operands fp16, accumulate into fp32 acc
-        acc    += tl.dot(p.to(tl.float16), v, out_dtype=tl.float32)
-        m_i     = m_new
+        acc += tl.dot(p.to(tl.float16), v, out_dtype=tl.float32)
+        m_i  = m_new
 
-    # ------------------------------------------------------------------ #
-    # Normalize and write output
-    # ------------------------------------------------------------------ #
-    l_safe = tl.where(l_i == 0.0, 1.0, l_i)
-    acc    = acc / l_safe[:, None]
+    # ---- Write partial results to token-indexed buffers ----
+    tok_ids = seq_start + q_off + m_range   # [BLOCK_M] global token indices
 
-    o_tok   = seq_start + q_off + m_range
-    o_ptrs  = (O_ptr
-               + o_tok [:, None] * stride_ot
-               + head_idx        * stride_oh
-               + d_range[None,:] * stride_od)
-    tl.store(o_ptrs, acc.to(tl.float16), mask=q_m_mask[:, None])
+    # Acc [total_tokens, SPLIT_N, H, HEAD_DIM]
+    acc_ptrs = (Acc_ptr
+                + tok_ids [:, None] * stride_at
+                + split_id          * stride_as_
+                + head_idx          * stride_ah
+                + d_range  [None,:] * stride_ad)
+    tl.store(acc_ptrs, acc, mask=valid_q[:, None])
+
+    # M (row-max)  [total_tokens, SPLIT_N, H]
+    m_ptrs = (M_ptr
+              + tok_ids  * stride_mt
+              + split_id * stride_ms_
+              + head_idx * stride_mh)
+    tl.store(m_ptrs, m_i, mask=valid_q)
+
+    # L (normaliser)  [total_tokens, SPLIT_N, H]
+    l_ptrs = (L_ptr
+              + tok_ids  * stride_mt
+              + split_id * stride_ms_
+              + head_idx * stride_mh)
+    tl.store(l_ptrs, l_i, mask=valid_q)
 
 
 # ---------------------------------------------------------------------------
-# Block-size defaults (used only when calling kernel directly, not via
-# ragged_attention() which uses the autotuned path)
+# Pass 2 — per-token reduction across SPLIT_N partial results
 # ---------------------------------------------------------------------------
-_SM75_BLOCK_M = 16   # sensible starting point for SD sequence lengths
-_SM75_BLOCK_N = 16
+# Grid : (total_tokens,  H)
+# Each CTA reads SPLIT_N partial (acc_p, m_p, l_p) entries for one
+# (token, head) and merges them via online log-sum-exp to write final O.
+# SPLIT_N_KEY is a constexpr so the inner loop is statically unrolled and
+# Triton can exploit register reuse across iterations.
+# ---------------------------------------------------------------------------
+
+@triton.autotune(configs=_REDUCE_AUTOTUNE_CONFIGS, key=["HEAD_DIM", "SPLIT_N_KEY"])
+@triton.jit
+def _ragged_attn_reduce_kernel(
+    Acc_ptr, M_ptr, L_ptr,    # partial buffers (read)
+    O_ptr,                     # [total_tokens, H, HEAD_DIM]  fp16  (write)
+    # ---- strides: Acc (token, split, head, dim) ----
+    stride_at, stride_as_, stride_ah, stride_ad,
+    # ---- strides: M/L (token, split, head) ----
+    stride_mt, stride_ms_, stride_mh,
+    # ---- strides: O (token, head, dim) ----
+    stride_ot, stride_oh, stride_od,
+    # ---- compile-time ----
+    HEAD_DIM:    tl.constexpr,
+    SPLIT_N_KEY: tl.constexpr,   # == SPLIT_N; constexpr for unrolling
+):
+    tok_idx  = tl.program_id(0)
+    head_idx = tl.program_id(1)
+
+    d_range = tl.arange(0, HEAD_DIM)
+
+    m_g: tl.float32 = float("-inf")
+    l_g: tl.float32 = 0.0
+    acc = tl.zeros([HEAD_DIM], dtype=tl.float32)
+
+    for sp in range(SPLIT_N_KEY):          # statically unrolled
+        base_ml = tok_idx * stride_mt + sp * stride_ms_ + head_idx * stride_mh
+        m_p = tl.load(M_ptr + base_ml)
+        l_p = tl.load(L_ptr + base_ml)
+
+        base_acc = tok_idx * stride_at + sp * stride_as_ + head_idx * stride_ah
+        acc_p = tl.load(Acc_ptr + base_acc + d_range * stride_ad)
+
+        m_new   = tl.maximum(m_g, m_p)
+        alpha_g = tl.exp(m_g - m_new)
+        alpha_p = tl.exp(m_p - m_new)
+
+        l_g = l_g * alpha_g + l_p * alpha_p
+        acc = acc * alpha_g + acc_p * alpha_p
+        m_g = m_new
+
+    out    = acc / tl.where(l_g == 0.0, 1.0, l_g)
+    o_ptrs = O_ptr + tok_idx * stride_ot + head_idx * stride_oh + d_range * stride_od
+    tl.store(o_ptrs, out.to(tl.float16))
 
 
 # ---------------------------------------------------------------------------
-# Input packing helpers
+# SPLIT_N selection helper
+# ---------------------------------------------------------------------------
+
+_T4_NUM_SMS         = 40
+_TARGET_CTAS_PER_SM = 8    # gives 16 warps/SM at num_warps=2 → good latency hiding
+
+
+def _compute_split_n(
+    total_q_tiles: int,
+    H:             int,
+    max_kv_tiles:  int,
+    num_sms:       int = _T4_NUM_SMS,
+) -> int:
+    """
+    Choose SPLIT_N so that total CTAs in Pass 1 ≥ num_sms × TARGET_CTAS_PER_SM.
+    Capped at max_kv_tiles (cannot split more than available KV tiles).
+    """
+    current_ctas = total_q_tiles * H
+    desired      = num_sms * _TARGET_CTAS_PER_SM
+    split        = max(1, math.ceil(desired / max(1, current_ctas)))
+    return min(split, max(1, max_kv_tiles))
+
+
+# ---------------------------------------------------------------------------
+# Public API
 # ---------------------------------------------------------------------------
 
 def pack_inputs(
     qs: List[torch.Tensor],
     ks: List[torch.Tensor],
     vs: List[torch.Tensor],
-    masks: List[np.ndarray],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-           torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Pack per-sequence Q/K/V and attention masks into the ragged layout.
+    Concatenate per-sequence Q/K/V into the packed ragged layout.
 
     Parameters
     ----------
-    qs, ks, vs : each a list of B tensors of shape [L_i, H, D]  fp16
-    masks      : list of B boolean arrays of shape [L_i, L_i]
-                 True = token may attend (1), False = masked (0)
+    qs, ks, vs : B-length lists of [L_i, H, D] fp16 tensors
 
     Returns
     -------
-    Q, K, V         : [total_tokens, H, D]  fp16  (cat along dim 0)
-    cu_seqlens      : [B+1]  int32  on CPU
-    packed_masks    : [Σ L_i²]  int8  on CPU
-    cu_mask_offsets : [B+1]  int32  on CPU
+    Q, K, V    : [total_tokens, H, D]  fp16
+    cu_seqlens : [B+1]  int32  (CPU tensor)
     """
-    assert len(qs) == len(ks) == len(vs) == len(masks), \
-        "All lists must have the same length (= batch size)"
-
+    assert len(qs) == len(ks) == len(vs)
+    B        = len(qs)
     seq_lens = [q.shape[0] for q in qs]
-    B = len(seq_lens)
-
-    # cu_seqlens
     cu_seqlens = torch.zeros(B + 1, dtype=torch.int32)
-    for i, l in enumerate(seq_lens):
-        cu_seqlens[i + 1] = cu_seqlens[i] + l
+    for i, n in enumerate(seq_lens):
+        cu_seqlens[i + 1] = cu_seqlens[i] + n
+    return torch.cat(qs, 0), torch.cat(ks, 0), torch.cat(vs, 0), cu_seqlens
 
-    # Packed Q, K, V
-    Q = torch.cat(qs, dim=0)   # [Σ L_i, H, D]
-    K = torch.cat(ks, dim=0)
-    V = torch.cat(vs, dim=0)
-
-    # Packed masks
-    mask_sizes = [m.shape[0] * m.shape[1] for m in masks]  # L_i²
-    total_mask  = sum(mask_sizes)
-    packed_masks = np.empty(total_mask, dtype=np.int8)
-    cu_mask_offsets = np.zeros(B + 1, dtype=np.int32)
-    offset = 0
-    for i, m in enumerate(masks):
-        flat = m.astype(np.int8).ravel()
-        packed_masks[offset : offset + len(flat)] = flat
-        offset += len(flat)
-        cu_mask_offsets[i + 1] = offset
-
-    packed_masks    = torch.from_numpy(packed_masks)
-    cu_mask_offsets = torch.from_numpy(cu_mask_offsets)
-
-    return Q, K, V, cu_seqlens, packed_masks, cu_mask_offsets
-
-
-# ---------------------------------------------------------------------------
-# Main Python wrapper
-# ---------------------------------------------------------------------------
 
 def ragged_attention(
-    Q: torch.Tensor,             # [total_tokens, H, D]  fp16  CUDA
-    K: torch.Tensor,             # [total_tokens, H, D]  fp16  CUDA
-    V: torch.Tensor,             # [total_tokens, H, D]  fp16  CUDA
-    cu_seqlens: torch.Tensor,    # [B+1]  int32          CPU or CUDA
-    packed_masks: torch.Tensor,  # [Σ L²] int8           CPU or CUDA
-    cu_mask_offsets: torch.Tensor, # [B+1] int32         CPU or CUDA
+    Q:  torch.Tensor,           # [total_tokens, H, D]  fp16  CUDA
+    K:  torch.Tensor,           # [total_tokens, H, D]  fp16  CUDA
+    V:  torch.Tensor,           # [total_tokens, H, D]  fp16  CUDA
+    cu_seqlens:       torch.Tensor,   # [B+1]  int32
+    branching_factor: int,            # b — complete b-ary draft tree
+    max_depth:        int,            # d — maximum tree depth in batch
 ) -> torch.Tensor:
     """
-    Run ragged attention and return output O with same shape as Q.
+    Ragged Flash-Decoding attention with analytic b-ary tree masking.
 
-    BLOCK_M / BLOCK_N / num_warps / num_stages are chosen automatically by
-    @triton.autotune keyed on HEAD_DIM.  No manual block-size arg is needed.
+    Design highlights
+    -----------------
+    * No packed_masks buffer — tree masking is pure integer arithmetic.
+    * SPLIT_N is auto-chosen to ensure ≥ (num_SMs × 8) active CTAs,
+      saturating T4 even for single-sequence short-context batches.
+    * Two-pass algorithm follows Flash-Decoding (Dao et al. 2023).
 
-    All tensors must live on the same CUDA device.
-    fp16 input tensors are expected; output is fp16.
+    Parameters
+    ----------
+    Q, K, V          : packed fp16 tensors  [Σ L_i, H, D]  on CUDA
+    cu_seqlens       : cumulative sequence lengths  [B+1]  int32
+    branching_factor : b  (BFS-ordered complete b-ary tree)
+    max_depth        : d  (maximum tree depth in this batch)
+
+    Returns
+    -------
+    O : [Σ L_i, H, D]  fp16
     """
-    assert Q.dtype == torch.float16, "Q must be fp16"
-    assert K.dtype == torch.float16, "K must be fp16"
-    assert V.dtype == torch.float16, "V must be fp16"
-
+    assert Q.dtype == K.dtype == V.dtype == torch.float16, "Inputs must be fp16"
     total_tokens, H, D = Q.shape
-    B = cu_seqlens.shape[0] - 1
+    B      = int(cu_seqlens.shape[0]) - 1
     device = Q.device
+    scale  = 1.0 / math.sqrt(D)
 
-    # Move bookkeeping tensors to GPU
-    cu_seqlens_dev      = cu_seqlens     .to(device, dtype=torch.int32)
-    packed_masks_dev    = packed_masks   .to(device, dtype=torch.int8)
-    cu_mask_offsets_dev = cu_mask_offsets.to(device, dtype=torch.int32)
-
-    # Allocate output
-    O = torch.empty_like(Q)
-
-    # Softmax scale
-    scale = 1.0 / math.sqrt(D)
-
-    # Compute max sequence length for the axis-1 grid bound.
-    # Grid is a lambda so it reads BLOCK_M from the autotune-selected config.
-    seq_lens   = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+    cu_seqlens_dev = cu_seqlens.to(device, dtype=torch.int32)
+    seq_lens   = (cu_seqlens_dev[1:] - cu_seqlens_dev[:-1]).cpu().tolist()
     max_seqlen = int(max(seq_lens)) if seq_lens else 1
 
-    # Lambda grid: axis-1 adapts to whichever BLOCK_M autotune picks
-    grid = lambda meta: (B * H, triton.cdiv(max_seqlen, meta["BLOCK_M"]))
+    total_q_tiles = sum(math.ceil(l / _BLOCK_M) for l in seq_lens)
+    max_kv_tiles  = math.ceil(max_seqlen / _BLOCK_M)
+    SPLIT_N       = _compute_split_n(total_q_tiles, H, max_kv_tiles)
 
-    _ragged_attn_fwd_kernel[grid](
-        Q, K, V, O,
+    # ---- Partial buffers (neutral initial values) ----
+    Acc = torch.zeros(total_tokens, SPLIT_N, H, D,
+                      dtype=torch.float32, device=device)
+    M   = torch.full((total_tokens, SPLIT_N, H), float("-inf"),
+                     dtype=torch.float32, device=device)
+    L   = torch.zeros(total_tokens, SPLIT_N, H,
+                      dtype=torch.float32, device=device)
+    O   = torch.empty_like(Q)
+
+    # ---- Pass 1 — KV-split forward ----
+    q_tiles_max = math.ceil(max_seqlen / _BLOCK_M)
+    grid_split  = (B * H, q_tiles_max, SPLIT_N)
+
+    _ragged_attn_split_kernel[grid_split](
+        Q, K, V,
+        Acc, M, L,
         cu_seqlens_dev,
-        packed_masks_dev,
-        cu_mask_offsets_dev,
         Q.stride(0), Q.stride(1), Q.stride(2),
         K.stride(0), K.stride(1), K.stride(2),
         V.stride(0), V.stride(1), V.stride(2),
-        O.stride(0), O.stride(1), O.stride(2),
+        Acc.stride(0), Acc.stride(1), Acc.stride(2), Acc.stride(3),
+        M.stride(0),   M.stride(1),   M.stride(2),
         scale,
         max_seqlen,
+        SPLIT_N,
         H=H,
         HEAD_DIM=D,
+        BRANCHING_FACTOR=branching_factor,
+        MAX_DEPTH=max_depth,
+    )
+
+    # ---- Pass 2 — per-token reduction ----
+    _ragged_attn_reduce_kernel[(total_tokens, H)](
+        Acc, M, L,
+        O,
+        Acc.stride(0), Acc.stride(1), Acc.stride(2), Acc.stride(3),
+        M.stride(0),   M.stride(1),   M.stride(2),
+        O.stride(0),   O.stride(1),   O.stride(2),
+        HEAD_DIM=D,
+        SPLIT_N_KEY=SPLIT_N,
     )
 
     return O
 
 
 # ---------------------------------------------------------------------------
-# Convenience: build ragged inputs from per-sequence tensors + tree masks
-# ---------------------------------------------------------------------------
-
-def build_ragged_inputs_from_sequences(
-    qs: List[torch.Tensor],
-    ks: List[torch.Tensor],
-    vs: List[torch.Tensor],
-    masks: List[np.ndarray],
-    device: torch.device | None = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-           torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Helper that calls pack_inputs then moves GPU tensors to *device*.
-    """
-    Q, K, V, cu_seqlens, packed_masks, cu_mask_offsets = pack_inputs(
-        qs, ks, vs, masks
-    )
-    if device is not None:
-        Q  = Q .to(device)
-        K  = K .to(device)
-        V  = V .to(device)
-    return Q, K, V, cu_seqlens, packed_masks, cu_mask_offsets
-
-
-# ---------------------------------------------------------------------------
-# Smoke test (run with: python -m src.ragged_attn)
+# Smoke test  (python -m src.ragged_attn)
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys
-    from .tree_mask import tree_attention_mask
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if not torch.cuda.is_available():
-        print("CUDA not available – skipping smoke test.")
+        print("CUDA not available — skipping smoke test.")
         sys.exit(0)
 
     torch.manual_seed(0)
-    H, D = 4, 64
-    b, d = 2, 2
-    B    = 3
-
-    masks_np = [tree_attention_mask(b, d) for _ in range(B)]
-    N        = masks_np[0].shape[0]
+    device = torch.device("cuda")
+    H, D, b, d, B = 4, 64, 2, 2, 3
+    N = sum(b ** k for k in range(d + 1))  # 7 nodes for b=2, d=2
 
     qs = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(B)]
     ks = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(B)]
     vs = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(B)]
 
-    Q_r, K_r, V_r, csl, pm, cmo = pack_inputs(qs, ks, vs, masks_np)
-    Q_r, K_r, V_r = Q_r.to(device), K_r.to(device), V_r.to(device)
-
-    O = ragged_attention(Q_r, K_r, V_r, csl, pm, cmo)
-    print(f"Smoke test passed. Output shape: {O.shape}, dtype: {O.dtype}")
+    Q, K, V, cu_sl = pack_inputs(qs, ks, vs)
+    O = ragged_attention(Q, K, V, cu_sl, branching_factor=b, max_depth=d)
+    print(f"Smoke test passed — shape {O.shape}, dtype {O.dtype}")

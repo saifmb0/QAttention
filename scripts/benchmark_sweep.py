@@ -189,11 +189,12 @@ def benchmark_one(
                       device=device, dtype=torch.float16) for _ in range(batch_size)]
 
     # ---- Ragged inputs (pre-built, outside timed region) ----
-    Q_r, K_r, V_r, cu_sl, pm, cmo = pack_inputs(qs, ks, vs, masks_np)
+    Q_r, K_r, V_r, cu_sl = pack_inputs(qs, ks, vs)
     Q_r = Q_r.to(device); K_r = K_r.to(device); V_r = V_r.to(device)
 
     def ragged_fn():
-        ragged_attention(Q_r, K_r, V_r, cu_sl, pm, cmo)
+        ragged_attention(Q_r, K_r, V_r, cu_sl,
+                         branching_factor=branching_factor, max_depth=depth)
 
     # ---- SDPA padded inputs (pre-built, outside timed region) ----
     Q_p, K_p, V_p, attn_bias = build_sdpa_inputs(qs, ks, vs, masks_np, device)
