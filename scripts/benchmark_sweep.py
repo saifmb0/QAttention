@@ -55,14 +55,16 @@ from src.ragged_attn import pack_inputs, ragged_attention
 # Sweep configuration
 # ---------------------------------------------------------------------------
 
-BATCH_SIZES       = [1, 2, 4, 8, 16, 32]
-DEPTHS            = [1, 2, 3, 4, 5]
+BATCH_SIZES       = [1, 2, 4, 8, 16, 32, 64, 128]
+DEPTHS            = [1, 2, 3, 4, 5, 6, 7, 8]
 BRANCHING_FACTORS = [2, 3, 4]
 CTX_LEN           = 128
 NUM_HEADS         = 8
 HEAD_DIM          = 64
 WARMUP_ITERS      = 10
 BENCH_ITERS       = 50
+# Skip O(N²) baselines above this per-sequence token count to avoid OOM.
+MAX_DENSE_TOKENS  = 8_000
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +177,7 @@ def benchmark_one(
 
     N        = num_tree_nodes(branching_factor, depth)
     L_total  = ctx_len + N          # context + draft tree
+    skip_dense = N > MAX_DENSE_TOKENS  # avoid O(N²) OOM on deep trees
 
     # For this benchmark we use the draft-tree portion only (the hot path)
     masks_np = [tree_attention_mask(branching_factor, depth)
@@ -197,16 +200,19 @@ def benchmark_one(
                          branching_factor=branching_factor, max_depth=depth)
 
     # ---- SDPA padded inputs (pre-built, outside timed region) ----
-    Q_p, K_p, V_p, attn_bias = build_sdpa_inputs(qs, ks, vs, masks_np, device)
-    scale = 1.0 / math.sqrt(head_dim)
+    if not skip_dense:
+        Q_p, K_p, V_p, attn_bias = build_sdpa_inputs(qs, ks, vs, masks_np, device)
+        scale = 1.0 / math.sqrt(head_dim)
 
-    def sdpa_fn():
-        with torch.backends.cuda.sdp_kernel(
-            enable_flash=False, enable_math=True, enable_mem_efficient=True
-        ):
-            F.scaled_dot_product_attention(
-                Q_p, K_p, V_p, attn_mask=attn_bias, scale=scale
-            )
+        def sdpa_fn():
+            with torch.backends.cuda.sdp_kernel(
+                enable_flash=False, enable_math=True, enable_mem_efficient=True
+            ):
+                F.scaled_dot_product_attention(
+                    Q_p, K_p, V_p, attn_mask=attn_bias, scale=scale
+                )
+    else:
+        sdpa_fn = None
 
     # ---- Time both ----
     try:
@@ -215,10 +221,13 @@ def benchmark_one(
         warnings.warn(f"Ragged kernel failed: {exc}")
         ragged_ms = float("nan")
 
-    try:
-        sdpa_ms = _cuda_median_ms(sdpa_fn, warmup, iters)
-    except Exception as exc:
-        warnings.warn(f"SDPA failed: {exc}")
+    if sdpa_fn is not None:
+        try:
+            sdpa_ms = _cuda_median_ms(sdpa_fn, warmup, iters)
+        except Exception as exc:
+            warnings.warn(f"SDPA failed: {exc}")
+            sdpa_ms = float("nan")
+    else:
         sdpa_ms = float("nan")
 
     # ---- FLOPs / TFLOPS ----

@@ -89,14 +89,18 @@ from src.ragged_attn import pack_inputs, ragged_attention
 # ─────────────────────────────────────────────────────────────────────────────
 # Sweep configuration
 # ─────────────────────────────────────────────────────────────────────────────
-DEFAULT_BATCH_SIZES       = [1, 2, 4, 8, 16, 32]
-DEFAULT_DEPTHS            = [1, 2, 3, 4, 5]
+DEFAULT_BATCH_SIZES       = [1, 2, 4, 8, 16, 32, 64, 128]
+DEFAULT_DEPTHS            = [1, 2, 3, 4, 5, 6, 7, 8]
 DEFAULT_BRANCHING_FACTORS = [2, 3, 4]
 CTX_LEN                   = 128          # context prefix length (not benchmarked)
 NUM_HEADS                 = 8
 HEAD_DIM                  = 64
 WARMUP_ITERS              = 10
 BENCH_ITERS               = 50
+# Dense baselines (sdpa_math, sdpa_flash) are O(N²) in memory.
+# Skip them when the batch-level token count would exceed this threshold
+# to avoid ~60 GB allocations on deep trees.
+MAX_DENSE_TOKENS          = 8_000        # N per sequence; ~6 GB attn matrix at B=32
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Optional library probes
@@ -404,6 +408,10 @@ def benchmark_one(
     N    = num_tree_nodes(branching_factor, depth)
     B, H, D = batch_size, num_heads, head_dim
 
+    # Skip O(N²) dense baselines when the sequence is too long to avoid OOM.
+    # Ragged kernel results are always collected.
+    skip_dense = N > MAX_DENSE_TOKENS
+
     masks_np = [tree_attention_mask(branching_factor, depth) for _ in range(B)]
     seq_lens = [N] * B
 
@@ -414,32 +422,35 @@ def benchmark_one(
     Q_rbf, K_rbf, V_rbf, cu_sl_bf, _, _, _ = _make_ragged(
         B, N, H, D, device, torch.bfloat16
     )
-    Q_p, K_p, V_p, attn_bias = _make_padded(
-        qs_fp16, ks_fp16, vs_fp16, masks_np,
-        N, B, H, D, device, torch.float16
-    )
+    if not skip_dense:
+        Q_p, K_p, V_p, attn_bias = _make_padded(
+            qs_fp16, ks_fp16, vs_fp16, masks_np,
+            N, B, H, D, device, torch.float16
+        )
+    else:
+        Q_p = K_p = V_p = attn_bias = None
 
     # ── Build runners ────────────────────────────────────────────────────────
     run_ragged_fp16 = _make_runner_ragged(Q_r16, K_r16, V_r16, cu_sl,
                                           branching_factor, depth)
     run_ragged_bf16 = _make_runner_ragged(Q_rbf, K_rbf, V_rbf, cu_sl_bf,
                                           branching_factor, depth)
-    run_sdpa_math   = _make_runner_sdpa_math(Q_p, K_p, V_p, attn_bias)
-    run_sdpa_flash  = _make_runner_sdpa_flash(Q_p, K_p, V_p)
-    run_sdpa_meff   = _make_runner_sdpa_memeff(Q_p, K_p, V_p, attn_bias)
+    run_sdpa_math  = None if skip_dense else _make_runner_sdpa_math(Q_p, K_p, V_p, attn_bias)
+    run_sdpa_flash = None if skip_dense else _make_runner_sdpa_flash(Q_p, K_p, V_p)
+    run_sdpa_meff  = None if skip_dense else _make_runner_sdpa_memeff(Q_p, K_p, V_p, attn_bias)
 
-    run_fa2         = None if skip_flashattn  else _make_runner_flash_attn(Q_p, K_p, V_p)
-    run_fi          = None if skip_flashinfer else _make_runner_flashinfer(
+    run_fa2        = None if (skip_flashattn  or skip_dense) else _make_runner_flash_attn(Q_p, K_p, V_p)
+    run_fi         = None if skip_flashinfer else _make_runner_flashinfer(
         Q_r16, K_r16, V_r16, cu_sl, B, N, H, D, device
     )
-    run_xf          = None if skip_xformers   else _make_runner_xformers(Q_p, K_p, V_p)
+    run_xf         = None if (skip_xformers   or skip_dense) else _make_runner_xformers(Q_p, K_p, V_p)
 
     # ── Time everything ──────────────────────────────────────────────────────
     t_r16  = _try_time(run_ragged_fp16, warmup, iters, "ragged_fp16")
     t_rbf  = _try_time(run_ragged_bf16, warmup, iters, "ragged_bf16")
-    t_sm   = _try_time(run_sdpa_math,   warmup, iters, "sdpa_math")
-    t_sf   = _try_time(run_sdpa_flash,  warmup, iters, "sdpa_flash")
-    t_me   = _try_time(run_sdpa_meff,   warmup, iters, "sdpa_memeff")
+    t_sm   = _try_time(run_sdpa_math,   warmup, iters, "sdpa_math")  if run_sdpa_math  else float("nan")
+    t_sf   = _try_time(run_sdpa_flash,  warmup, iters, "sdpa_flash") if run_sdpa_flash else float("nan")
+    t_me   = _try_time(run_sdpa_meff,   warmup, iters, "sdpa_memeff") if run_sdpa_meff else float("nan")
     t_fa2  = _try_time(run_fa2,         warmup, iters, "flash_attn2") if run_fa2 else float("nan")
     t_fi   = _try_time(run_fi,          warmup, iters, "flashinfer")  if run_fi  else float("nan")
     t_xf   = _try_time(run_xf,          warmup, iters, "xformers")   if run_xf  else float("nan")
