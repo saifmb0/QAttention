@@ -322,9 +322,15 @@ def ragged_attention(
     device = Q.device
     scale  = 1.0 / math.sqrt(D)
 
-    cu_seqlens_dev = cu_seqlens.to(device, dtype=torch.int32)
-    seq_lens   = (cu_seqlens_dev[1:] - cu_seqlens_dev[:-1]).cpu().tolist()
-    max_seqlen = int(max(seq_lens)) if seq_lens else 1
+    # Compute max_seqlen from CPU cu_seqlens BEFORE moving to device.
+    # This avoids a blocking GPU→CPU round-trip (.cpu().tolist()) that was
+    # previously adding ~20–50 μs to every call for small batches.
+    cu_sl_cpu  = cu_seqlens.cpu()   # no-op if already CPU (common case)
+    sl_list    = cu_sl_cpu.tolist() # pure Python; no CUDA sync
+    max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+
+    cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32,
+                                   non_blocking=True)
 
     O = torch.empty_like(Q)
 
