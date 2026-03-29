@@ -1,0 +1,15 @@
+# Core deep learning + kernel toolchain
+# Pin ranges that are known to work on Kaggle T4 (SM75) images as of 2026-03
+torch>=2.1.0,<3.0.0
+triton>=2.1.0,<4.0.0
+
+# Numerical / data
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Plotting
+matplotlib>=3.7.0
+
+# Testing
+pytest>=7.4.0
+pytest-timeout>=2.1.0
