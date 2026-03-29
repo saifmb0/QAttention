@@ -54,27 +54,30 @@ BLOCK_M_DEFAULT = 16      # smallest autotune block — used for CTA count estim
 # Analytic cost models
 # ---------------------------------------------------------------------------
 
-def _hbm_bytes(seq_lens: list[int], H: int, D: int) -> float:
+def _hbm_bytes(seq_lens: list[int], H: int, D: int, max_depth: int) -> float:
     """
-    Lower-bound HBM traffic for a correct Flash-Attention kernel.
+    Lower-bound HBM traffic for the ancestor-sparse kernel.
 
-    Each sequence of length L loads:
-        Q  : L * D * 2 bytes
-        K  : L * D * 2  (read once per Q tile)
-        V  : L * D * 2
-        O  : L * D * 2  (write)
-    Total per sequence = 8 * L * D bytes.
+    Each query token loads its (max_depth+1) ancestor K+V rows.
+    Many ancestor rows overlap across queries in the same Q-tile; in the
+    best case (all Q-tiles hot in L2) only N unique K/V positions are loaded
+    per sequence per head.  We use the per-unique-position lower bound:
+        bytes = B × H × N × D × sizeof(fp16) × 2  (K + V)
+    but report it per sequence for the sweep.
     """
-    return sum(8.0 * L * D * H for L in seq_lens)
+    return sum(8.0 * L * D * H for L in seq_lens)   # same formula — unique K+V positions
 
 
-def _flops(seq_lens: list[int], H: int, D: int) -> float:
+def _flops(seq_lens: list[int], H: int, D: int, max_depth: int) -> float:
     """
-    Total FLOPs: QK^T + row-softmax + PV  (both fused softmax + matmuls).
-    Each pair (L_q × L_k): 2 MACs → 4 FLOPs.
-    Two matmuls: QK^T and PV → 8 FLOPs total per (q, k) pair.
+    Total FMAs for the ancestor-sparse kernel.
+
+    Each of the N query tokens in a sequence performs (max_depth+1)
+    element-wise dot products of length D (for QK) and one FMA-accumulate
+    of length D (for PV).  Total per sequence:
+        2 × (max_depth+1) × L × D × 2 FLOPs   (QK + PV, 2 FLOPs per MAC)
     """
-    return sum(8.0 * L * L * D * H for L in seq_lens)
+    return sum(4.0 * (max_depth + 1) * L * D * H for L in seq_lens)
 
 
 def _roofline_ms(hbm_bytes: float, flops: float) -> tuple[float, float, str]:
@@ -144,8 +147,8 @@ def profile_one(
         # triton.testing.do_bench returns median ms
         ragged_ms = triton.testing.do_bench(fn, warmup=25, rep=200)
 
-    hbm    = _hbm_bytes(seq_lens, H, D)
-    flops  = _flops(seq_lens, H, D)
+    hbm    = _hbm_bytes(seq_lens, H, D, depth)
+    flops  = _flops(seq_lens, H, D, depth)
     roof_ms, intensity, bottleneck = _roofline_ms(hbm, flops)
 
     achieved_tflops  = flops  / (ragged_ms * 1e-3) / 1e12
