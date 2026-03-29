@@ -114,7 +114,8 @@ def _ragged_attn_fwd_kernel(
                 + q_tok [:, None] * stride_qt
                 + head_idx        * stride_qh
                 + d_range[None,:] * stride_qd)
-    q = tl.load(q_ptrs, mask=q_m_mask[:, None], other=0.0).to(tl.float32)
+    # Load as fp16 so tl.dot can use tensor cores; out_dtype=fp32 for accumulation
+    q = tl.load(q_ptrs, mask=q_m_mask[:, None], other=0.0)
 
     # ------------------------------------------------------------------ #
     # Mask bookkeeping for this sequence
@@ -143,10 +144,10 @@ def _ragged_attn_fwd_kernel(
                     + kv_tok [:, None] * stride_kt
                     + head_idx         * stride_kh
                     + d_range [None,:] * stride_kd)
-        k = tl.load(k_ptrs, mask=kv_mask[:, None], other=0.0).to(tl.float32)
+        k = tl.load(k_ptrs, mask=kv_mask[:, None], other=0.0)
 
-        # QK^T  [BLOCK_M, BLOCK_N]
-        s = tl.dot(q, tl.trans(k)) * scale
+        # QK^T  [BLOCK_M, BLOCK_N]  — both operands fp16, output fp32
+        s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * scale
 
         # ---- tree-mask lookup ----
         # packed_masks for seq i is row-major with stride = seq_len
@@ -182,9 +183,10 @@ def _ragged_attn_fwd_kernel(
                    + kv_tok [:, None] * stride_vt
                    + head_idx         * stride_vh
                    + d_range [None,:] * stride_vd)
-        v = tl.load(v_ptrs, mask=kv_mask[:, None], other=0.0).to(tl.float32)
+        v = tl.load(v_ptrs, mask=kv_mask[:, None], other=0.0)
 
-        acc    += tl.dot(p.to(tl.float16), v)
+        # P·V: both operands fp16, accumulate into fp32 acc
+        acc    += tl.dot(p.to(tl.float16), v, out_dtype=tl.float32)
         m_i     = m_new
 
     # ------------------------------------------------------------------ #

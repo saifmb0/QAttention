@@ -69,8 +69,13 @@ def sequence_lengths(
     batch_size       : B
     ctx_len          : base context length shared by all requests
     branching_factor : b for the draft tree
-    depth            : d for the draft tree
-    ctx_variance     : if > 0, add uniform noise ±ctx_variance to each
+    depth            : *maximum* draft-tree depth in this batch.
+                       Each request independently draws its actual depth
+                       uniformly from [1, depth], mirroring real EAGLE-2
+                       batches where different requests have different numbers
+                       of surviving draft candidates.  This produces the
+                       variable-length sequences that cause padding waste.
+    ctx_variance     : if > 0, also add uniform noise ±ctx_variance to each
                        context length (simulates heterogeneous prefill)
     rng              : numpy random generator (optional)
 
@@ -78,12 +83,14 @@ def sequence_lengths(
     -------
     List of B integer sequence lengths.
     """
-    draft_tokens = num_tree_nodes(branching_factor, depth)
-    if ctx_variance > 0.0 and rng is None:
+    if rng is None:
         rng = np.random.default_rng(42)
 
     lens: list[int] = []
     for _ in range(batch_size):
+        # Each request gets a random draft-tree depth in [1, depth]
+        req_depth    = int(rng.integers(1, depth + 1))
+        draft_tokens = num_tree_nodes(branching_factor, req_depth)
         c = ctx_len
         if ctx_variance > 0.0:
             delta = int(rng.integers(-int(ctx_variance), int(ctx_variance) + 1))
@@ -129,25 +136,32 @@ def padding_ratios(seq_lens: list[int]) -> dict:
 def sweep(
     batch_sizes: Sequence[int],
     ctx_lens: Sequence[int],
-    gammas: Sequence[int],        # treated as tree depth d for simplicity
+    gammas: Sequence[int],        # treated as max_tree_depth
     depths: Sequence[int] | None = None,
     branching_factors: Sequence[int] = (2,),
     ctx_variance: float = 0.0,
     seed: int = 42,
 ) -> pd.DataFrame:
     """
-    Enumerate all combinations of (batch_size, ctx_len, gamma/depth, b) and
-    record padding waste metrics.
+    Enumerate all combinations of (batch_size, ctx_len, max_tree_depth, b)
+    and record padding waste metrics.
+
+    Each row represents a *batch configuration*.  Within each batch every
+    request independently draws its actual draft-tree depth uniformly from
+    [1, max_tree_depth], producing variable-length sequences that require
+    padding.  This mirrors real EAGLE-2 batches where requests arrive with
+    different numbers of surviving draft candidates.
 
     Parameters
     ----------
     batch_sizes       : list of B values
     ctx_lens          : list of baseline context lengths
-    gammas            : list of γ values (= tree depth d when depths is None)
-    depths            : if provided, used directly as depth d (gammas ignored)
+    gammas            : list of max_tree_depth values (used when depths=None)
+    depths            : if provided, used directly as max_tree_depth (gammas ignored)
     branching_factors : list of b values
-    ctx_variance      : spread of context lengths within a batch
-    seed              : RNG seed for ctx_variance sampling
+    ctx_variance      : if > 0, add ±ctx_variance noise to each request's
+                        context length to simulate heterogeneous prefill
+    seed              : RNG seed
 
     Returns
     -------
@@ -162,16 +176,18 @@ def sweep(
     for B, ctx, d, b in itertools.product(
         batch_sizes, ctx_lens, depths, branching_factors
     ):
-        draft_n = num_tree_nodes(b, d)
+        # max possible draft tokens at this depth (for reference only)
+        max_draft_n = num_tree_nodes(b, d)
+        # heterogeneous per-request lengths: each request samples depth in [1,d]
         seq_lens = sequence_lengths(B, ctx, b, d, ctx_variance, rng)
-        metrics = padding_ratios(seq_lens)
+        metrics  = padding_ratios(seq_lens)
         rows.append(
             {
                 "batch_size": B,
                 "ctx_len": ctx,
-                "tree_depth": d,
+                "max_tree_depth": d,
                 "branching_factor": b,
-                "draft_tokens": draft_n,
+                "max_draft_tokens": max_draft_n,
                 "L_max": metrics["L_max"],
                 "L_mean": round(metrics["L_mean"], 2),
                 "token_padding_ratio": round(metrics["token"], 4),
@@ -180,9 +196,8 @@ def sweep(
         )
 
     df = pd.DataFrame(rows)
-    # Sort for readability
     df = df.sort_values(
-        ["batch_size", "tree_depth", "branching_factor"]
+        ["batch_size", "max_tree_depth", "branching_factor"]
     ).reset_index(drop=True)
     return df
 

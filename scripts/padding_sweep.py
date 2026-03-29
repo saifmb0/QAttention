@@ -173,7 +173,7 @@ def main(out_dir: str = "results", no_plot: bool = False) -> None:
 
     # Summary statistics
     print("\n── Summary ──")
-    print(df.groupby(["tree_depth", "branching_factor"])[
+    print(df.groupby(["max_tree_depth", "branching_factor"])[
         ["token_padding_ratio", "attn_padding_ratio"]
     ].mean().round(3).to_string())
 
@@ -187,7 +187,7 @@ def main(out_dir: str = "results", no_plot: bool = False) -> None:
     for b in BRANCHING_FACTORS:
         sub = df[(df["branching_factor"] == b) & (df["ctx_len"] == CTX_LENS[0])]
         pivot = sub.pivot_table(
-            index="tree_depth",
+            index="max_tree_depth",
             columns="batch_size",
             values="attn_padding_ratio",
             aggfunc="mean",
@@ -196,7 +196,7 @@ def main(out_dir: str = "results", no_plot: bool = False) -> None:
             pivot,
             title=f"Attention FLOPs Padding Ratio  (branching factor b={b})",
             xlabel="Batch size B",
-            ylabel="Tree depth d",
+            ylabel="Max tree depth d",
             vmin=0.0,
             vmax=1.0,
             out_path=os.path.join(out_dir, f"padding_attn_heatmap_b{b}.png"),
@@ -209,12 +209,12 @@ def main(out_dir: str = "results", no_plot: bool = False) -> None:
     sub2 = df[(df["ctx_len"] == CTX_LENS[0])].copy()
     _line_plot(
         sub2,
-        x_col="tree_depth",
+        x_col="max_tree_depth",
         y_col="attn_padding_ratio",
         hue_col="branching_factor",
         style_col="batch_size",
-        title="Attention FLOPs Padding Ratio vs Tree Depth",
-        xlabel="Tree depth  d",
+        title="Attention FLOPs Padding Ratio vs Max Tree Depth",
+        xlabel="Max tree depth  d",
         ylabel="Attention padding ratio",
         out_path=os.path.join(out_dir, "padding_attn_lines.png"),
     )
@@ -224,12 +224,12 @@ def main(out_dir: str = "results", no_plot: bool = False) -> None:
     # ------------------------------------------------------------------
     _line_plot(
         sub2,
-        x_col="tree_depth",
+        x_col="max_tree_depth",
         y_col="token_padding_ratio",
         hue_col="branching_factor",
         style_col="batch_size",
-        title="Token-Level Padding Ratio vs Tree Depth",
-        xlabel="Tree depth  d",
+        title="Token-Level Padding Ratio vs Max Tree Depth",
+        xlabel="Max tree depth  d",
         ylabel="Token padding ratio",
         out_path=os.path.join(out_dir, "padding_token_lines.png"),
     )
