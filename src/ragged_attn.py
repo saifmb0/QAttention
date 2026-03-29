@@ -211,17 +211,25 @@ def _ragged_attn_kernel(
         s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * scale
 
         # ---- analytic tree mask (inlined ancestor walk) ----
-        # BFS-ordered b-ary tree: parent(k) = (k-1) // b for all k.
-        # For k=0: (0-1)//b would underflow; tl.maximum(..., 0) clamps it
-        # without a branch predicate, avoiding the tl.where eager-evaluation
-        # issue where an uncommitted branch can produce a spurious result on
-        # certain Triton/PTX versions for non-power-of-2 BRANCHING_FACTORs.
+        # BFS-ordered b-ary tree: parent(k) = (k-1) // b for all k > 0.
+        #
+        # Critical: clamp (cur - 1) to >= 0 BEFORE dividing.
+        #
+        # Why: tl.where(cur > 0, (cur-1)//b, 0) evaluates (cur-1)//b eagerly
+        # for ALL lanes.  When cur=0, cur-1 = -1 (int32).  For non-power-of-2
+        # b (e.g. b=3), PTX lowers the division to a multiply-high sequence
+        # that assumes an unsigned 32-bit operand; -1 reinterpreted as u32 is
+        # 0xFFFFFFFF, so the "parent" of 0 comes out as 0x55555554 — a large
+        # index that later leaks into the attend mask.
+        #
+        # Fix: tl.maximum(cur - 1, zeros) produces 0 for the cur==0 lane,
+        # *before* the division, so the divisor is always non-negative.
+        # Power-of-2 b is unaffected (shift does not have unsigned semantics).
         kv_idx = (tl.arange(0, BLOCK_N) + n_off)[None, :]  # [1, BLOCK_N]
         cur    = q_idx                                       # [BLOCK_M, 1]
         attend = (cur == kv_idx)                             # [BLOCK_M, BLOCK_N]
         for _step in range(MAX_DEPTH):   # fully unrolled (MAX_DEPTH is constexpr)
-            cur    = tl.maximum((cur - 1) // BRANCHING_FACTOR,
-                                tl.zeros_like(cur))
+            cur    = tl.maximum(cur - 1, tl.zeros_like(cur)) // BRANCHING_FACTOR
             attend = attend | (cur == kv_idx)
 
         attend = attend & valid_q[:, None] & kv_mask[None, :]

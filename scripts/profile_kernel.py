@@ -142,8 +142,7 @@ def profile_one(
         ragged_ms = (time.perf_counter() - t0) / 50 * 1e3
     else:
         # triton.testing.do_bench returns median ms
-        ragged_ms = triton.testing.do_bench(fn, warmup=25, rep=200,
-                                            fast_flush=True)
+        ragged_ms = triton.testing.do_bench(fn, warmup=25, rep=200)
 
     hbm    = _hbm_bytes(seq_lens, H, D)
     flops  = _flops(seq_lens, H, D)
