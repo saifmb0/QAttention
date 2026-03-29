@@ -1,7 +1,7 @@
 """
 benchmark_sota.py
 =================
-SOTA comparison benchmark — RTX 6000 ADA PRO 96 GB (SM 8.9 Ada Lovelace)
+SOTA comparison benchmark — RTX PRO 6000 Blackwell Server Edition 94 GB (SM 12.0)
 "blackwell" branch
 
 Compares ragged ancestor-sparse attention against every relevant baseline
@@ -117,15 +117,30 @@ HAS_XFORMERS    = _has("xformers")
 
 def device_info() -> dict:
     if not torch.cuda.is_available():
-        return {"name": "CPU", "sm": "N/A", "vram_gb": 0, "hbm_bw": 0}
+        return {"name": "CPU", "sm": "N/A", "vram_gb": 0, "sm_count": 0,
+                "is_ada": False, "is_blackwell": False, "arch": "cpu"}
     p = torch.cuda.get_device_properties(0)
+    sm = (p.major, p.minor)
+    is_blackwell = sm >= (12, 0)
+    is_ada       = (not is_blackwell) and sm >= (8, 9)
+    if is_blackwell:
+        arch = "Blackwell"
+    elif is_ada:
+        arch = "Ada Lovelace"
+    elif sm >= (8, 0):
+        arch = "Ampere"
+    elif sm >= (7, 5):
+        arch = "Turing"
+    else:
+        arch = f"SM{p.major}{p.minor}"
     return {
-        "name":    p.name,
-        "sm":      f"{p.major}{p.minor}",
-        "vram_gb": round(p.total_memory / 1024**3, 1),
-        "sm_count": p.multi_processor_count,
-        # Ada Lovelace (SM 8.9) HBM BW: 820 GB/s (RTX 6000 ADA PRO GDDR7)
-        "is_ada":  (p.major, p.minor) >= (8, 9),
+        "name":         p.name,
+        "sm":           f"{p.major}{p.minor}",
+        "vram_gb":      round(p.total_memory / 1024**3, 1),
+        "sm_count":     p.multi_processor_count,
+        "is_ada":       is_ada,
+        "is_blackwell": is_blackwell,
+        "arch":         arch,
     }
 
 
@@ -494,6 +509,8 @@ _METHOD_COLS = {
 
 def plot_latency_vs_depth(df: pd.DataFrame, out_dir: str) -> None:
     """One figure per branching_factor: latency (ms) vs tree depth, B=8."""
+    _info = device_info()
+    _gpu_label = f"{_info['name']}  ({_info['arch']}  SM {_info['sm']})"
     for b in sorted(df["branching_factor"].unique()):
         sub = df[(df["branching_factor"] == b) & (df["batch_size"] == 8)].sort_values("tree_depth")
         if sub.empty:
@@ -511,7 +528,7 @@ def plot_latency_vs_depth(df: pd.DataFrame, out_dir: str) -> None:
         ax.set_ylabel("Latency  (ms)", fontsize=11)
         ax.set_title(
             f"Attention Kernel Latency — b={b}, B=8, H={NUM_HEADS}, D={HEAD_DIM}\n"
-            f"RTX 6000 ADA PRO  (SM 8.9 Ada Lovelace)",
+            f"{_gpu_label}",
             fontsize=11
         )
         ax.legend(fontsize=8, ncol=2)
@@ -525,6 +542,8 @@ def plot_latency_vs_depth(df: pd.DataFrame, out_dir: str) -> None:
 
 def plot_speedup_heatmap(df: pd.DataFrame, out_dir: str) -> None:
     """Speedup of our ragged fp16 vs SDPA-math across B × depth."""
+    _info = device_info()
+    _gpu_label = f"{_info['name']}  ({_info['arch']}  SM {_info['sm']})"
     for b in sorted(df["branching_factor"].unique()):
         sub = df[df["branching_factor"] == b]
         pivot = sub.pivot_table(
@@ -543,7 +562,7 @@ def plot_speedup_heatmap(df: pd.DataFrame, out_dir: str) -> None:
         ax.set_xlabel("Batch size  B", fontsize=10)
         ax.set_ylabel("Tree depth  d", fontsize=10)
         ax.set_title(
-            f"Ragged fp16 vs SDPA-math  (b={b})  —  RTX 6000 ADA PRO",
+            f"Ragged fp16 vs SDPA-math  (b={b})  —  {_gpu_label}",
             fontsize=10
         )
         for r in range(pivot.shape[0]):
@@ -594,6 +613,8 @@ def plot_bar_chart(df: pd.DataFrame, out_dir: str) -> None:
 
 def plot_tflops(df: pd.DataFrame, out_dir: str) -> None:
     """TFLOPS comparison: ragged (sparse) vs SDPA-math (padded)."""
+    _info = device_info()
+    _gpu_label = f"{_info['name']}  ({_info['arch']}  SM {_info['sm']})"
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     for b in sorted(df["branching_factor"].unique()):
         sub = df[(df["branching_factor"] == b) & (df["batch_size"] == 8)].sort_values("tree_depth")
@@ -604,12 +625,9 @@ def plot_tflops(df: pd.DataFrame, out_dir: str) -> None:
     for ax, title in zip(axes, ["Ragged fp16 (sparse)", "SDPA math (padded)"]):
         ax.set_xlabel("Tree depth  d", fontsize=10)
         ax.set_ylabel("Effective TFLOPS", fontsize=10)
-        ax.set_title(f"{title}  B=8  —  RTX 6000 ADA PRO", fontsize=10)
+        ax.set_title(f"{title}  B=8  —  {_gpu_label}", fontsize=10)
         ax.legend(fontsize=8)
         ax.grid(alpha=0.25)
-        # Ada Ada peak reference lines
-        ax.axhline(364.2, color="gray", linestyle=":", linewidth=0.9,
-                   label="Ada FP16 peak (364 TFLOPS)")
     plt.tight_layout()
     path = os.path.join(out_dir, "sota_tflops.png")
     fig.savefig(path, dpi=150)
@@ -626,7 +644,7 @@ def _print_banner(info: dict, args) -> None:
     print("  sd-ragged  ·  SOTA Benchmark  ·  blackwell branch")
     print("=" * 70)
     print(f"  Device : {info['name']}")
-    print(f"  SM     : {info['sm']}  ({info['sm_count']} SMs)  {'[Ada Lovelace ✓]' if info.get('is_ada') else '[Non-Ada — configs may differ]'}")
+    print(f"  SM     : {info['sm']}  ({info['sm_count']} SMs)  [{info['arch']}]")
     print(f"  VRAM   : {info['vram_gb']} GB")
     print(f"  dtype  : {args.dtype}")
     print()

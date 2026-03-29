@@ -1,27 +1,25 @@
 # sd-ragged — **blackwell** branch
 
 Ancestor-sparse Flash Attention for speculative-decoding verification,
-optimised for the **NVIDIA RTX 6000 ADA PRO 96 GB** (SM 8.9, Ada Lovelace).
+optimised for the **NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB** (SM 12.0, Blackwell).
+Also accelerated on Ada Lovelace (SM 8.9) — Triton autotune tier selected at runtime.
 
 ---
 
 ## Hardware target
 
-| Property | RTX 6000 ADA PRO | Tesla T4 (main branch) |
+| Property | RTX PRO 6000 Blackwell | Tesla T4 (main branch) |
 |---|---|---|
-| Architecture | Ada Lovelace (AD102) | Turing |
-| SM version | **8.9** | 7.5 |
-| SMs | **142** | 40 |
-| FP16 tensor-core peak | **364.2 TFLOPS** | 65 TFLOPS |
-| FP8 tensor-core peak | **1 457 TFLOPS** | — |
-| VRAM | **96 GB GDDR7** | 15 GB |
-| HBM bandwidth | **820 GB/s** | 300 GB/s |
-| L2 cache | **96 MB** | 3.8 MB |
-| Roofline ridge $I^*$ | **444 FLOPs/byte** | 217 FLOPs/byte |
+| Architecture | **Blackwell (GB202)** | Turing |
+| SM version | **12.0** | 7.5 |
+| VRAM | **94 GB GDDR7** | 15 GB |
+| Shared mem/SM | **232 KB** | 64 KB |
+| BF16 tensor cores | **✓** | ✗ |
+| Autotune tier | **SM120** | SM75 |
 
-The 96 MB L2 is large enough to hold the entire K/V working set for
-typical speculative-decoding batches, making the ancestor-sparse kernel
-fully L2-resident past depth ≥ 2.
+The large shared memory per SM (232 KB on Blackwell vs 64 KB on T4) allows
+`BLOCK_M=512` without register spill, and the K/V ancestor working set stays
+L2-resident across all Q-tiles for typical speculative-decoding batches.
 
 ---
 
@@ -29,15 +27,17 @@ fully L2-resident past depth ≥ 2.
 
 ### 1 — Triton autotune configs (`src/ragged_attn.py`)
 
-| Param | SM 7.5 (T4) | SM 8.9 (Ada) |
-|---|---|---|
-| `BLOCK_M` candidates | 16 / 32 / 64 / 128 | 32 / 64 / **128 / 256** |
-| `num_warps` | 2 / 4 / 8 | 4 / 8 / **16** |
-| `num_stages` | 1 | **2** (step-0 prefetch) |
+| Param | SM 7.5 (Turing/T4) | SM 8.9 (Ada) | SM 12.0 (Blackwell) |
+|---|---|---|---|
+| `BLOCK_M` candidates | 16 / 32 / 64 / 128 | 32 / 64 / 128 / **256** | 32 / 64 / 128 / 256 / **512** |
+| `num_warps` | 2 / 4 / 8 | 4 / 8 / **16** | 4 / 8 / **16** |
+| `num_stages` | 1 | **2** | **2** |
 
-`_get_autotune_configs()` selects the correct set at runtime based on
-`torch.cuda.get_device_properties().major/minor`, so a single checkout
-runs correctly on both SM 7.5 and SM 8.9.
+`_get_autotune_configs()` selects the correct tier at runtime from
+`torch.cuda.get_device_properties().major/minor`:
+- SM ≥ 12.0 → `_SPARSE_SM120_CONFIGS` **(Blackwell — this GPU)**
+- SM ≥  8.9 → `_SPARSE_SM89_CONFIGS`  (Ada Lovelace)
+- otherwise  → `_SPARSE_SM75_CONFIGS`  (Turing)
 
 ### 2 — BF16 support
 

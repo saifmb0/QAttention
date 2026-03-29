@@ -2,7 +2,8 @@
 # =============================================================================
 # run_blackwell.sh
 # Single entry-point for the sd-ragged blackwell branch.
-# Target: NVIDIA RTX 6000 ADA PRO 96 GB  (SM 8.9 Ada Lovelace)
+# Target: NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB  (SM 12.0 Blackwell)
+# Also works on Ada Lovelace (SM 8.9) and other CUDA 11.6+ GPUs.
 #
 # Stages (all on by default):
 #   1 — smoke   : Python smoke test (kernel launches, shapes correct)
@@ -57,7 +58,7 @@ mkdir -p "$OUT_DIR"
 echo -e "${BOLD}"
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║  sd-ragged · blackwell branch                        ║"
-echo "  ║  NVIDIA RTX 6000 ADA PRO 96 GB  (SM 8.9 Ada)        ║"
+echo "  ║  NVIDIA RTX PRO 6000 Blackwell  (SM 12.0)            ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -68,8 +69,14 @@ if torch.cuda.is_available():
     print(f"  GPU   : {p.name}")
     print(f"  SM    : {p.major}{p.minor}  ({p.multi_processor_count} SMs)")
     print(f"  VRAM  : {p.total_memory // 1024**3} GB")
-    ada = (p.major, p.minor) >= (8, 9)
-    print(f"  Ada   : {'YES — SM89 configs active' if ada else 'NO — SM75 configs active'}")
+    sm = (p.major, p.minor)
+    if sm >= (12, 0):
+        tier = 'SM120 configs active (Blackwell)'
+    elif sm >= (8, 9):
+        tier = 'SM89 configs active (Ada Lovelace)'
+    else:
+        tier = 'SM75 configs active (Turing/other)'
+    print(f"  Config tier: {tier}")
 else:
     print("  NO CUDA GPU DETECTED")
 PYEOF

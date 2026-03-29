@@ -2,7 +2,8 @@
 # =============================================================================
 # setup_blackwell.sh
 # Bootstrap a fresh Ubuntu instance for sd-ragged (blackwell branch)
-# Target: NVIDIA RTX 6000 ADA PRO 96 GB  (SM 8.9 Ada Lovelace, GDDR7)
+# Target: NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB  (SM 12.0, GDDR7)
+# Also works on Ada Lovelace (SM 8.9) and other CUDA 11.6+ GPUs.
 #
 # Usage:
 #   bash setup_blackwell.sh              # full setup
@@ -101,9 +102,27 @@ info "Core requirements installed."
 if [[ $INSTALL_SOTA -eq 1 ]]; then
     info "Installing optional SOTA benchmark libraries …"
 
+    # ── Auto-detect CUDA_HOME (required by flash-attn build system) ──────────
+    if [[ -z "${CUDA_HOME:-}" ]]; then
+        for _cand in /usr/local/cuda /usr/cuda $(ls -d /usr/local/cuda-* 2>/dev/null | sort -V | tail -1); do
+            if [[ -f "${_cand}/bin/nvcc" ]]; then
+                export CUDA_HOME="$_cand"
+                export PATH="${CUDA_HOME}/bin:${PATH}"
+                info "Auto-detected CUDA_HOME=${CUDA_HOME}"
+                break
+            fi
+        done
+    fi
+    if [[ -z "${CUDA_HOME:-}" ]]; then
+        warn "CUDA_HOME not set and nvcc not found — flash-attn build will be skipped."
+        warn "Use a 'devel' Docker image (e.g. pytorch/pytorch:*-devel) to get nvcc."
+    fi
+
     # FlashAttention-2
     if $PYTHON -c "import flash_attn" 2>/dev/null; then
         info "flash_attn already installed — skipping."
+    elif [[ -z "${CUDA_HOME:-}" ]]; then
+        warn "flash_attn skipped — nvcc / CUDA_HOME not available."
     else
         info "Building FlashAttention-2 (may take 5–10 min) …"
         $PIP install --quiet flash-attn --no-build-isolation \
@@ -111,16 +130,34 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
             || warn "flash_attn build failed — benchmark will skip FA2 comparison."
     fi
 
-    # FlashInfer
+    # FlashInfer — try multiple CUDA/torch index URLs
     if $PYTHON -c "import flashinfer" 2>/dev/null; then
         info "flashinfer already installed — skipping."
     else
-        info "Installing FlashInfer …"
-        TORCH_SHORT=$(python3 -c "import torch; v=torch.__version__; print('torch'+v[:3].replace('.',''))" 2>/dev/null || echo "torch23")
-        $PIP install --quiet flashinfer \
-            -i "https://flashinfer.ai/whl/cu121/${TORCH_SHORT}/" \
-            && info "flashinfer installed." \
-            || warn "flashinfer install failed — benchmark will skip FlashInfer comparison."
+        info "Installing FlashInfer (trying multiple CUDA index URLs) …"
+        CUDA_SHORT=$($PYTHON -c "
+import torch; v=torch.version.cuda or '121'
+parts=v.split('.')[:2]; print('cu'+''.join(parts))
+" 2>/dev/null || echo "cu121")
+        TORCH_SHORT=$($PYTHON -c "
+import torch; v=torch.__version__
+print('torch'+v[:3].replace('.',''))
+" 2>/dev/null || echo "torch23")
+        FI_INSTALLED=0
+        for _fi_url in \
+            "https://flashinfer.ai/whl/${CUDA_SHORT}/${TORCH_SHORT}/" \
+            "https://flashinfer.ai/whl/cu124/torch26/" \
+            "https://flashinfer.ai/whl/cu124/torch25/" \
+            "https://flashinfer.ai/whl/cu121/torch23/"; do
+            if $PIP install --quiet flashinfer -i "${_fi_url}" 2>/dev/null; then
+                FI_INSTALLED=1
+                info "flashinfer installed from ${_fi_url}"
+                break
+            fi
+        done
+        if [[ $FI_INSTALLED -eq 0 ]]; then
+            warn "flashinfer install failed (no pre-built wheel for ${CUDA_SHORT}/${TORCH_SHORT}) — benchmark will skip FlashInfer comparison."
+        fi
     fi
 
     # xformers
@@ -147,8 +184,18 @@ print(f"  pandas  {pandas.__version__}")
 if torch.cuda.is_available():
     p = torch.cuda.get_device_properties(0)
     print(f"  GPU     {p.name}  SM{p.major}{p.minor}  {p.total_memory//1024**3} GB")
-    ada = (p.major, p.minor) >= (8, 9)
-    print(f"  Ada Lovelace (SM 8.9): {'YES' if ada else 'NO (SM75 configs will be used)'}")
+    sm = (p.major, p.minor)
+    if sm >= (12, 0):
+        arch, tier = 'Blackwell', 'SM120 configs'
+    elif sm >= (8, 9):
+        arch, tier = 'Ada Lovelace', 'SM89 configs'
+    elif sm >= (8, 0):
+        arch, tier = 'Ampere', 'SM75 configs'
+    elif sm >= (7, 5):
+        arch, tier = 'Turing', 'SM75 configs'
+    else:
+        arch, tier = f'SM{p.major}{p.minor}', 'SM75 configs'
+    print(f"  Architecture : {arch}  ({tier} active)")
 EOF
 
 info "Setup complete!  Run:  bash run_blackwell.sh"

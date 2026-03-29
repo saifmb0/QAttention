@@ -4,45 +4,40 @@ ragged_attn.py
 Triton ragged attention — ancestor-sparse Flash Attention for tree-structured
 speculative decoding.
 
-Target hardware : SM75 (NVIDIA T4, Kaggle 2×T4) — original
-                  SM89 (NVIDIA RTX 6000 ADA PRO 96 GB GDDR7) — "blackwell" branch
+Target hardware : SM75  (NVIDIA T4, Kaggle 2×T4) — original
+                  SM89  (NVIDIA RTX 6000 ADA PRO, Ada Lovelace) — intermediate
+                  SM120 (NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB) — "blackwell" branch
 Precision       : float16 or bfloat16 input/output, float32 accumulation
 
 ─────────────────────────────────────────────────────────────────────────────
-Ada Lovelace (SM 8.9) optimisation notes  — RTX 6000 ADA PRO
+Blackwell / Ada Lovelace optimisation notes  — RTX PRO 6000 Blackwell (SM 12.0)
 ─────────────────────────────────────────────────────────────────────────────
 
-Hardware spec
-  Architecture  : Ada Lovelace (AD102 full die)
-  CUDA version  : SM 8.9
-  SMs           : 142
-  FP16 peak     : 364.2 TFLOPS  (w/ tensor cores)
-  FP8  peak     : 1457   TFLOPS  (E4M3/E5M2 tensor cores)
-  HBM bandwidth : 820 GB/s  (GDDR7, 384-bit bus)
-  L2 cache      : 96 MB  ← 25× larger than T4 (3.8 MB); K/V reuse is free
-  Shared mem/SM : up to 100 KB per block
-  Regs/SM       : 65 536 (same as T4, but 142×SM vs 40×SM = 3.55× total)
+Actual target hardware (this branch)
+  Architecture  : Blackwell (GB202)
+  CUDA SM       : 12.0
+  VRAM          : 94 GB GDDR7
+  Shared mem/SM : up to 232 KB per block  (2× Ada, 3.6× Turing)
+  Regs/SM       : 65 536
   Warp size     : 32
 
-Key improvements over SM75 (T4)
-  1. BLOCK_M 256 is viable — 142 SMs can sustain 256-thread CTAs without
-     occupancy collapse (T4 would stall at 256 due to 40 SMs × 16 CTAs/SM).
-  2. num_stages=2 enables software-pipeline prefetch for step 0 K-loads
-     (step 0 address = seq_start + q_off + m_range, fully data-independent).
-     Subsequent steps still use num_stages=1 (data-dependent addresses).
-  3. BF16 natively accelerated on Ada tensor cores (unlike SM75 which only
-     has FP16/INT8/TF32 tensor cores); added bfloat16 precision path.
-  4. 96 MB L2 is large enough to hold the full K/V of even the largest batch
-     in this workload (32 × 1 365 × 8 × 64 × 2 bytes = 360 MB — not quite,
-     but many ancestor K/V positions are shared across query tiles, so the
-     effective working set fits easily).
-  5. Halved memory-bandwidth pressure relative to T4: 820 / 300 ≈ 2.7× BW,
-     but our sparse kernel is already compute-bound at depth ≥ 3 on T4,
-     so the effective gain flows mostly from occupancy and clock headroom.
+  Ada Lovelace (SM 8.9) is also accelerated — configs selected at runtime.
 
-Roofline ridge point (Ada)
-  I* = peak_FP16 / HBM_BW = 364.2e12 / 820e9  ≈ 444 FLOPs/byte
-  (vs T4: 65e12/300e9 ≈ 217 FLOPs/byte)
+Config tiers (selected at runtime by _get_autotune_configs())
+  SM 12.0 (Blackwell) : BLOCK_M ≤ 512,  num_warps ≤ 16,  num_stages=2
+  SM  8.9 (Ada)       : BLOCK_M ≤ 256,  num_warps ≤ 16,  num_stages=2
+  SM  7.5 (Turing/T4) : BLOCK_M ≤ 128,  num_warps ≤  8,  num_stages=1
+
+Key improvements over SM75 (T4)
+  1. BLOCK_M up to 512 — Blackwell's 232 KB shared mem/SM removes the spill
+     cliff that caps T4 at BLOCK_M=128.
+  2. num_stages=2 enables step-0 K-load software-pipeline prefetch
+     (step 0 address = seq_start + q_off + m_range, fully data-independent).
+     Subsequent steps remain num_stages=1 (data-dependent gather addresses).
+  3. BF16 natively accelerated on Blackwell and Ada tensor cores; added
+     bfloat16 precision path (auto-cast to fp16 on SM75 for compat).
+  4. Large L2 cache (Blackwell: ≥ 32 MB; Ada: 96 MB) keeps K/V ancestor
+     positions L2-resident across all Q-tiles — scatter-gather latency ≈ 0.
 ─────────────────────────────────────────────────────────────────────────────
 
 ─────────────────────────────────────────────────────────────────────────────
@@ -162,26 +157,15 @@ _SPARSE_SM75_CONFIGS = [
 ]
 
 # ---------------------------------------------------------------------------
-# SM89 autotune configs — RTX 6000 ADA PRO (Ada Lovelace)
+# SM89 autotune configs — Ada Lovelace (e.g. RTX 6000 ADA PRO, L40S)
 #
 # Differences from SM75:
-#   • 142 SMs vs 40 → no occupancy cliff at BLOCK_M=256 (128-thread CTAs)
-#   • 96 MB L2 → K/V ancestor positions hot in L2 across all tiles
+#   • Large L2 (96 MB on Ada) → K/V ancestor positions hot in L2
 #   • Tensor cores natively accelerate BF16 in addition to FP16
-#   • num_stages=2 is safe for step 0 (address fully data-independent);
-#     deeper steps remain num_stages=1 (data-dependent gather addresses).
-#     Triton uses the same num_stages for the whole kernel; we set 2 here
-#     because the step-0 prefetch is the dominant latency hider at B=32.
+#   • num_stages=2 safe for step 0 (address fully data-independent)
 #
 # Register budget at BLOCK_M=256, HEAD_DIM=64, num_warps=8 (256 threads):
-#   q + k_anc + v_anc: 3 × (256×64/256) fp16 = 3×64 = 192 fp16 → 96 fp32 regs
-#   acc: (256×64)/256 fp32 = 64 fp32 regs
-#   scalars: ~16 regs
 #   Total: ~176 regs/thread — within 65 536/256 = 256 limit, no spill.
-#
-# BLOCK_M=256, HEAD_DIM=128, num_warps=16: 192+128+16 = 336 regs → spill risk;
-#   num_warps=16 (512 threads) lowers per-thread quota to 128 → borderline;
-#   retained as candidate but typically autotuned away.
 # ---------------------------------------------------------------------------
 _SPARSE_SM89_CONFIGS = [
     # Small tiles — low-latency for tiny batches (B=1)
@@ -191,19 +175,52 @@ _SPARSE_SM89_CONFIGS = [
     triton.Config({"BLOCK_M": 64},  num_warps=8,  num_stages=2),
     triton.Config({"BLOCK_M": 128}, num_warps=8,  num_stages=2),
     triton.Config({"BLOCK_M": 128}, num_warps=16, num_stages=2),
-    # Large tiles — exploit 96 MB L2 and high SM count
+    # Large tiles — exploit large L2 and high SM count
     triton.Config({"BLOCK_M": 256}, num_warps=8,  num_stages=2),
     triton.Config({"BLOCK_M": 256}, num_warps=16, num_stages=2),
 ]
 
+# ---------------------------------------------------------------------------
+# SM120 autotune configs — Blackwell (e.g. RTX PRO 6000 Blackwell, GB200)
+#
+# Differences from SM89:
+#   • Shared memory per SM up to 232 KB (vs ~100 KB on Ada) → BLOCK_M=512
+#     fits without register spill at HEAD_DIM=64.
+#   • num_stages=2 retained (step s>0 addresses remain data-dependent).
+#
+# Register budget at BLOCK_M=512, HEAD_DIM=64, num_warps=16 (512 threads):
+#   q + k_anc + v_anc: 3×64 fp16 → 96 fp32 regs
+#   acc: 64 fp32 regs;  scalars: ~16 → 176 total
+#   Per-thread quota = 65 536/512 = 128 regs → no spill.
+# ---------------------------------------------------------------------------
+_SPARSE_SM120_CONFIGS = [
+    # Small tiles
+    triton.Config({"BLOCK_M": 32},  num_warps=4,  num_stages=1),
+    triton.Config({"BLOCK_M": 64},  num_warps=4,  num_stages=2),
+    # Medium tiles
+    triton.Config({"BLOCK_M": 128}, num_warps=8,  num_stages=2),
+    triton.Config({"BLOCK_M": 256}, num_warps=8,  num_stages=2),
+    triton.Config({"BLOCK_M": 256}, num_warps=16, num_stages=2),
+    # Large tiles — exploit 232 KB shared mem
+    triton.Config({"BLOCK_M": 512}, num_warps=16, num_stages=2),
+]
+
 
 def _get_autotune_configs() -> list:
-    """Select autotune config set based on the current CUDA device's SM."""
+    """Select autotune config set based on the current CUDA device's SM.
+
+    Tiers:
+      SM 12.x (Blackwell)  -> _SPARSE_SM120_CONFIGS
+      SM  8.9 (Ada)        -> _SPARSE_SM89_CONFIGS
+      SM  7.5 (Turing/T4)  -> _SPARSE_SM75_CONFIGS
+    """
     if not torch.cuda.is_available():
         return _SPARSE_SM75_CONFIGS
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
-    # SM 8.9 = Ada Lovelace; also covers 8.x forward
-    if (props.major, props.minor) >= (8, 9):
+    sm = (props.major, props.minor)
+    if sm >= (12, 0):
+        return _SPARSE_SM120_CONFIGS
+    if sm >= (8, 9):
         return _SPARSE_SM89_CONFIGS
     return _SPARSE_SM75_CONFIGS
 

@@ -1,12 +1,12 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# sd-ragged  ·  blackwell branch
-# Requirements for RTX 6000 ADA PRO (SM 8.9 Ada Lovelace, 96 GB GDDR7)
+# Requirements for RTX PRO 6000 Blackwell Server Edition (SM 12.0, 94 GB GDDR7)
+# Also works on Ada Lovelace (SM 8.9) — autotune tier selected at runtime.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Core toolchain ────────────────────────────────────────────────────────────
-# PyTorch: CUDA 12.1 wheel (Ada Lovelace fully supported from 12.0+)
+# PyTorch: on Blackwell hosts the bundled CUDA is typically 13.0 (cu130).
+# When installing manually, use the newest available wheel for your CUDA version.
 torch>=2.2.0,<3.0.0
-triton>=2.3.0,<4.0.0          # SM 8.9 autotune configs available from 2.3
+triton>=2.3.0,<4.0.0          # SM 8.9 / SM 12.0 autotune configs from 2.3+
 
 # ── Numerical / data ─────────────────────────────────────────────────────────
 numpy>=1.24.0
