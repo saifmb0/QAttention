@@ -162,14 +162,14 @@ _SPARSE_SM75_CONFIGS = [
 _SPARSE_SM89_CONFIGS = [
     # Small tiles — low-latency for tiny batches (B=1)
     triton.Config({"BLOCK_M": 32},  num_warps=4,  num_stages=1),
-    triton.Config({"BLOCK_M": 64},  num_warps=4,  num_stages=2),
+    triton.Config({"BLOCK_M": 64},  num_warps=4,  num_stages=1),
     # Medium tiles — balanced occupancy
-    triton.Config({"BLOCK_M": 64},  num_warps=8,  num_stages=2),
-    triton.Config({"BLOCK_M": 128}, num_warps=8,  num_stages=2),
-    triton.Config({"BLOCK_M": 128}, num_warps=16, num_stages=2),
+    triton.Config({"BLOCK_M": 64},  num_warps=8,  num_stages=1),
+    triton.Config({"BLOCK_M": 128}, num_warps=8,  num_stages=1),
+    triton.Config({"BLOCK_M": 128}, num_warps=16, num_stages=1),
     # Large tiles — exploit large L2 and high SM count
-    triton.Config({"BLOCK_M": 256}, num_warps=8,  num_stages=2),
-    triton.Config({"BLOCK_M": 256}, num_warps=16, num_stages=2),
+    triton.Config({"BLOCK_M": 256}, num_warps=8,  num_stages=1),
+    triton.Config({"BLOCK_M": 256}, num_warps=16, num_stages=1),
 ]
 
 # ---------------------------------------------------------------------------
@@ -178,23 +178,27 @@ _SPARSE_SM89_CONFIGS = [
 # Differences from SM89:
 #   • Shared memory per SM up to 232 KB (vs ~100 KB on Ada) → BLOCK_M=512
 #     fits without register spill at HEAD_DIM=64.
-#   • num_stages=2 retained (step s>0 addresses remain data-dependent).
+#   • num_stages=1 used throughout: the ancestor walk loop has data-dependent
+#     addresses (parent^s depends on parent^{s-1}), so software-pipeline
+#     prefetch cannot help.  Using num_stages=2 causes Triton CompilationError
+#     on SM 12.0 for certain (HEAD_DIM, BRANCHING_FACTOR, MAX_DEPTH) combos
+#     (non-power-of-2 divisors + unrolled loops + PTX pipelining interact).
 #
 # Register budget at BLOCK_M=512, HEAD_DIM=64, num_warps=16 (512 threads):
 #   q + k_anc + v_anc: 3×64 fp16 → 96 fp32 regs
 #   acc: 64 fp32 regs;  scalars: ~16 → 176 total
-#   Per-thread quota = 65 536/512 = 128 regs → no spill.
+#   Per-thread quota = 65 536/512 = 128 regs → tight but no spill.
 # ---------------------------------------------------------------------------
 _SPARSE_SM120_CONFIGS = [
     # Small tiles
     triton.Config({"BLOCK_M": 32},  num_warps=4,  num_stages=1),
-    triton.Config({"BLOCK_M": 64},  num_warps=4,  num_stages=2),
+    triton.Config({"BLOCK_M": 64},  num_warps=4,  num_stages=1),
     # Medium tiles
-    triton.Config({"BLOCK_M": 128}, num_warps=8,  num_stages=2),
-    triton.Config({"BLOCK_M": 256}, num_warps=8,  num_stages=2),
-    triton.Config({"BLOCK_M": 256}, num_warps=16, num_stages=2),
+    triton.Config({"BLOCK_M": 128}, num_warps=8,  num_stages=1),
+    triton.Config({"BLOCK_M": 256}, num_warps=8,  num_stages=1),
+    triton.Config({"BLOCK_M": 256}, num_warps=16, num_stages=1),
     # Large tiles — exploit 232 KB shared mem
-    triton.Config({"BLOCK_M": 512}, num_warps=16, num_stages=2),
+    triton.Config({"BLOCK_M": 512}, num_warps=16, num_stages=1),
 ]
 
 
