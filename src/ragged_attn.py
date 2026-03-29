@@ -23,12 +23,14 @@ Target hardware
 Key improvements over SM75 (T4)
   1. BLOCK_M up to 512 — Blackwell's 232 KB shared mem/SM removes the spill
      cliff that caps T4 at BLOCK_M=128.
-  2. num_stages=2 enables step-0 K-load software-pipeline prefetch
-     (step 0 address = seq_start + q_off + m_range, fully data-independent).
-     Subsequent steps remain num_stages=1 (data-dependent gather addresses).
+  2. num_stages=1 throughout — the ancestor walk has data-dependent addresses,
+     so Triton's software pipelining cannot help and in fact causes
+     CompilationError on SM 12.0 for certain autotune-key combos.
   3. BF16 natively accelerated on Blackwell tensor cores; added bfloat16
-     precision path (auto-cast to fp16 on SM75 for compat).
-  4. Large L2 cache keeps K/V ancestor positions L2-resident across all
+     precision path with dtype-aware store (auto-cast to fp16 on SM75).
+  4. int64 pointer offsets — at B≥64, b=4, d=8 (5.6 M tokens) the byte
+     offsets exceed INT32_MAX (2 GB), causing wrap-around on SM 12.0.
+  5. Large L2 cache keeps K/V ancestor positions L2-resident across all
      Q-tiles — scatter-gather latency ≈ 0.
 ─────────────────────────────────────────────────────────────────────────────
 
@@ -269,7 +271,11 @@ def _ragged_attn_sparse_kernel(
     m_range  = tl.arange(0, BLOCK_M)
     d_range  = tl.arange(0, HEAD_DIM)
     valid_q  = (m_range + q_off) < seq_len       # [BLOCK_M]
-    q_global = seq_start + q_off + m_range        # [BLOCK_M] absolute indices
+    # int64 offsets: at B=64, b=4, d=8 total_tokens≈5.6 M → byte offsets
+    # exceed INT32_MAX (2 GB).  Triton multiplies element offsets by
+    # sizeof(dtype) internally; keeping offsets int32 causes wrap-around
+    # and illegal-memory-access on SM 12.0.
+    q_global = (seq_start + q_off + m_range).to(tl.int64)  # [BLOCK_M]
 
     # ── Load Q tile  [BLOCK_M, HEAD_DIM]  fp16 ─────────────────────────────
     q_ptrs = (Q_ptr
@@ -277,6 +283,7 @@ def _ragged_attn_sparse_kernel(
               + head_idx          * stride_qh
               + d_range  [None,:] * stride_qd)
     q = tl.load(q_ptrs, mask=valid_q[:, None], other=0.0)
+    _out_dtype = q.dtype          # fp16 or bf16 — used for the output store
 
     # ── Flash-Attention-2 online softmax state ──────────────────────────────
     m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
@@ -304,7 +311,7 @@ def _ragged_attn_sparse_kernel(
     for _step in range(MAX_DEPTH + 1):      # constexpr → fully unrolled
 
         is_new = (cur != prev) & valid_q    # [BLOCK_M]
-        kv_abs = seq_start + cur            # [BLOCK_M] absolute token indices
+        kv_abs = (seq_start + cur).to(tl.int64)  # int64 for >2 GB tensors
 
         # ── Scatter-gather K[ancestor]  [BLOCK_M, HEAD_DIM]  fp16 ──────────
         # Different query rows load from different positions — scattered.
@@ -350,7 +357,7 @@ def _ragged_attn_sparse_kernel(
               + q_global[:, None] * stride_ot
               + head_idx          * stride_oh
               + d_range  [None,:] * stride_od)
-    tl.store(o_ptrs, acc.to(tl.float16), mask=valid_q[:, None])
+    tl.store(o_ptrs, acc.to(_out_dtype), mask=valid_q[:, None])
 
 
 # ---------------------------------------------------------------------------
