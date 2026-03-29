@@ -126,7 +126,7 @@ def device_info() -> dict:
     if is_blackwell:
         arch = "Blackwell"
     elif is_ada:
-        arch = "Ada Lovelace"
+        arch = "Lovelace"
     elif sm >= (8, 0):
         arch = "Ampere"
     elif sm >= (7, 5):

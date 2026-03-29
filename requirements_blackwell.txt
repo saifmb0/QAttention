@@ -1,5 +1,4 @@
 # Requirements for RTX PRO 6000 Blackwell Server Edition (SM 12.0, 94 GB GDDR7)
-# Also works on Ada Lovelace (SM 8.9) — autotune tier selected at runtime.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Core toolchain ────────────────────────────────────────────────────────────

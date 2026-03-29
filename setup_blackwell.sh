@@ -3,7 +3,6 @@
 # setup_blackwell.sh
 # Bootstrap a fresh Ubuntu instance for sd-ragged (blackwell branch)
 # Target: NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB  (SM 12.0, GDDR7)
-# Also works on Ada Lovelace (SM 8.9) and other CUDA 11.6+ GPUs.
 #
 # Usage:
 #   bash setup_blackwell.sh              # full setup
@@ -188,7 +187,7 @@ if torch.cuda.is_available():
     if sm >= (12, 0):
         arch, tier = 'Blackwell', 'SM120 configs'
     elif sm >= (8, 9):
-        arch, tier = 'Ada Lovelace', 'SM89 configs'
+        arch, tier = 'Lovelace', 'SM89 configs'
     elif sm >= (8, 0):
         arch, tier = 'Ampere', 'SM75 configs'
     elif sm >= (7, 5):

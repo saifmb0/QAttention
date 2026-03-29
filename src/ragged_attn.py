@@ -5,28 +5,20 @@ Triton ragged attention — ancestor-sparse Flash Attention for tree-structured
 speculative decoding.
 
 Target hardware : SM75  (NVIDIA T4, Kaggle 2×T4) — original
-                  SM89  (NVIDIA RTX 6000 ADA PRO, Ada Lovelace) — intermediate
                   SM120 (NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB) — "blackwell" branch
 Precision       : float16 or bfloat16 input/output, float32 accumulation
 
 ─────────────────────────────────────────────────────────────────────────────
-Blackwell / Ada Lovelace optimisation notes  — RTX PRO 6000 Blackwell (SM 12.0)
+Blackwell optimisation notes  — RTX PRO 6000 Blackwell Server Edition (SM 12.0)
 ─────────────────────────────────────────────────────────────────────────────
 
-Actual target hardware (this branch)
+Target hardware
   Architecture  : Blackwell (GB202)
   CUDA SM       : 12.0
   VRAM          : 94 GB GDDR7
-  Shared mem/SM : up to 232 KB per block  (2× Ada, 3.6× Turing)
+  Shared mem/SM : up to 232 KB per block  (3.6× Turing T4)
   Regs/SM       : 65 536
   Warp size     : 32
-
-  Ada Lovelace (SM 8.9) is also accelerated — configs selected at runtime.
-
-Config tiers (selected at runtime by _get_autotune_configs())
-  SM 12.0 (Blackwell) : BLOCK_M ≤ 512,  num_warps ≤ 16,  num_stages=2
-  SM  8.9 (Ada)       : BLOCK_M ≤ 256,  num_warps ≤ 16,  num_stages=2
-  SM  7.5 (Turing/T4) : BLOCK_M ≤ 128,  num_warps ≤  8,  num_stages=1
 
 Key improvements over SM75 (T4)
   1. BLOCK_M up to 512 — Blackwell's 232 KB shared mem/SM removes the spill
@@ -34,10 +26,10 @@ Key improvements over SM75 (T4)
   2. num_stages=2 enables step-0 K-load software-pipeline prefetch
      (step 0 address = seq_start + q_off + m_range, fully data-independent).
      Subsequent steps remain num_stages=1 (data-dependent gather addresses).
-  3. BF16 natively accelerated on Blackwell and Ada tensor cores; added
-     bfloat16 precision path (auto-cast to fp16 on SM75 for compat).
-  4. Large L2 cache (Blackwell: ≥ 32 MB; Ada: 96 MB) keeps K/V ancestor
-     positions L2-resident across all Q-tiles — scatter-gather latency ≈ 0.
+  3. BF16 natively accelerated on Blackwell tensor cores; added bfloat16
+     precision path (auto-cast to fp16 on SM75 for compat).
+  4. Large L2 cache keeps K/V ancestor positions L2-resident across all
+     Q-tiles — scatter-gather latency ≈ 0.
 ─────────────────────────────────────────────────────────────────────────────
 
 ─────────────────────────────────────────────────────────────────────────────
@@ -157,7 +149,7 @@ _SPARSE_SM75_CONFIGS = [
 ]
 
 # ---------------------------------------------------------------------------
-# SM89 autotune configs — Ada Lovelace (e.g. RTX 6000 ADA PRO, L40S)
+# SM89 autotune configs — intermediate fallback for SM 8.x GPUs
 #
 # Differences from SM75:
 #   • Large L2 (96 MB on Ada) → K/V ancestor positions hot in L2
@@ -210,9 +202,9 @@ def _get_autotune_configs() -> list:
     """Select autotune config set based on the current CUDA device's SM.
 
     Tiers:
-      SM 12.x (Blackwell)  -> _SPARSE_SM120_CONFIGS
-      SM  8.9 (Ada)        -> _SPARSE_SM89_CONFIGS
-      SM  7.5 (Turing/T4)  -> _SPARSE_SM75_CONFIGS
+      SM 12.x (Blackwell)  -> _SPARSE_SM120_CONFIGS  [primary target]
+      SM  8.x              -> _SPARSE_SM89_CONFIGS   [intermediate fallback]
+      other                -> _SPARSE_SM75_CONFIGS   [legacy fallback]
     """
     if not torch.cuda.is_available():
         return _SPARSE_SM75_CONFIGS

@@ -3,7 +3,6 @@
 # run_blackwell.sh
 # Single entry-point for the sd-ragged blackwell branch.
 # Target: NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB  (SM 12.0 Blackwell)
-# Also works on Ada Lovelace (SM 8.9) and other CUDA 11.6+ GPUs.
 #
 # Stages (all on by default):
 #   1 — smoke   : Python smoke test (kernel launches, shapes correct)
@@ -73,7 +72,7 @@ if torch.cuda.is_available():
     if sm >= (12, 0):
         tier = 'SM120 configs active (Blackwell)'
     elif sm >= (8, 9):
-        tier = 'SM89 configs active (Ada Lovelace)'
+        tier = 'SM89 configs active (Lovelace)'
     else:
         tier = 'SM75 configs active (Turing/other)'
     print(f"  Config tier: {tier}")
@@ -117,7 +116,7 @@ $PYTHON scripts/benchmark_sota.py "${SOTA_ARGS[@]}" && ok "SOTA benchmark comple
 # ─── Stage 4 — Roofline profiler ─────────────────────────────────────────────
 if [[ $SKIP_PROFILE -eq 0 ]]; then
     section "Stage 4 / 4 — Roofline profiler"
-    $PYTHON scripts/profile_kernel.py --out-dir "$OUT_DIR" \
+    $PYTHON scripts/profile_kernel.py --csv "$OUT_DIR/profile.csv" \
         && ok "Profiler complete" \
         || warn "Profiler failed or not available — skipping (use --skip-profile to suppress)"
 else

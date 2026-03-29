@@ -1,8 +1,7 @@
 # sd-ragged — **blackwell** branch
 
 Ancestor-sparse Flash Attention for speculative-decoding verification,
-optimised for the **NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB** (SM 12.0, Blackwell).
-Also accelerated on Ada Lovelace (SM 8.9) — Triton autotune tier selected at runtime.
+optimised for the **NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB** (SM 12.0).
 
 ---
 
@@ -27,22 +26,22 @@ L2-resident across all Q-tiles for typical speculative-decoding batches.
 
 ### 1 — Triton autotune configs (`src/ragged_attn.py`)
 
-| Param | SM 7.5 (Turing/T4) | SM 8.9 (Ada) | SM 12.0 (Blackwell) |
-|---|---|---|---|
-| `BLOCK_M` candidates | 16 / 32 / 64 / 128 | 32 / 64 / 128 / **256** | 32 / 64 / 128 / 256 / **512** |
-| `num_warps` | 2 / 4 / 8 | 4 / 8 / **16** | 4 / 8 / **16** |
-| `num_stages` | 1 | **2** | **2** |
+| Param | SM 7.5 (T4, legacy) | **SM 12.0 (Blackwell)** |
+|---|---|---|
+| `BLOCK_M` candidates | 16 / 32 / 64 / 128 | 32 / 64 / 128 / 256 / **512** |
+| `num_warps` | 2 / 4 / 8 | 4 / 8 / **16** |
+| `num_stages` | 1 | **2** (step-0 prefetch) |
 
-`_get_autotune_configs()` selects the correct tier at runtime from
-`torch.cuda.get_device_properties().major/minor`:
-- SM ≥ 12.0 → `_SPARSE_SM120_CONFIGS` **(Blackwell — this GPU)**
-- SM ≥  8.9 → `_SPARSE_SM89_CONFIGS`  (Ada Lovelace)
-- otherwise  → `_SPARSE_SM75_CONFIGS`  (Turing)
+`BLOCK_M=512` is enabled by Blackwell's 232 KB shared memory per SM
+(vs 64 KB on T4), eliminating register spill at `HEAD_DIM=64`.
+
+`_get_autotune_configs()` selects the config set at runtime from
+`torch.cuda.get_device_properties().major/minor`.
 
 ### 2 — BF16 support
 
 `ragged_attention()` now accepts `torch.bfloat16` tensors.
-On SM 8.9, BF16 is natively accelerated by Ada tensor cores.
+On SM 12.0 (Blackwell), BF16 is natively accelerated by Blackwell tensor cores.
 On SM 7.5 (T4), BF16 inputs are silently cast to FP16 before launch
 and cast back on return, preserving backward compat.
 
