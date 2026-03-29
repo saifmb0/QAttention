@@ -33,7 +33,9 @@ Grid
   axis 1 : M-tile index within the *global* padded range
             → exit early if tile_start >= L_i  (sparse, SM75-safe)
 
-BLOCK_M and BLOCK_N are 64 for SM75 (fits inside 64 KB SRAM per SM).
+BLOCK_M / BLOCK_N are chosen by @triton.autotune.  SM75 (T4) configs run
+from 16×16 (highest occupancy, best for the short sequences in SD) up to
+64×16.  The autotune key is HEAD_DIM so Triton re-tunes once per head size.
 
 Public API
 ----------
@@ -57,9 +59,32 @@ import triton.language as tl
 
 
 # ---------------------------------------------------------------------------
-# Triton kernel
+# Triton kernel  (autotuned for SM75 / T4)
 # ---------------------------------------------------------------------------
 
+# SM75 (Turing) SRAM budget: 64 KB per SM.
+# For BLOCK_M=16, BLOCK_N=16, HEAD_DIM=64 (fp16):
+#   Q    : 16×64×2 =  2 KB
+#   K/V  :           2+2 KB  (loaded per N-tile, not resident simultaneously)
+#   S/P  : 16×16×4 =  1 KB  (fp32)
+#   acc  : 16×64×4 =  4 KB  (fp32)
+#   Total ≈ 11 KB → 4–5 CTAs/SM vs. 1 CTA/SM at BLOCK=64 → much higher
+#   occupancy, which is the dominant factor for short SD sequences.
+_SM75_AUTOTUNE_CONFIGS = [
+    # (BLOCK_M, BLOCK_N, num_warps, num_stages)
+    # Small blocks — highest occupancy, best for N < 64
+    triton.Config({"BLOCK_M": 16, "BLOCK_N": 16}, num_warps=2, num_stages=4),
+    triton.Config({"BLOCK_M": 16, "BLOCK_N": 32}, num_warps=2, num_stages=4),
+    # Medium blocks — balanced for N 64-256
+    triton.Config({"BLOCK_M": 32, "BLOCK_N": 16}, num_warps=4, num_stages=3),
+    triton.Config({"BLOCK_M": 32, "BLOCK_N": 32}, num_warps=4, num_stages=2),
+    # Wider N-tile — good when K/V rows >> M rows (tall trees)
+    triton.Config({"BLOCK_M": 16, "BLOCK_N": 64}, num_warps=4, num_stages=2),
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 16}, num_warps=4, num_stages=2),
+]
+
+
+@triton.autotune(configs=_SM75_AUTOTUNE_CONFIGS, key=["HEAD_DIM"])
 @triton.jit
 def _ragged_attn_fwd_kernel(
     # ---- packed token buffers ----
@@ -204,17 +229,11 @@ def _ragged_attn_fwd_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Block-size selection for SM75 (T4)
+# Block-size defaults (used only when calling kernel directly, not via
+# ragged_attention() which uses the autotuned path)
 # ---------------------------------------------------------------------------
-# T4 SM75: 64 KB shared memory per SM, peak 65536 bytes
-# Per-CTA SRAM budget for BLOCK_M=64, BLOCK_N=64, HEAD_DIM=64 (fp16):
-#   Q tile : 64 × 64 × 2 = 8 KB
-#   K tile : 8 KB  (loaded in registers, but counts toward occupancy)
-#   V tile : 8 KB
-#   S/P    : 64 × 64 × 4 = 16 KB  (fp32)
-#   → ~40 KB → 1 CTA/SM with HEAD_DIM=64, or 32-wide N blocks for D=128
-_SM75_BLOCK_M  = 64
-_SM75_BLOCK_N  = 64
+_SM75_BLOCK_M = 16   # sensible starting point for SD sequence lengths
+_SM75_BLOCK_N = 16
 
 
 # ---------------------------------------------------------------------------
@@ -289,11 +308,12 @@ def ragged_attention(
     cu_seqlens: torch.Tensor,    # [B+1]  int32          CPU or CUDA
     packed_masks: torch.Tensor,  # [Σ L²] int8           CPU or CUDA
     cu_mask_offsets: torch.Tensor, # [B+1] int32         CPU or CUDA
-    BLOCK_M: int = _SM75_BLOCK_M,
-    BLOCK_N: int = _SM75_BLOCK_N,
 ) -> torch.Tensor:
     """
     Run ragged attention and return output O with same shape as Q.
+
+    BLOCK_M / BLOCK_N / num_warps / num_stages are chosen automatically by
+    @triton.autotune keyed on HEAD_DIM.  No manual block-size arg is needed.
 
     All tensors must live on the same CUDA device.
     fp16 input tensors are expected; output is fp16.
@@ -317,12 +337,13 @@ def ragged_attention(
     # Softmax scale
     scale = 1.0 / math.sqrt(D)
 
-    # Compute max sequence length for grid axis-1
+    # Compute max sequence length for the axis-1 grid bound.
+    # Grid is a lambda so it reads BLOCK_M from the autotune-selected config.
     seq_lens   = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
     max_seqlen = int(max(seq_lens)) if seq_lens else 1
-    n_m_tiles  = triton.cdiv(max_seqlen, BLOCK_M)
 
-    grid = (B * H, n_m_tiles)
+    # Lambda grid: axis-1 adapts to whichever BLOCK_M autotune picks
+    grid = lambda meta: (B * H, triton.cdiv(max_seqlen, meta["BLOCK_M"]))
 
     _ragged_attn_fwd_kernel[grid](
         Q, K, V, O,
@@ -337,10 +358,6 @@ def ragged_attention(
         max_seqlen,
         H=H,
         HEAD_DIM=D,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        num_warps=4,
-        num_stages=2,
     )
 
     return O
