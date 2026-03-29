@@ -69,22 +69,40 @@ $PYTHON --version
 $PIP --version
 
 # ─── 3. CUDA check + PyTorch ──────────────────────────────────────────────────
-CUDA_VER=$(nvcc --version 2>/dev/null | grep -oP "release \K[\d.]+" || echo "none")
+# Detection order:
+#  1. nvcc (present in devel images)
+#  2. /usr/local/cuda symlink version file (present in runtime images)
+#  3. nvidia-smi driver → infer CUDA compat version
+#  4. Blackwell-safe default: cu130
+CUDA_VER=$(nvcc --version 2>/dev/null | grep -oP "release \K[\d.]+")
+if [[ -z "$CUDA_VER" ]]; then
+    # Runtime images have a version file instead of nvcc
+    CUDA_VER=$(grep -oP 'CUDA Version \K[\d.]+' /usr/local/cuda/version.txt 2>/dev/null \
+               || grep -oP '"version"\s*:\s*"\K[0-9.]+' /usr/local/cuda/version.json 2>/dev/null)
+fi
+if [[ -z "$CUDA_VER" ]]; then
+    # Last resort: scan for versioned cuda directories
+    CUDA_VER=$(ls -d /usr/local/cuda-* 2>/dev/null \
+               | grep -oP 'cuda-\K[\d.]+' | sort -V | tail -1)
+fi
+[[ -z "$CUDA_VER" ]] && CUDA_VER="none"
 info "CUDA version: $CUDA_VER"
 
 # Pick the right torch index URL
-if [[ "$CUDA_VER" == 12.* ]]; then
+if [[ "$CUDA_VER" == 13.* ]]; then
+    TORCH_INDEX="https://download.pytorch.org/whl/cu130"
+elif [[ "$CUDA_VER" == 12.* ]]; then
     TORCH_INDEX="https://download.pytorch.org/whl/cu121"
 elif [[ "$CUDA_VER" == 11.* ]]; then
     TORCH_INDEX="https://download.pytorch.org/whl/cu118"
 else
-    TORCH_INDEX="https://download.pytorch.org/whl/cu121"
-    warn "Could not detect CUDA version; defaulting to cu121 PyTorch wheel."
+    TORCH_INDEX="https://download.pytorch.org/whl/cu130"
+    warn "Could not detect CUDA version; defaulting to cu130 (Blackwell SM 12.0)."
 fi
 
 info "Installing core requirements from: $TORCH_INDEX"
 $PIP install --quiet \
-    "torch>=2.2.0,<3.0.0" \
+    "torch>=2.2.0" \
     "triton>=2.3.0,<4.0.0" \
     --extra-index-url "$TORCH_INDEX"
 
