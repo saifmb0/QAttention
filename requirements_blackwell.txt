@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# sd-ragged  ·  blackwell branch
+# Requirements for RTX 6000 ADA PRO (SM 8.9 Ada Lovelace, 96 GB GDDR7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Core toolchain ────────────────────────────────────────────────────────────
+# PyTorch: CUDA 12.1 wheel (Ada Lovelace fully supported from 12.0+)
+torch>=2.2.0,<3.0.0
+triton>=2.3.0,<4.0.0          # SM 8.9 autotune configs available from 2.3
+
+# ── Numerical / data ─────────────────────────────────────────────────────────
+numpy>=1.24.0
+pandas>=2.0.0
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
+matplotlib>=3.7.0
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest>=7.4.0
+pytest-timeout>=2.1.0
+
+# ── OPTIONAL SOTA baseline libraries ─────────────────────────────────────────
+# Uncomment or install separately; benchmark gracefully skips if missing.
+#
+# FlashAttention-2
+#   Requires CUDA 11.6+ and a Pascal / Turing / Ampere / Ada / Hopper GPU.
+#   Build from source to pick up SM 8.9 optimisations:
+#     pip install flash-attn --no-build-isolation
+# flash-attn>=2.5.0
+#
+# FlashInfer — ragged-KV attention with tree-mask support
+#   Pre-built wheels for CUDA 12.1:
+#     pip install flashinfer -i https://flashinfer.ai/whl/cu121/torch2.3/
+# flashinfer>=0.1.0
+#
+# xformers — memory-efficient attention baseline
+#   Pre-built wheels available for most torch/CUDA combos:
+#     pip install xformers
+# xformers>=0.0.25

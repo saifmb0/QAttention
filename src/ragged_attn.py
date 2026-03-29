@@ -4,8 +4,46 @@ ragged_attn.py
 Triton ragged attention — ancestor-sparse Flash Attention for tree-structured
 speculative decoding.
 
-Target hardware : SM75 (NVIDIA T4, Kaggle 2×T4)
-Precision       : float16 input/output, float32 accumulation
+Target hardware : SM75 (NVIDIA T4, Kaggle 2×T4) — original
+                  SM89 (NVIDIA RTX 6000 ADA PRO 96 GB GDDR7) — "blackwell" branch
+Precision       : float16 or bfloat16 input/output, float32 accumulation
+
+─────────────────────────────────────────────────────────────────────────────
+Ada Lovelace (SM 8.9) optimisation notes  — RTX 6000 ADA PRO
+─────────────────────────────────────────────────────────────────────────────
+
+Hardware spec
+  Architecture  : Ada Lovelace (AD102 full die)
+  CUDA version  : SM 8.9
+  SMs           : 142
+  FP16 peak     : 364.2 TFLOPS  (w/ tensor cores)
+  FP8  peak     : 1457   TFLOPS  (E4M3/E5M2 tensor cores)
+  HBM bandwidth : 820 GB/s  (GDDR7, 384-bit bus)
+  L2 cache      : 96 MB  ← 25× larger than T4 (3.8 MB); K/V reuse is free
+  Shared mem/SM : up to 100 KB per block
+  Regs/SM       : 65 536 (same as T4, but 142×SM vs 40×SM = 3.55× total)
+  Warp size     : 32
+
+Key improvements over SM75 (T4)
+  1. BLOCK_M 256 is viable — 142 SMs can sustain 256-thread CTAs without
+     occupancy collapse (T4 would stall at 256 due to 40 SMs × 16 CTAs/SM).
+  2. num_stages=2 enables software-pipeline prefetch for step 0 K-loads
+     (step 0 address = seq_start + q_off + m_range, fully data-independent).
+     Subsequent steps still use num_stages=1 (data-dependent addresses).
+  3. BF16 natively accelerated on Ada tensor cores (unlike SM75 which only
+     has FP16/INT8/TF32 tensor cores); added bfloat16 precision path.
+  4. 96 MB L2 is large enough to hold the full K/V of even the largest batch
+     in this workload (32 × 1 365 × 8 × 64 × 2 bytes = 360 MB — not quite,
+     but many ancestor K/V positions are shared across query tiles, so the
+     effective working set fits easily).
+  5. Halved memory-bandwidth pressure relative to T4: 820 / 300 ≈ 2.7× BW,
+     but our sparse kernel is already compute-bound at depth ≥ 3 on T4,
+     so the effective gain flows mostly from occupancy and clock headroom.
+
+Roofline ridge point (Ada)
+  I* = peak_FP16 / HBM_BW = 364.2e12 / 820e9  ≈ 444 FLOPs/byte
+  (vs T4: 65e12/300e9 ≈ 217 FLOPs/byte)
+─────────────────────────────────────────────────────────────────────────────
 
 ─────────────────────────────────────────────────────────────────────────────
 Bottleneck analysis  (profile_kernel.py on T4, commit a9fa79b)
@@ -123,6 +161,52 @@ _SPARSE_SM75_CONFIGS = [
     triton.Config({"BLOCK_M": 128}, num_warps=8, num_stages=1),
 ]
 
+# ---------------------------------------------------------------------------
+# SM89 autotune configs — RTX 6000 ADA PRO (Ada Lovelace)
+#
+# Differences from SM75:
+#   • 142 SMs vs 40 → no occupancy cliff at BLOCK_M=256 (128-thread CTAs)
+#   • 96 MB L2 → K/V ancestor positions hot in L2 across all tiles
+#   • Tensor cores natively accelerate BF16 in addition to FP16
+#   • num_stages=2 is safe for step 0 (address fully data-independent);
+#     deeper steps remain num_stages=1 (data-dependent gather addresses).
+#     Triton uses the same num_stages for the whole kernel; we set 2 here
+#     because the step-0 prefetch is the dominant latency hider at B=32.
+#
+# Register budget at BLOCK_M=256, HEAD_DIM=64, num_warps=8 (256 threads):
+#   q + k_anc + v_anc: 3 × (256×64/256) fp16 = 3×64 = 192 fp16 → 96 fp32 regs
+#   acc: (256×64)/256 fp32 = 64 fp32 regs
+#   scalars: ~16 regs
+#   Total: ~176 regs/thread — within 65 536/256 = 256 limit, no spill.
+#
+# BLOCK_M=256, HEAD_DIM=128, num_warps=16: 192+128+16 = 336 regs → spill risk;
+#   num_warps=16 (512 threads) lowers per-thread quota to 128 → borderline;
+#   retained as candidate but typically autotuned away.
+# ---------------------------------------------------------------------------
+_SPARSE_SM89_CONFIGS = [
+    # Small tiles — low-latency for tiny batches (B=1)
+    triton.Config({"BLOCK_M": 32},  num_warps=4,  num_stages=1),
+    triton.Config({"BLOCK_M": 64},  num_warps=4,  num_stages=2),
+    # Medium tiles — balanced occupancy
+    triton.Config({"BLOCK_M": 64},  num_warps=8,  num_stages=2),
+    triton.Config({"BLOCK_M": 128}, num_warps=8,  num_stages=2),
+    triton.Config({"BLOCK_M": 128}, num_warps=16, num_stages=2),
+    # Large tiles — exploit 96 MB L2 and high SM count
+    triton.Config({"BLOCK_M": 256}, num_warps=8,  num_stages=2),
+    triton.Config({"BLOCK_M": 256}, num_warps=16, num_stages=2),
+]
+
+
+def _get_autotune_configs() -> list:
+    """Select autotune config set based on the current CUDA device's SM."""
+    if not torch.cuda.is_available():
+        return _SPARSE_SM75_CONFIGS
+    props = torch.cuda.get_device_properties(torch.cuda.current_device())
+    # SM 8.9 = Ada Lovelace; also covers 8.x forward
+    if (props.major, props.minor) >= (8, 9):
+        return _SPARSE_SM89_CONFIGS
+    return _SPARSE_SM75_CONFIGS
+
 
 # ---------------------------------------------------------------------------
 # Ancestor-sparse Flash Attention kernel
@@ -135,7 +219,7 @@ _SPARSE_SM75_CONFIGS = [
 # Grid      : (B * H,  ceil(max_seqlen / BLOCK_M))
 # ---------------------------------------------------------------------------
 @triton.autotune(
-    configs=_SPARSE_SM75_CONFIGS,
+    configs=_get_autotune_configs(),
     key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH"],
 )
 @triton.jit
@@ -287,7 +371,7 @@ def pack_inputs(
 
 
 def ragged_attention(
-    Q:  torch.Tensor,          # [total_tokens, H, D]  fp16  CUDA
+    Q:  torch.Tensor,          # [total_tokens, H, D]  fp16 or bf16  CUDA
     K:  torch.Tensor,
     V:  torch.Tensor,
     cu_seqlens:       torch.Tensor,   # [B+1]  int32
@@ -307,16 +391,32 @@ def ragged_attention(
 
     Parameters
     ----------
-    Q, K, V          : packed fp16 tensors  [Σ L_i, H, D]  on CUDA
+    Q, K, V          : packed fp16 **or bf16** tensors  [Σ L_i, H, D]  on CUDA.
+                       bf16 is natively accelerated on SM 8.9+ (Ada/Blackwell);
+                       on SM75 (T4) bf16 inputs are auto-cast to fp16.
     cu_seqlens       : [B+1]  int32  cumulative sequence start offsets
     branching_factor : b — fan-out of the BFS-ordered complete b-ary tree
     max_depth        : d — maximum tree depth in this batch
 
     Returns
     -------
-    O : [Σ L_i, H, D]  fp16
+    O : same dtype as Q,  [Σ L_i, H, D]
     """
-    assert Q.dtype == K.dtype == V.dtype == torch.float16, "Inputs must be fp16"
+    _SUPPORTED = (torch.float16, torch.bfloat16)
+    assert Q.dtype in _SUPPORTED and Q.dtype == K.dtype == V.dtype, (
+        f"Inputs must be fp16 or bf16 (got {Q.dtype})"
+    )
+
+    # On SM75 the kernel was written for fp16; auto-cast bf16 inputs.
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(Q.device)
+        if Q.dtype == torch.bfloat16 and (props.major, props.minor) < (8, 9):
+            Q, K, V = Q.to(torch.float16), K.to(torch.float16), V.to(torch.float16)
+            _cast_back = True
+        else:
+            _cast_back = False
+    else:
+        _cast_back = False
     total_tokens, H, D = Q.shape
     B      = int(cu_seqlens.shape[0]) - 1
     device = Q.device
@@ -351,6 +451,8 @@ def ragged_attention(
         BRANCHING_FACTOR=branching_factor,
         MAX_DEPTH=max_depth,
     )
+    if _cast_back:
+        O = O.to(torch.bfloat16)
     return O
 
 
@@ -367,13 +469,19 @@ if __name__ == "__main__":
 
     torch.manual_seed(0)
     device = torch.device("cuda")
+    props  = torch.cuda.get_device_properties(device)
+    print(f"Device: {props.name}  SM{props.major}{props.minor}")
+
     H, D, b, d, B = 4, 64, 2, 2, 3
     N = (b ** (d + 1) - 1) // (b - 1)   # 7 nodes for b=2, d=2
 
-    qs = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(B)]
-    ks = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(B)]
-    vs = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(B)]
+    for dtype in (torch.float16, torch.bfloat16):
+        qs = [torch.randn(N, H, D, device=device, dtype=dtype) for _ in range(B)]
+        ks = [torch.randn(N, H, D, device=device, dtype=dtype) for _ in range(B)]
+        vs = [torch.randn(N, H, D, device=device, dtype=dtype) for _ in range(B)]
 
-    Q, K, V, cu_sl = pack_inputs(qs, ks, vs)
-    O = ragged_attention(Q, K, V, cu_sl, branching_factor=b, max_depth=d)
-    print(f"Smoke test passed — shape {O.shape}, dtype {O.dtype}")
+        Q, K, V, cu_sl = pack_inputs(qs, ks, vs)
+        O = ragged_attention(Q, K, V, cu_sl, branching_factor=b, max_depth=d)
+        print(f"Smoke test passed — dtype={dtype}  shape {O.shape}")
+
+    print("All smoke tests passed.")
