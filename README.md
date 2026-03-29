@@ -194,14 +194,36 @@ on-CPU before the H2D transfer, saving ~20–50 µs of blocking overhead per cal
 
 ### Correctness: 41/41 tests pass
 
-All parametric correctness tests (`B ∈ {1,2,4,8}`, `b ∈ {2,3,4}`,
-`d ∈ {1,2,3}`, plus standalone `test_head_dims`, `test_single_token`,
-`test_linear_chain`) pass against PyTorch SDPA reference with
-`atol=5e-2, rtol=5e-2`.
+All parametric correctness tests (`B ∈ {1,2,4,8}`, `b ∈ {1,2,3}`,
+`d ∈ {1,2,3}`, plus standalone `test_head_dims[32,64,128]`,
+`test_single_token` (b=1,d=0), and `test_linear_chain` (b=1,d=8))
+pass against PyTorch SDPA reference with `atol=1e-2, rtol=1e-2`.
+
+> **Setup**: `num_heads=4`, `head_dim=64` for the parametric grid;
+reference uses `enable_flash=False, enable_math=True,
+enable_mem_efficient=False` to force the math backend (always available
+on SM75 without cuDNN flash support).
 
 Test runtime: **21 seconds** (was 123 seconds with the dense kernel).
 
 ### Benchmark vs SDPA
+
+**What is timed.** Each measurement is the median of 50 CUDA-Event-timed
+calls (after 10 warmup iterations). The timed region covers the full
+`ragged_attention()` Python call — including `max_seqlen` computation and
+Triton kernel dispatch — but excludes `pack_inputs()`, which is
+pre-computed outside the timed region. Both kernels are timed by the same
+method for a fair comparison.
+
+**Batch uniformity.** Every sequence in a benchmark batch has the same
+complete *b*-ary tree of depth `d` (`seq_lens = [N] * B`). Variable-depth
+batching is not exercised in this sweep.
+
+**SDPA backend.** Baseline uses `enable_flash=False, enable_math=True,
+enable_mem_efficient=True`; PyTorch selects the faster of math and
+mem-efficient per config (math-only is forced in correctness tests only).
+
+---
 
 ```
 ── Speedup summary (mean over B) ──
@@ -214,27 +236,39 @@ tree_depth
 5                 1.05   2.28   9.12
 ```
 
-*Mean across B=1,2,4,8,16,32.*
+*Mean across B=1,2,4,8,16,32. H=8, D=64.*
 
-Selected highlights:
+Selected highlights (H=8, D=64):
 
-| B | b | d | N | Ragged | SDPA | Speedup | TFLOPS |
-|---|---|---|---|--------|------|---------|--------|
-| 1 | 4 | 5 | 1365 | 0.132 ms | 0.586 ms | **4.45×** | 29 |
-| 2 | 4 | 5 | 1365 | 0.166 ms | 0.906 ms | **5.47×** | 46 |
-| 4 | 4 | 5 | 1365 | 0.231 ms | 2.205 ms | **9.53×** | 66 |
-| 8 | 4 | 5 | 1365 | 0.359 ms | 4.330 ms | **12.06×** | 85 |
-| 16 | 4 | 5 | 1365 | 0.617 ms | 8.902 ms | **14.43×** | 99 |
-| 32 | 4 | 5 | 1365 | 1.138 ms | 18.262 ms | **16.05×** | **107** |
+| B | b | d | N | Ragged (ms) | SDPA (ms) | Speedup | Dense-equiv TFLOPS† |
+|---|---|---|---|-------------|-----------|---------|---------------------|
+| 1 | 4 | 5 | 1365 | 0.132 | 0.586 | **4.45×** | 29 |
+| 2 | 4 | 5 | 1365 | 0.166 | 0.906 | **5.47×** | 46 |
+| 4 | 4 | 5 | 1365 | 0.231 | 2.205 | **9.53×** | 66 |
+| 8 | 4 | 5 | 1365 | 0.359 | 4.330 | **12.06×** | 85 |
+| 16 | 4 | 5 | 1365 | 0.617 | 8.902 | **14.43×** | 99 |
+| 32 | 4 | 5 | 1365 | 1.138 | 18.262 | **16.05×** | **107** |
+
+† **Dense-equiv TFLOPS** = `4·B·N²·D·H / latency`. Uses the standard
+dense attention FLOP formula (`4·L²·D·H`) as the numerator — not the
+sparse kernel's actual `4·(d+1)·L·D·H` FMAs. This is a throughput
+proxy: it answers "how fast would a dense kernel need to run to match
+this latency?" It is **not** a hardware utilisation metric for the sparse
+kernel (which executes only ~0.5 GFLOPS; see Roofline below).
 
 ### Roofline analysis
 
-All configs are HBM-bound (`I = 3 FLOPs/B` < ridge point `I* = 217 FLOPs/B`).
-Measured util% converges to ~170–210% at large N, meaning the kernel achieves
-~50–60% of available HBM bandwidth. The residual ~1.7× gap over roofline is the
-**scattered access penalty**: at step s=0, each query loads its own distinct K
-row (64 independent cache lines for BLOCK_M=64), which achieves ~170 GB/s
-effective bandwidth vs 300 GB/s for a sequential stream.
+All configs are HBM-bound in the roofline sense:
+- Arithmetic intensity `I = 4·(d+1)·B·L·D·H / (8·L·D·H·B) ≈ 1–3 FLOPs/byte`
+- Ridge point `I* = 65 TFLOPS / 300 GB/s ≈ 217 FLOPs/byte`
+
+`util% = actual_ms / roofline_ms × 100`. At large N (b=4,d=5), measured
+util% converges to ~170–210%, meaning the kernel runs at ~50–60% of the
+HBM bandwidth spec (achieving ~170 GB/s vs 300 GB/s spec). The residual
+~1.7× gap over roofline is the **scattered access penalty**: each step
+loads `BLOCK_M` K-rows from scattered positions (one distinct cache line
+per query row), achieving ~170 GB/s effective bandwidth vs 300 GB/s for
+a sequential stream.
 
 At small N (N < 64), the ~0.13ms floor is Triton kernel dispatch latency vs
 cuDNN's pre-compiled ~0.09ms floor for SDPA. This gap is structural and closes
