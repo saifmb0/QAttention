@@ -233,7 +233,9 @@ def _make_ragged(B, N, H, D, device, dtype):
 
 def _make_padded(qs, ks, vs, masks_np, L_max, B, H, D, device, dtype):
     """Return (Q_pad, K_pad, V_pad, attn_bias) in [B, H, L, D]."""
-    NEG_INF = torch.finfo(torch.float32).min / 2
+    # Use the fill value appropriate for the target dtype to avoid overflow
+    # (float32.min/2 ≈ -8.5e37, which doesn't fit in fp16).
+    NEG_INF = torch.finfo(dtype).min / 2
 
     def _pad(ts):
         out = torch.zeros(B, L_max, H, D, device=device, dtype=dtype)
