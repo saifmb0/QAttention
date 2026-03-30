@@ -112,7 +112,7 @@ class RaggedAttnLayer(nn.Module):
 
         out = ragged_attention(Q, K, V, cu_seqlens,
                                branching_factor=branching_factor,
-                               depth=depth)                          # [T, H, D]
+                               max_depth=depth)                      # [T, H, D]
         out = out.view(total_tokens, self.H * self.D)
         out = self.o_proj(out)
         return residual + out
