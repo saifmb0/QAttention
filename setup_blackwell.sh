@@ -95,6 +95,8 @@ elif [[ "$CUDA_VER" == 12.* ]]; then
     TORCH_INDEX="https://download.pytorch.org/whl/cu121"
 elif [[ "$CUDA_VER" == 11.* ]]; then
     TORCH_INDEX="https://download.pytorch.org/whl/cu118"
+elif [[ "$CUDA_VER" == 13.* ]]; then
+    TORCH_INDEX="https://download.pytorch.org/whl/cu130"
 else
     TORCH_INDEX="https://download.pytorch.org/whl/cu130"
     warn "Could not detect CUDA version; defaulting to cu130 (Blackwell SM 12.0)."
@@ -111,7 +113,8 @@ $PIP install --quiet \
     "pandas>=2.0.0" \
     "matplotlib>=3.7.0" \
     "pytest>=7.4.0" \
-    "pytest-timeout>=2.1.0"
+    "pytest-timeout>=2.1.0" \
+    "ninja"        # required by torch cpp_extension's fast build path
 
 info "Core requirements installed."
 
@@ -142,28 +145,43 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
     elif [[ -z "${CUDA_HOME:-}" ]]; then
         warn "flash_attn skipped — nvcc / CUDA_HOME not available."
     else
-        info "Building FlashAttention-2 from source (may take 5–10 min) …"
-        # Ensure pip metadata reflects the torch we actually want to compile against.
-        # On images that pre-install torch 2.8+cu129, the metadata persists even
-        # after pip installs 2.11+cu130 into a different dist-info location,
-        # causing flash_attn's setup.py to link against the 2.8 ABI headers.
-        # Force-reinstalling torch here makes the metadata unambiguous before the build.
-        info "Pinning torch to $TORCH_INDEX before flash-attn source build …"
-        $PIP install --quiet --force-reinstall \
-            "torch>=2.2.0" \
-            --extra-index-url "$TORCH_INDEX" \
-        || warn "torch force-reinstall failed — flash-attn may link against wrong ABI"
+        # Pre-check: nvcc version must match torch.version.cuda.
+        # torch cpp_extension hard-fails if they differ (saves 5-min wasted compile).
+        NVCC_VER=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+')
+        TORCH_CUDA_VER=$($PYTHON -c "import torch; print(torch.version.cuda or '')" 2>/dev/null)
+        # Normalise: compare only major.minor (e.g. 12.8 vs 13.0)
+        NVCC_MAJOR=$(echo "${NVCC_VER:-0}" | cut -d. -f1)
+        TORCH_MAJOR=$(echo "${TORCH_CUDA_VER:-0}" | cut -d. -f1)
+        if [[ -n "$NVCC_VER" && "$NVCC_VER" != "$TORCH_CUDA_VER" ]]; then
+            warn "flash_attn source build skipped:"
+            warn "  system nvcc = CUDA $NVCC_VER  |  torch compiled with CUDA $TORCH_CUDA_VER"
+            warn "  These must match for torch cpp_extension to build CUDA extensions."
+            warn "  Install the matching CUDA $TORCH_CUDA_VER toolkit (with nvcc) and re-run,"
+            warn "  or use a Docker image where system CUDA matches torch.version.cuda."
+        else
+            info "Building FlashAttention-2 from source (may take 5–10 min) …"
+            # Ensure pip metadata reflects the torch we actually want to compile against.
+            # On images that pre-install torch 2.8+cu129, the metadata persists even
+            # after pip installs 2.11+cu130 into a different dist-info location,
+            # causing flash_attn's setup.py to link against the 2.8 ABI headers.
+            # Force-reinstalling torch here makes the metadata unambiguous before the build.
+            info "Pinning torch to $TORCH_INDEX before flash-attn source build …"
+            $PIP install --quiet --force-reinstall \
+                "torch>=2.2.0" \
+                --extra-index-url "$TORCH_INDEX" \
+            || warn "torch force-reinstall failed — flash-attn may link against wrong ABI"
 
-        # --no-binary :force source build (avoids picking up a pre-built wheel
-        #   compiled against a different torch/CUDA ABI)
-        # --no-cache-dir  :  prevents reuse of a previously cached incompatible wheel
-        # --no-build-isolation : use the already-installed torch for compilation
-        MAX_JOBS=4 $PIP install flash-attn \
-            --no-binary flash-attn \
-            --no-cache-dir \
-            --no-build-isolation \
-            && info "flash_attn installed." \
-            || warn "flash_attn build failed — benchmark will skip FA2 comparison."
+            # --no-binary :force source build (avoids picking up a pre-built wheel
+            #   compiled against a different torch/CUDA ABI)
+            # --no-cache-dir  :  prevents reuse of a previously cached incompatible wheel
+            # --no-build-isolation : use the already-installed torch for compilation
+            MAX_JOBS=4 $PIP install flash-attn \
+                --no-binary flash-attn \
+                --no-cache-dir \
+                --no-build-isolation \
+                && info "flash_attn installed." \
+                || warn "flash_attn build failed — benchmark will skip FA2 comparison."
+        fi
     fi
 
     # FlashInfer — try multiple CUDA/torch index URLs
