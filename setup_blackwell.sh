@@ -136,13 +136,21 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
     fi
 
     # FlashAttention-2
-    if $PYTHON -c "import flash_attn" 2>/dev/null; then
-        info "flash_attn already installed — skipping."
+    # Check flash_attn is not only present but actually loads without ABI errors
+    if $PYTHON -c "from flash_attn import flash_attn_func" 2>/dev/null; then
+        info "flash_attn already installed and functional — skipping."
     elif [[ -z "${CUDA_HOME:-}" ]]; then
         warn "flash_attn skipped — nvcc / CUDA_HOME not available."
     else
-        info "Building FlashAttention-2 (may take 5–10 min) …"
-        $PIP install --quiet flash-attn --no-build-isolation \
+        info "Building FlashAttention-2 from source (may take 5–10 min) …"
+        # --no-binary :force source build (avoids picking up a pre-built wheel
+        #   compiled against a different torch/CUDA ABI)
+        # --no-cache-dir  :  prevents reuse of a previously cached incompatible wheel
+        # --no-build-isolation : use the already-installed torch for compilation
+        MAX_JOBS=4 $PIP install flash-attn \
+            --no-binary flash-attn \
+            --no-cache-dir \
+            --no-build-isolation \
             && info "flash_attn installed." \
             || warn "flash_attn build failed — benchmark will skip FA2 comparison."
     fi

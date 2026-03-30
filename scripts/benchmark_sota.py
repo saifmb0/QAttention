@@ -107,7 +107,16 @@ MAX_DENSE_TOKENS          = 8_000        # N per sequence; ~6 GB attn matrix at 
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _has(pkg: str) -> bool:
-    return importlib.util.find_spec(pkg) is not None
+    """Return True only if the package is present AND can actually be imported.
+    A simple find_spec() check is not enough — broken wheels (e.g. flash_attn
+    compiled against a different torch ABI) pass find_spec but raise at import."""
+    if importlib.util.find_spec(pkg) is None:
+        return False
+    try:
+        __import__(pkg)
+        return True
+    except Exception:
+        return False
 
 
 HAS_FLASH_ATTN  = _has("flash_attn")
@@ -236,10 +245,12 @@ def _make_padded(qs, ks, vs, masks_np, L_max, B, H, D, device, dtype):
     K_p = _pad(ks)
     V_p = _pad(vs)
 
-    bias = torch.full((B, 1, L_max, L_max), NEG_INF, device=device)
+    # bias must match Q dtype — flash / mem-efficient backends reject float32 bias
+    # when queries are fp16/bf16.
+    bias = torch.full((B, 1, L_max, L_max), NEG_INF, device=device, dtype=dtype)
     for i, m in enumerate(masks_np):
         Li = m.shape[0]
-        tb = torch.from_numpy(m.astype(np.float32)).to(device)
+        tb = torch.from_numpy(m.astype(np.float32)).to(device=device, dtype=dtype)
         bias[i, 0, :Li, :Li] = torch.where(tb.bool(),
                                             torch.zeros_like(tb),
                                             torch.full_like(tb, NEG_INF))
