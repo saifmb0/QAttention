@@ -1,0 +1,173 @@
+[ 25/192]  B= 2 b=2 d=1 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.58×
+  [ 26/192]  B= 2 b=2 d=2 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.162ms  sdpa_flash=0.041ms │ spdup_vs_math=2.56×
+  [ 27/192]  B= 2 b=2 d=3 │ ragged=0.063ms  bf16=0.063ms │ sdpa_math=0.165ms  sdpa_flash=0.042ms │ spdup_vs_math=2.61×
+  [ 28/192]  B= 2 b=2 d=4 │ ragged=0.063ms  bf16=0.063ms │ sdpa_math=0.162ms  sdpa_flash=0.042ms │ spdup_vs_math=2.56×
+  [ 29/192]  B= 2 b=2 d=5 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.164ms  sdpa_flash=0.042ms │ spdup_vs_math=2.60×
+  [ 30/192]  B= 2 b=2 d=6 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.190ms  sdpa_flash=0.050ms │ spdup_vs_math=3.01×
+  [ 31/192]  B= 2 b=2 d=7 │ ragged=0.069ms  bf16=0.077ms │ sdpa_math=0.186ms  sdpa_flash=0.044ms │ spdup_vs_math=2.70×
+  [ 32/192]  B= 2 b=2 d=8 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.172ms  sdpa_flash=0.047ms │ spdup_vs_math=2.70×
+  [ 33/192]  B= 2 b=3 d=1 │ ragged=0.063ms  bf16=0.063ms │ sdpa_math=0.161ms  sdpa_flash=0.041ms │ spdup_vs_math=2.57×
+  [ 34/192]  B= 2 b=3 d=2 │ ragged=0.063ms  bf16=0.063ms │ sdpa_math=0.165ms  sdpa_flash=0.041ms │ spdup_vs_math=2.63×
+  [ 35/192]  B= 2 b=3 d=3 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.59×
+  [ 36/192]  B= 2 b=3 d=4 │ ragged=0.062ms  bf16=0.063ms │ sdpa_math=0.164ms  sdpa_flash=0.042ms │ spdup_vs_math=2.63×
+  [ 37/192]  B= 2 b=3 d=5 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.165ms  sdpa_flash=0.048ms │ spdup_vs_math=2.59×
+  [ 38/192]  B= 2 b=3 d=6 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.546ms  sdpa_flash=0.065ms │ spdup_vs_math=8.53×
+  [ 39/192]  B= 2 b=3 d=7 │ ragged=0.069ms  bf16=0.070ms │ sdpa_math=5.897ms  sdpa_flash=0.143ms │ spdup_vs_math=85.36×
+  [ 40/192]  B= 2 b=3 d=8 │ ragged=0.088ms  bf16=0.093ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [ 41/192]  B= 2 b=4 d=1 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.162ms  sdpa_flash=0.042ms │ spdup_vs_math=2.53×
+  [ 42/192]  B= 2 b=4 d=2 │ ragged=0.063ms  bf16=0.063ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.60×
+  [ 43/192]  B= 2 b=4 d=3 │ ragged=0.064ms  bf16=0.063ms │ sdpa_math=0.165ms  sdpa_flash=0.042ms │ spdup_vs_math=2.59×
+  [ 44/192]  B= 2 b=4 d=4 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.163ms  sdpa_flash=0.047ms │ spdup_vs_math=2.54×
+  [ 45/192]  B= 2 b=4 d=5 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.952ms  sdpa_flash=0.056ms │ spdup_vs_math=14.85×
+  [ 46/192]  B= 2 b=4 d=6 │ ragged=0.073ms  bf16=0.072ms │ sdpa_math=16.277ms  sdpa_flash=0.310ms │ spdup_vs_math=222.07×
+  [ 47/192]  B= 2 b=4 d=7 │ ragged=0.173ms  bf16=0.176ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [ 48/192]  B= 2 b=4 d=8 │ ragged=0.679ms  bf16=0.684ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [ 49/192]  B= 4 b=2 d=1 │ ragged=0.063ms  bf16=0.063ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.59×
+  [ 50/192]  B= 4 b=2 d=2 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.161ms  sdpa_flash=0.042ms │ spdup_vs_math=2.55×
+  [ 51/192]  B= 4 b=2 d=3 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.58×
+  [ 52/192]  B= 4 b=2 d=4 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.163ms  sdpa_flash=0.042ms │ spdup_vs_math=2.59×
+  [ 53/192]  B= 4 b=2 d=5 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.165ms  sdpa_flash=0.041ms │ spdup_vs_math=2.63×
+  [ 54/192]  B= 4 b=2 d=6 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.167ms  sdpa_flash=0.041ms │ spdup_vs_math=2.62×
+  [ 55/192]  B= 4 b=2 d=7 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.162ms  sdpa_flash=0.041ms │ spdup_vs_math=2.52×
+  [ 56/192]  B= 4 b=2 d=8 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.238ms  sdpa_flash=0.042ms │ spdup_vs_math=3.72×
+  [ 57/192]  B= 4 b=3 d=1 │ ragged=0.063ms  bf16=0.063ms │ sdpa_math=0.165ms  sdpa_flash=0.041ms │ spdup_vs_math=2.63×
+  [ 58/192]  B= 4 b=3 d=2 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.162ms  sdpa_flash=0.042ms │ spdup_vs_math=2.54×
+  [ 59/192]  B= 4 b=3 d=3 │ ragged=0.064ms  bf16=0.063ms │ sdpa_math=0.164ms  sdpa_flash=0.042ms │ spdup_vs_math=2.58×
+  [ 60/192]  B= 4 b=3 d=4 │ ragged=0.065ms  bf16=0.064ms │ sdpa_math=0.167ms  sdpa_flash=0.041ms │ spdup_vs_math=2.58×
+  [ 61/192]  B= 4 b=3 d=5 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.187ms  sdpa_flash=0.040ms │ spdup_vs_math=2.91×
+  [ 62/192]  B= 4 b=3 d=6 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=1.518ms  sdpa_flash=0.070ms │ spdup_vs_math=23.62×
+  [ 63/192]  B= 4 b=3 d=7 │ ragged=0.078ms  bf16=0.078ms │ sdpa_math=11.559ms  sdpa_flash=0.228ms │ spdup_vs_math=148.95×
+  [ 64/192]  B= 4 b=3 d=8 │ ragged=0.160ms  bf16=0.163ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [ 65/192]  B= 4 b=4 d=1 │ ragged=0.077ms  bf16=0.076ms │ sdpa_math=0.188ms  sdpa_flash=0.046ms │ spdup_vs_math=2.43×
+  [ 66/192]  B= 4 b=4 d=2 │ ragged=0.066ms  bf16=0.064ms │ sdpa_math=0.172ms  sdpa_flash=0.043ms │ spdup_vs_math=2.59×
+  [ 67/192]  B= 4 b=4 d=3 │ ragged=0.068ms  bf16=0.068ms │ sdpa_math=0.179ms  sdpa_flash=0.044ms │ spdup_vs_math=2.62×
+  [ 68/192]  B= 4 b=4 d=4 │ ragged=0.068ms  bf16=0.067ms │ sdpa_math=0.189ms  sdpa_flash=0.045ms │ spdup_vs_math=2.79×
+  [ 69/192]  B= 4 b=4 d=5 │ ragged=0.072ms  bf16=0.071ms │ sdpa_math=2.116ms  sdpa_flash=0.081ms │ spdup_vs_math=29.40×
+  [ 70/192]  B= 4 b=4 d=6 │ ragged=0.094ms  bf16=0.093ms │ sdpa_math=33.886ms  sdpa_flash=0.489ms │ spdup_vs_math=361.42×
+  [ 71/192]  B= 4 b=4 d=7 │ ragged=0.332ms  bf16=0.335ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [ 72/192]  B= 4 b=4 d=8 │ ragged=1.321ms  bf16=1.340ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [ 73/192]  B= 8 b=2 d=1 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.163ms  sdpa_flash=0.042ms │ spdup_vs_math=2.59×
+  [ 74/192]  B= 8 b=2 d=2 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.165ms  sdpa_flash=0.042ms │ spdup_vs_math=2.58×
+  [ 75/192]  B= 8 b=2 d=3 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.55×
+  [ 76/192]  B= 8 b=2 d=4 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.164ms  sdpa_flash=0.042ms │ spdup_vs_math=2.59×
+  [ 77/192]  B= 8 b=2 d=5 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.164ms  sdpa_flash=0.042ms │ spdup_vs_math=2.56×
+  [ 78/192]  B= 8 b=2 d=6 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.165ms  sdpa_flash=0.041ms │ spdup_vs_math=2.56×
+  [ 79/192]  B= 8 b=2 d=7 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.176ms  sdpa_flash=0.042ms │ spdup_vs_math=2.74×
+  [ 80/192]  B= 8 b=2 d=8 │ ragged=0.065ms  bf16=0.066ms │ sdpa_math=0.447ms  sdpa_flash=0.048ms │ spdup_vs_math=6.88×
+  [ 81/192]  B= 8 b=3 d=1 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.161ms  sdpa_flash=0.041ms │ spdup_vs_math=2.54×
+  [ 82/192]  B= 8 b=3 d=2 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.167ms  sdpa_flash=0.041ms │ spdup_vs_math=2.60×
+  [ 83/192]  B= 8 b=3 d=3 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.165ms  sdpa_flash=0.041ms │ spdup_vs_math=2.59×
+  [ 84/192]  B= 8 b=3 d=4 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.166ms  sdpa_flash=0.041ms │ spdup_vs_math=2.58×
+  [ 85/192]  B= 8 b=3 d=5 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.260ms  sdpa_flash=0.042ms │ spdup_vs_math=4.05×
+  [ 86/192]  B= 8 b=3 d=6 │ ragged=0.071ms  bf16=0.071ms │ sdpa_math=2.758ms  sdpa_flash=0.091ms │ spdup_vs_math=39.04×
+  [ 87/192]  B= 8 b=3 d=7 │ ragged=0.095ms  bf16=0.099ms │ sdpa_math=23.181ms  sdpa_flash=0.361ms │ spdup_vs_math=244.73×
+  [ 88/192]  B= 8 b=3 d=8 │ ragged=0.311ms  bf16=0.315ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [ 89/192]  B= 8 b=4 d=1 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.161ms  sdpa_flash=0.042ms │ spdup_vs_math=2.54×
+  [ 90/192]  B= 8 b=4 d=2 │ ragged=0.063ms  bf16=0.064ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.58×
+  [ 91/192]  B= 8 b=4 d=3 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.163ms  sdpa_flash=0.042ms │ spdup_vs_math=2.53×
+  [ 92/192]  B= 8 b=4 d=4 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.242ms  sdpa_flash=0.041ms │ spdup_vs_math=3.77×
+  [ 93/192]  B= 8 b=4 d=5 │ ragged=0.071ms  bf16=0.072ms │ sdpa_math=4.196ms  sdpa_flash=0.111ms │ spdup_vs_math=59.17×
+  [ 94/192]  B= 8 b=4 d=6 │ ragged=0.174ms  bf16=0.174ms │ sdpa_math=67.659ms  sdpa_flash=0.835ms │ spdup_vs_math=388.02×
+  [ 95/192]  B= 8 b=4 d=7 │ ragged=0.650ms  bf16=0.663ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [ 96/192]  B= 8 b=4 d=8 │ ragged=2.592ms  bf16=2.623ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [ 97/192]  B=16 b=2 d=1 │ ragged=0.065ms  bf16=0.065ms │ sdpa_math=0.165ms  sdpa_flash=0.042ms │ spdup_vs_math=2.55×
+  [ 98/192]  B=16 b=2 d=2 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.56×
+  [ 99/192]  B=16 b=2 d=3 │ ragged=0.065ms  bf16=0.065ms │ sdpa_math=0.165ms  sdpa_flash=0.042ms │ spdup_vs_math=2.53×
+  [100/192]  B=16 b=2 d=4 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.164ms  sdpa_flash=0.041ms │ spdup_vs_math=2.55×
+  [101/192]  B=16 b=2 d=5 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.167ms  sdpa_flash=0.041ms │ spdup_vs_math=2.60×
+  [102/192]  B=16 b=2 d=6 │ ragged=0.065ms  bf16=0.065ms │ sdpa_math=0.162ms  sdpa_flash=0.042ms │ spdup_vs_math=2.50×
+  [103/192]  B=16 b=2 d=7 │ ragged=0.065ms  bf16=0.066ms │ sdpa_math=0.257ms  sdpa_flash=0.041ms │ spdup_vs_math=3.94×
+  [104/192]  B=16 b=2 d=8 │ ragged=0.074ms  bf16=0.075ms │ sdpa_math=1.261ms  sdpa_flash=0.055ms │ spdup_vs_math=17.01×
+  [105/192]  B=16 b=3 d=1 │ ragged=0.064ms  bf16=0.064ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.54×
+  [106/192]  B=16 b=3 d=2 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.163ms  sdpa_flash=0.042ms │ spdup_vs_math=2.55×
+  [107/192]  B=16 b=3 d=3 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.164ms  sdpa_flash=0.041ms │ spdup_vs_math=2.56×
+  [108/192]  B=16 b=3 d=4 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.162ms  sdpa_flash=0.042ms │ spdup_vs_math=2.53×
+  [109/192]  B=16 b=3 d=5 │ ragged=0.067ms  bf16=0.068ms │ sdpa_math=0.502ms  sdpa_flash=0.047ms │ spdup_vs_math=7.49×
+  [110/192]  B=16 b=3 d=6 │ ragged=0.083ms  bf16=0.085ms │ sdpa_math=5.554ms  sdpa_flash=0.128ms │ spdup_vs_math=66.60×
+  [111/192]  B=16 b=3 d=7 │ ragged=0.209ms  bf16=0.213ms │ sdpa_math=46.188ms  sdpa_flash=0.656ms │ spdup_vs_math=220.46×
+  [112/192]  B=16 b=3 d=8 │ ragged=0.626ms  bf16=0.620ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [113/192]  B=16 b=4 d=1 │ ragged=0.064ms  bf16=0.065ms │ sdpa_math=0.164ms  sdpa_flash=0.042ms │ spdup_vs_math=2.56×
+  [114/192]  B=16 b=4 d=2 │ ragged=0.065ms  bf16=0.066ms │ sdpa_math=0.162ms  sdpa_flash=0.041ms │ spdup_vs_math=2.50×
+  [115/192]  B=16 b=4 d=3 │ ragged=0.065ms  bf16=0.066ms │ sdpa_math=0.164ms  sdpa_flash=0.041ms │ spdup_vs_math=2.53×
+  [116/192]  B=16 b=4 d=4 │ ragged=0.065ms  bf16=0.066ms │ sdpa_math=0.413ms  sdpa_flash=0.047ms │ spdup_vs_math=6.34×
+  [117/192]  B=16 b=4 d=5 │ ragged=0.085ms  bf16=0.086ms │ sdpa_math=8.407ms  sdpa_flash=0.165ms │ spdup_vs_math=99.21×
+  [118/192]  B=16 b=4 d=6 │ ragged=0.335ms  bf16=0.330ms │ sdpa_math=135.624ms  sdpa_flash=1.500ms │ spdup_vs_math=405.34×
+  [119/192]  B=16 b=4 d=7 │ ragged=1.263ms  bf16=1.274ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [120/192]  B=16 b=4 d=8 │ ragged=5.080ms  bf16=5.190ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [121/192]  B=32 b=2 d=1 │ ragged=0.083ms  bf16=0.083ms │ sdpa_math=0.219ms  sdpa_flash=0.054ms │ spdup_vs_math=2.64×
+  [122/192]  B=32 b=2 d=2 │ ragged=0.084ms  bf16=0.084ms │ sdpa_math=0.220ms  sdpa_flash=0.053ms │ spdup_vs_math=2.63×
+  [123/192]  B=32 b=2 d=3 │ ragged=0.084ms  bf16=0.084ms │ sdpa_math=0.214ms  sdpa_flash=0.055ms │ spdup_vs_math=2.56×
+  [124/192]  B=32 b=2 d=4 │ ragged=0.083ms  bf16=0.085ms │ sdpa_math=0.220ms  sdpa_flash=0.054ms │ spdup_vs_math=2.65×
+  [125/192]  B=32 b=2 d=5 │ ragged=0.084ms  bf16=0.086ms │ sdpa_math=0.213ms  sdpa_flash=0.053ms │ spdup_vs_math=2.55×
+  [126/192]  B=32 b=2 d=6 │ ragged=0.088ms  bf16=0.085ms │ sdpa_math=0.211ms  sdpa_flash=0.053ms │ spdup_vs_math=2.40×
+  [127/192]  B=32 b=2 d=7 │ ragged=0.089ms  bf16=0.089ms │ sdpa_math=0.550ms  sdpa_flash=0.054ms │ spdup_vs_math=6.21×
+  [128/192]  B=32 b=2 d=8 │ ragged=0.102ms  bf16=0.103ms │ sdpa_math=2.594ms  sdpa_flash=0.085ms │ spdup_vs_math=25.55×
+  [129/192]  B=32 b=3 d=1 │ ragged=0.082ms  bf16=0.082ms │ sdpa_math=0.214ms  sdpa_flash=0.053ms │ spdup_vs_math=2.62×
+  [130/192]  B=32 b=3 d=2 │ ragged=0.084ms  bf16=0.085ms │ sdpa_math=0.213ms  sdpa_flash=0.053ms │ spdup_vs_math=2.54×
+  [131/192]  B=32 b=3 d=3 │ ragged=0.084ms  bf16=0.084ms │ sdpa_math=0.214ms  sdpa_flash=0.053ms │ spdup_vs_math=2.56×
+  [132/192]  B=32 b=3 d=4 │ ragged=0.083ms  bf16=0.084ms │ sdpa_math=0.212ms  sdpa_flash=0.053ms │ spdup_vs_math=2.57×
+  [133/192]  B=32 b=3 d=5 │ ragged=0.090ms  bf16=0.090ms │ sdpa_math=1.375ms  sdpa_flash=0.066ms │ spdup_vs_math=15.27×
+  [134/192]  B=32 b=3 d=6 │ ragged=0.143ms  bf16=0.158ms │ sdpa_math=11.056ms  sdpa_flash=0.218ms │ spdup_vs_math=77.46×
+  [135/192]  B=32 b=3 d=7 │ ragged=0.421ms  bf16=0.438ms │ sdpa_math=92.326ms  sdpa_flash=1.143ms │ spdup_vs_math=219.51×
+  [136/192]  B=32 b=3 d=8 │ ragged=1.196ms  bf16=1.239ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [137/192]  B=32 b=4 d=1 │ ragged=0.065ms  bf16=0.067ms │ sdpa_math=0.171ms  sdpa_flash=0.041ms │ spdup_vs_math=2.62×
+  [138/192]  B=32 b=4 d=2 │ ragged=0.067ms  bf16=0.067ms │ sdpa_math=0.166ms  sdpa_flash=0.043ms │ spdup_vs_math=2.47×
+  [139/192]  B=32 b=4 d=3 │ ragged=0.070ms  bf16=0.066ms │ sdpa_math=0.167ms  sdpa_flash=0.041ms │ spdup_vs_math=2.39×
+  [140/192]  B=32 b=4 d=4 │ ragged=0.072ms  bf16=0.073ms │ sdpa_math=1.141ms  sdpa_flash=0.058ms │ spdup_vs_math=15.74×
+  [141/192]  B=32 b=4 d=5 │ ragged=0.175ms  bf16=0.177ms │ sdpa_math=16.297ms  sdpa_flash=0.289ms │ spdup_vs_math=93.18×
+  [142/192]  B=32 b=4 d=6 │ ragged=0.656ms  bf16=0.653ms │ sdpa_math=269.566ms  sdpa_flash=2.963ms │ spdup_vs_math=410.88×
+  [143/192]  B=32 b=4 d=7 │ ragged=2.468ms  bf16=2.509ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [144/192]  B=32 b=4 d=8 │ ragged=10.050ms  bf16=10.181ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [145/192]  B=64 b=2 d=1 │ ragged=0.066ms  bf16=0.067ms │ sdpa_math=0.161ms  sdpa_flash=0.041ms │ spdup_vs_math=2.42×
+  [146/192]  B=64 b=2 d=2 │ ragged=0.068ms  bf16=0.068ms │ sdpa_math=0.162ms  sdpa_flash=0.041ms │ spdup_vs_math=2.40×
+  [147/192]  B=64 b=2 d=3 │ ragged=0.069ms  bf16=0.068ms │ sdpa_math=0.164ms  sdpa_flash=0.042ms │ spdup_vs_math=2.38×
+  [148/192]  B=64 b=2 d=4 │ ragged=0.068ms  bf16=0.068ms │ sdpa_math=0.163ms  sdpa_flash=0.041ms │ spdup_vs_math=2.41×
+  [149/192]  B=64 b=2 d=5 │ ragged=0.068ms  bf16=0.068ms │ sdpa_math=0.160ms  sdpa_flash=0.041ms │ spdup_vs_math=2.35×
+  [150/192]  B=64 b=2 d=6 │ ragged=0.072ms  bf16=0.073ms │ sdpa_math=0.344ms  sdpa_flash=0.041ms │ spdup_vs_math=4.77×
+  [151/192]  B=64 b=2 d=7 │ ragged=0.087ms  bf16=0.087ms │ sdpa_math=1.468ms  sdpa_flash=0.059ms │ spdup_vs_math=16.91×
+  [152/192]  B=64 b=2 d=8 │ ragged=0.116ms  bf16=0.120ms │ sdpa_math=5.209ms  sdpa_flash=0.121ms │ spdup_vs_math=44.78×
+  [153/192]  B=64 b=3 d=1 │ ragged=0.067ms  bf16=0.068ms │ sdpa_math=0.162ms  sdpa_flash=0.042ms │ spdup_vs_math=2.41×
+  [154/192]  B=64 b=3 d=2 │ ragged=0.068ms  bf16=0.068ms │ sdpa_math=0.165ms  sdpa_flash=0.041ms │ spdup_vs_math=2.44×
+  [155/192]  B=64 b=3 d=3 │ ragged=0.068ms  bf16=0.068ms │ sdpa_math=0.164ms  sdpa_flash=0.041ms │ spdup_vs_math=2.42×
+  [156/192]  B=64 b=3 d=4 │ ragged=0.069ms  bf16=0.070ms │ sdpa_math=0.336ms  sdpa_flash=0.041ms │ spdup_vs_math=4.88×
+  [157/192]  B=64 b=3 d=5 │ ragged=0.090ms  bf16=0.092ms │ sdpa_math=2.867ms  sdpa_flash=0.086ms │ spdup_vs_math=31.75×
+  [158/192]  B=64 b=3 d=6 │ ragged=0.279ms  bf16=0.280ms │ sdpa_math=21.469ms  sdpa_flash=0.373ms │ spdup_vs_math=77.02×
+  [159/192]  B=64 b=3 d=7 │ ragged=0.796ms  bf16=0.826ms │ sdpa_math=184.449ms  sdpa_flash=2.187ms │ spdup_vs_math=231.66×
+  [160/192]  B=64 b=3 d=8 │ ragged=2.434ms  bf16=2.426ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [161/192]  B=64 b=4 d=1 │ ragged=0.068ms  bf16=0.068ms │ sdpa_math=0.163ms  sdpa_flash=0.042ms │ spdup_vs_math=2.40×
+  [162/192]  B=64 b=4 d=2 │ ragged=0.068ms  bf16=0.068ms │ sdpa_math=0.163ms  sdpa_flash=0.042ms │ spdup_vs_math=2.40×
+  [163/192]  B=64 b=4 d=3 │ ragged=0.068ms  bf16=0.069ms │ sdpa_math=0.203ms  sdpa_flash=0.042ms │ spdup_vs_math=2.97×
+  [164/192]  B=64 b=4 d=4 │ ragged=0.086ms  bf16=0.088ms │ sdpa_math=2.580ms  sdpa_flash=0.085ms │ spdup_vs_math=29.87×
+  [165/192]  B=64 b=4 d=5 │ ragged=0.327ms  bf16=0.328ms │ sdpa_math=32.389ms  sdpa_flash=0.490ms │ spdup_vs_math=99.07×
+/root/sd-ragged/scripts/benchmark_sota.py:176: UserWarning: [sdpa_math] failed: CUDA out of memory. Tried to allocate 56.88 GiB. GPU 0 has a total capacity of 94.97 GiB of which 50.51 GiB is free. Process 1 has 44.46 GiB memory in use. Of the allocated memory 16.12 GiB is allocated by PyTorch, and 27.70 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+  warnings.warn(f"[{label}] failed: {exc}")
+  [166/192]  B=64 b=4 d=6 │ ragged=1.303ms  bf16=1.244ms │ sdpa_math=  n/a   sdpa_flash=5.918ms │ spdup_vs_math=nan×
+  [167/192]  B=64 b=4 d=7 │ ragged=4.937ms  bf16=4.986ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [168/192]  B=64 b=4 d=8 │ ragged=20.099ms  bf16=20.320ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [169/192]  B=128 b=2 d=1 │ ragged=0.073ms  bf16=0.071ms │ sdpa_math=0.198ms  sdpa_flash=0.044ms │ spdup_vs_math=2.72×
+  [170/192]  B=128 b=2 d=2 │ ragged=0.071ms  bf16=0.074ms │ sdpa_math=0.172ms  sdpa_flash=0.044ms │ spdup_vs_math=2.43×
+  [171/192]  B=128 b=2 d=3 │ ragged=0.070ms  bf16=0.071ms │ sdpa_math=0.171ms  sdpa_flash=0.045ms │ spdup_vs_math=2.43×
+  [172/192]  B=128 b=2 d=4 │ ragged=0.072ms  bf16=0.076ms │ sdpa_math=0.185ms  sdpa_flash=0.050ms │ spdup_vs_math=2.57×
+  [173/192]  B=128 b=2 d=5 │ ragged=0.075ms  bf16=0.075ms │ sdpa_math=0.268ms  sdpa_flash=0.046ms │ spdup_vs_math=3.58×
+  [174/192]  B=128 b=2 d=6 │ ragged=0.085ms  bf16=0.086ms │ sdpa_math=0.768ms  sdpa_flash=0.048ms │ spdup_vs_math=9.05×
+  [175/192]  B=128 b=2 d=7 │ ragged=0.116ms  bf16=0.116ms │ sdpa_math=3.068ms  sdpa_flash=0.092ms │ spdup_vs_math=26.40×
+  [176/192]  B=128 b=2 d=8 │ ragged=0.279ms  bf16=0.287ms │ sdpa_math=10.415ms  sdpa_flash=0.227ms │ spdup_vs_math=37.31×
+  [177/192]  B=128 b=3 d=1 │ ragged=0.070ms  bf16=0.071ms │ sdpa_math=0.167ms  sdpa_flash=0.044ms │ spdup_vs_math=2.38×
+  [178/192]  B=128 b=3 d=2 │ ragged=0.071ms  bf16=0.072ms │ sdpa_math=0.166ms  sdpa_flash=0.044ms │ spdup_vs_math=2.32×
+  [179/192]  B=128 b=3 d=3 │ ragged=0.071ms  bf16=0.072ms │ sdpa_math=0.166ms  sdpa_flash=0.045ms │ spdup_vs_math=2.32×
+  [180/192]  B=128 b=3 d=4 │ ragged=0.081ms  bf16=0.082ms │ sdpa_math=0.672ms  sdpa_flash=0.047ms │ spdup_vs_math=8.26×
+  [181/192]  B=128 b=3 d=5 │ ragged=0.193ms  bf16=0.192ms │ sdpa_math=5.622ms  sdpa_flash=0.170ms │ spdup_vs_math=29.10×
+  [182/192]  B=128 b=3 d=6 │ ragged=0.544ms  bf16=0.558ms │ sdpa_math=42.792ms  sdpa_flash=0.658ms │ spdup_vs_math=78.70×
+/root/sd-ragged/scripts/benchmark_sota.py:176: UserWarning: [sdpa_math] failed: CUDA out of memory. Tried to allocate 41.04 GiB. GPU 0 has a total capacity of 94.97 GiB of which 33.48 GiB is free. Process 1 has 61.48 GiB memory in use. Of the allocated memory 54.59 GiB is allocated by PyTorch, and 6.25 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+  warnings.warn(f"[{label}] failed: {exc}")
+  [183/192]  B=128 b=3 d=7 │ ragged=1.607ms  bf16=1.635ms │ sdpa_math=  n/a   sdpa_flash=4.493ms │ spdup_vs_math=nan×
+  [184/192]  B=128 b=3 d=8 │ ragged=4.849ms  bf16=4.859ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×
+  [185/192]  B=128 b=4 d=1 │ ragged=0.071ms  bf16=0.071ms │ sdpa_math=0.162ms  sdpa_flash=0.044ms │ spdup_vs_math=2.28×
+  [186/192]  B=128 b=4 d=2 │ ragged=0.072ms  bf16=0.072ms │ sdpa_math=0.164ms  sdpa_flash=0.045ms │ spdup_vs_math=2.28×
+  [187/192]  B=128 b=4 d=3 │ ragged=0.078ms  bf16=0.078ms │ sdpa_math=0.396ms  sdpa_flash=0.046ms │ spdup_vs_math=5.11×
+  [188/192]  B=128 b=4 d=4 │ ragged=0.181ms  bf16=0.182ms │ sdpa_math=5.057ms  sdpa_flash=0.162ms │ spdup_vs_math=27.93×
+  [189/192]  B=128 b=4 d=5 │ ragged=0.629ms  bf16=0.627ms │ sdpa_math=64.671ms  sdpa_flash=0.908ms │ spdup_vs_math=102.84×
+/root/sd-ragged/scripts/benchmark_sota.py:176: UserWarning: [sdpa_math] failed: CUDA out of memory. Tried to allocate 113.77 GiB. GPU 0 has a total capacity of 94.97 GiB of which 33.48 GiB is free. Process 1 has 61.48 GiB memory in use. Of the allocated memory 32.24 GiB is allocated by PyTorch, and 28.60 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+  warnings.warn(f"[{label}] failed: {exc}")
+  [190/192]  B=128 b=4 d=6 │ ragged=2.603ms  bf16=2.478ms │ sdpa_math=  n/a   sdpa_flash=11.823ms │ spdup_vs_math=nan×
+  [191/192]  B=128 b=4 d=7 │ ragged=9.922ms  bf16=10.055ms │ sdpa_math=  n/a   sdpa_flash=  n/a  │ spdup_vs_math=nan×

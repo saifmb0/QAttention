@@ -175,6 +175,29 @@ _SPARSE_SM89_CONFIGS = [
 ]
 
 # ---------------------------------------------------------------------------
+# SM90 autotune configs — Hopper (H100, H200)
+#
+# Differences from SM89 (Ada):
+#   • 4th-gen Tensor Cores: support warpgroup-level MMA (used by FA-3, not Triton yet)
+#   • Shared memory per SM up to 228 KB (similar to SM120)
+#   • Large L2 (50 MB on H100 SXM) → K/V ancestor positions highly L2-resident
+#   • num_stages=1: ancestor walk is still data-dependent; no pipelining
+#   • BLOCK_M up to 512 allowed by shared-memory budget
+#
+# Register budget at BLOCK_M=512, HEAD_DIM=64, num_warps=16 (512 threads):
+#   Same analysis as SM120: ~176 regs/thread, within 65536/512=128 limit.
+# ---------------------------------------------------------------------------
+_SPARSE_SM90_CONFIGS = [
+    triton.Config({"BLOCK_M": 32},  num_warps=4,  num_stages=1),
+    triton.Config({"BLOCK_M": 64},  num_warps=4,  num_stages=1),
+    triton.Config({"BLOCK_M": 128}, num_warps=8,  num_stages=1),
+    triton.Config({"BLOCK_M": 256}, num_warps=8,  num_stages=1),
+    triton.Config({"BLOCK_M": 256}, num_warps=16, num_stages=1),
+    # Exploit 228 KB shared mem
+    triton.Config({"BLOCK_M": 512}, num_warps=16, num_stages=1),
+]
+
+# ---------------------------------------------------------------------------
 # SM120 autotune configs — Blackwell (e.g. RTX PRO 6000 Blackwell, GB200)
 #
 # Differences from SM89:
@@ -209,7 +232,8 @@ def _get_autotune_configs() -> list:
 
     Tiers:
       SM 12.x (Blackwell)  -> _SPARSE_SM120_CONFIGS  [primary target]
-      SM  8.x              -> _SPARSE_SM89_CONFIGS   [intermediate fallback]
+      SM  9.x (Hopper)     -> _SPARSE_SM90_CONFIGS   [H100/H200]
+      SM  8.9 (Ada)        -> _SPARSE_SM89_CONFIGS   [RTX 4090/L40S]
       other                -> _SPARSE_SM75_CONFIGS   [legacy fallback]
     """
     if not torch.cuda.is_available():
@@ -218,6 +242,8 @@ def _get_autotune_configs() -> list:
     sm = (props.major, props.minor)
     if sm >= (12, 0):
         return _SPARSE_SM120_CONFIGS
+    if sm >= (9, 0):
+        return _SPARSE_SM90_CONFIGS
     if sm >= (8, 9):
         return _SPARSE_SM89_CONFIGS
     return _SPARSE_SM75_CONFIGS
@@ -358,6 +384,258 @@ def _ragged_attn_sparse_kernel(
               + head_idx          * stride_oh
               + d_range  [None,:] * stride_od)
     tl.store(o_ptrs, acc.to(_out_dtype), mask=valid_q[:, None])
+
+
+# ---------------------------------------------------------------------------
+# Paged KV-Cache variant
+# ---------------------------------------------------------------------------
+# PagedAttention (vLLM) stores K/V in non-contiguous 16-token pages.
+# The contiguous `seq_start + ancestor_pos` addressing of the dense kernel
+# cannot be used directly.  This kernel accepts a page_table tensor that
+# maps logical KV positions to physical page slots.
+#
+# Layout:
+#   page_table  : [B, max_pages]  int32   — page_table[b, p] = physical page idx
+#   K_cache     : [total_pages, PAGE_SIZE, H, D]  fp16/bf16
+#   V_cache     : [total_pages, PAGE_SIZE, H, D]  fp16/bf16
+#   Q           : [total_tokens, H, D]            fp16/bf16
+#
+# For ancestor position `pos` in sequence `b`:
+#   page_idx    = page_table[b, pos // PAGE_SIZE]
+#   page_off    = pos % PAGE_SIZE
+#   K address   = K_cache[page_idx, page_off, head, :]
+#
+# This adds one extra indirection per ancestor step vs the contiguous kernel.
+# The scatter penalty is larger (page table entries likely L2-miss on first
+# access) but ancestor reuse across Q-tiles still holds for high-level ancestors.
+# ---------------------------------------------------------------------------
+
+@triton.autotune(
+    configs=_get_autotune_configs(),
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH"],
+)
+@triton.jit
+def _ragged_attn_paged_kernel(
+    Q_ptr,
+    K_ptr,          # [total_pages, PAGE_SIZE, H, D]
+    V_ptr,          # [total_pages, PAGE_SIZE, H, D]
+    O_ptr,
+    page_table_ptr, # [B, max_pages]  int32
+    cu_seqlens_ptr, # [B+1]  int32
+    stride_qt, stride_qh, stride_qd,
+    stride_kp, stride_kps, stride_kh, stride_kd,   # page, page_slot, head, dim
+    stride_vp, stride_vps, stride_vh, stride_vd,
+    stride_ot, stride_oh, stride_od,
+    stride_ptb,     # page_table: stride over batch dim (= max_pages)
+    scale,
+    max_seqlen,
+    PAGE_SIZE:        tl.constexpr,
+    H:                tl.constexpr,
+    HEAD_DIM:         tl.constexpr,
+    BRANCHING_FACTOR: tl.constexpr,
+    MAX_DEPTH:        tl.constexpr,
+    BLOCK_M:          tl.constexpr,
+):
+    pid0   = tl.program_id(0)
+    m_tile = tl.program_id(1)
+    seq_idx  = pid0 // H
+    head_idx = pid0  % H
+
+    seq_start = tl.load(cu_seqlens_ptr + seq_idx)
+    seq_end   = tl.load(cu_seqlens_ptr + seq_idx + 1)
+    seq_len   = seq_end - seq_start
+
+    q_off = m_tile * BLOCK_M
+    if q_off >= seq_len:
+        return
+
+    m_range = tl.arange(0, BLOCK_M)
+    d_range = tl.arange(0, HEAD_DIM)
+    valid_q = (m_range + q_off) < seq_len
+    q_global = (seq_start + q_off + m_range).to(tl.int64)
+
+    q_ptrs = (Q_ptr
+              + q_global[:, None] * stride_qt
+              + head_idx          * stride_qh
+              + d_range  [None,:] * stride_qd)
+    q = tl.load(q_ptrs, mask=valid_q[:, None], other=0.0)
+    _out_dtype = q.dtype
+
+    m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M],              dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, HEAD_DIM],    dtype=tl.float32)
+
+    cur  = (m_range + q_off).to(tl.int32)
+    prev = tl.full([BLOCK_M], -1, dtype=tl.int32)
+
+    for _step in range(MAX_DEPTH + 1):
+        is_new = (cur != prev) & valid_q
+
+        # Two-level page-table indirection:
+        # physical_page = page_table[seq_idx, cur // PAGE_SIZE]
+        page_slot   = cur % PAGE_SIZE                               # [BLOCK_M] int32
+        page_logical = tl.maximum(cur, 0) // PAGE_SIZE              # [BLOCK_M] int32
+        page_phys   = tl.load(
+            page_table_ptr + seq_idx.to(tl.int64) * stride_ptb
+            + page_logical.to(tl.int64),
+            mask=is_new, other=0,
+        ).to(tl.int64)                                              # [BLOCK_M] int64
+
+        k_ptrs = (K_ptr
+                  + page_phys  [:, None] * stride_kp
+                  + page_slot  [:, None] * stride_kps
+                  + head_idx              * stride_kh
+                  + d_range    [None, :] * stride_kd)
+        k_anc = tl.load(k_ptrs, mask=is_new[:, None], other=0.0)
+
+        raw = tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale
+        s   = tl.where(is_new, raw, float("-inf"))
+
+        m_new = tl.maximum(m_i, s)
+        alpha = tl.exp(m_i - m_new)
+        p     = tl.exp(s   - m_new)
+        p_pos = tl.where(is_new, p, 0.0)
+
+        v_ptrs = (V_ptr
+                  + page_phys  [:, None] * stride_vp
+                  + page_slot  [:, None] * stride_vps
+                  + head_idx              * stride_vh
+                  + d_range    [None, :] * stride_vd)
+        v_anc = tl.load(v_ptrs, mask=is_new[:, None], other=0.0)
+
+        l_i = l_i * alpha + p_pos
+        acc = acc * alpha[:, None] + p_pos[:, None] * v_anc.to(tl.float32)
+        m_i = m_new
+
+        prev = cur
+        cur  = tl.maximum(cur - 1, tl.zeros_like(cur)) // BRANCHING_FACTOR
+
+    l_safe = tl.where(l_i == 0.0, 1.0, l_i)
+    acc    = acc / l_safe[:, None]
+
+    o_ptrs = (O_ptr
+              + q_global[:, None] * stride_ot
+              + head_idx          * stride_oh
+              + d_range  [None,:] * stride_od)
+    tl.store(o_ptrs, acc.to(_out_dtype), mask=valid_q[:, None])
+
+
+def ragged_attention_paged(
+    Q:           torch.Tensor,   # [total_tokens, H, D]
+    K_cache:     torch.Tensor,   # [total_pages, PAGE_SIZE, H, D]
+    V_cache:     torch.Tensor,   # [total_pages, PAGE_SIZE, H, D]
+    page_table:  torch.Tensor,   # [B, max_pages]  int32  on device
+    cu_seqlens:  torch.Tensor,   # [B+1]  int32
+    branching_factor: int,
+    max_depth:        int,
+) -> torch.Tensor:
+    """
+    Ancestor-sparse ragged attention with paged KV cache (PagedAttention layout).
+
+    This variant is compatible with vLLM-style PagedAttention where the K/V
+    cache is stored in non-contiguous 16-token blocks mapped via a page table.
+
+    Parameters
+    ----------
+    Q           : packed query tensor [total_tokens, H, D]  fp16/bf16
+    K_cache     : physical KV cache pages [total_pages, PAGE_SIZE, H, D]
+    V_cache     : physical KV cache pages [total_pages, PAGE_SIZE, H, D]
+    page_table  : [B, max_pages] int32 on GPU — logical-to-physical page map.
+                  page_table[b, p] = physical page index for sequence b, page p.
+    cu_seqlens  : cumulative sequence starts [B+1] int32 (CPU or GPU)
+    branching_factor, max_depth : tree structure parameters
+
+    Returns
+    -------
+    O : [total_tokens, H, D]  same dtype as Q
+
+    Notes on PagedAttention incompatibility with the contiguous kernel
+    -------------------------------------------------------------------
+    The standard ragged_attention() kernel computes:
+        K_ptr + (seq_start + ancestor_pos) * stride_kt
+    assuming K/V is a contiguous packed tensor.  With PagedAttention,
+    physical pages can be anywhere in GPU memory; the page_table provides
+    the indirection.  This kernel adds one extra load (the page_table lookup)
+    per ancestor step, introducing a ~2-4% overhead for typical page sizes
+    (PAGE_SIZE=16), but makes the kernel compatible with paged serving runtimes.
+    """
+    assert K_cache.shape == V_cache.shape, "K and V cache shapes must match"
+    _PAGE_SIZE = K_cache.shape[1]
+    total_tokens, H, D = Q.shape
+    B = int(cu_seqlens.shape[0]) - 1
+    scale = 1.0 / math.sqrt(D)
+
+    cu_sl_cpu = cu_seqlens.cpu()
+    sl_list   = cu_sl_cpu.tolist()
+    max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+
+    device = Q.device
+    cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
+    page_table_dev = page_table.to(device=device, dtype=torch.int32, non_blocking=True)
+
+    O = torch.empty_like(Q)
+    grid = lambda meta: (B * H, triton.cdiv(max_seqlen, meta["BLOCK_M"]))
+
+    _ragged_attn_paged_kernel[grid](
+        Q, K_cache, V_cache, O,
+        page_table_dev, cu_seqlens_dev,
+        Q.stride(0), Q.stride(1), Q.stride(2),
+        K_cache.stride(0), K_cache.stride(1), K_cache.stride(2), K_cache.stride(3),
+        V_cache.stride(0), V_cache.stride(1), V_cache.stride(2), V_cache.stride(3),
+        O.stride(0), O.stride(1), O.stride(2),
+        page_table_dev.stride(0),
+        scale, max_seqlen,
+        PAGE_SIZE=_PAGE_SIZE,
+        H=H,
+        HEAD_DIM=D,
+        BRANCHING_FACTOR=branching_factor,
+        MAX_DEPTH=max_depth,
+    )
+    return O
+
+
+def build_paged_kv(
+    ks: List[torch.Tensor],
+    vs: List[torch.Tensor],
+    page_size: int = 16,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Pack per-sequence K/V tensors into paged KV cache layout.
+
+    Returns
+    -------
+    K_cache    : [total_pages, page_size, H, D]
+    V_cache    : [total_pages, page_size, H, D]
+    page_table : [B, max_pages] int32 CPU tensor — logical-to-physical map
+    """
+    import math as _math
+    B = len(ks)
+    H, D = ks[0].shape[1], ks[0].shape[2]
+    device = ks[0].device
+    dtype  = ks[0].dtype
+
+    # Compute per-sequence page counts
+    pages_per_seq = [_math.ceil(k.shape[0] / page_size) for k in ks]
+    max_pages     = max(pages_per_seq)
+    total_pages   = sum(pages_per_seq)
+
+    K_cache   = torch.zeros(total_pages, page_size, H, D, device=device, dtype=dtype)
+    V_cache   = torch.zeros(total_pages, page_size, H, D, device=device, dtype=dtype)
+    page_table = torch.zeros(B, max_pages, dtype=torch.int32)  # CPU
+
+    phys_page = 0
+    for b, (k, v) in enumerate(zip(ks, vs)):
+        L = k.shape[0]
+        for p in range(pages_per_seq[b]):
+            start = p * page_size
+            end   = min(start + page_size, L)
+            chunk = end - start
+            K_cache[phys_page, :chunk] = k[start:end]
+            V_cache[phys_page, :chunk] = v[start:end]
+            page_table[b, p] = phys_page
+            phys_page += 1
+
+    return K_cache, V_cache, page_table
 
 
 # ---------------------------------------------------------------------------

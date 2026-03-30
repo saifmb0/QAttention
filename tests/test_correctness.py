@@ -217,8 +217,18 @@ def run_correctness_check(
 _CONFIGURATIONS = list(itertools.product(
     [1, 2, 4, 8],   # batch_size
     [1, 2, 3],       # branching_factor
-    [1, 2, 3],       # depth
+    [1, 2, 3, 4, 5, 6],  # depth  (extended to cover typical EAGLE-2 trees)
 ))
+
+# Exact benchmark configuration exercised in benchmark_sota.py
+_BENCHMARK_CONFIGS = [
+    (4, 2, 5),   # B=4, b=2, d=5
+    (4, 3, 5),   # B=4, b=3, d=5
+    (8, 2, 5),   # B=8, b=2, d=5  (default bench config)
+    (8, 3, 5),   # B=8, b=3, d=5
+    (4, 2, 6),   # b=2, d=6 – bigger tree for stress
+    (4, 3, 6),   # b=3, d=6
+]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -235,6 +245,23 @@ def test_ragged_vs_sdpa(batch_size: int, branching_factor: int, depth: int):
     assert ok, (
         f"Ragged attention mismatch for "
         f"B={batch_size} b={branching_factor} d={depth}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("batch_size,branching_factor,depth", _BENCHMARK_CONFIGS)
+def test_benchmark_configs(batch_size: int, branching_factor: int, depth: int):
+    """Exact shapes used in benchmark_sota.py – ensures no silent correctness regressions."""
+    ok = run_correctness_check(
+        batch_size=batch_size,
+        branching_factor=branching_factor,
+        depth=depth,
+        num_heads=8,
+        head_dim=128,   # LLaMA-style head dim
+        verbose=True,
+    )
+    assert ok, (
+        f"Benchmark-config mismatch: B={batch_size} b={branching_factor} d={depth}"
     )
 
 
@@ -293,8 +320,10 @@ if __name__ == "__main__":
     configs = list(itertools.product(
         [1, 2, 4, 8],   # batch
         [1, 2, 3],       # b
-        [1, 2, 3],       # d
-    ))
+        [1, 2, 3, 4, 5, 6],  # d
+    )) + _BENCHMARK_CONFIGS
+    # Deduplicate
+    configs = list(dict.fromkeys(configs))
     n_pass = n_fail = 0
     for B, b, d in configs:
         ok = run_correctness_check(

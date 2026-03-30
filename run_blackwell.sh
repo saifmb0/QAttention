@@ -9,11 +9,13 @@
 #   2 — test    : full pytest correctness suite (41 cases, ~2 min)
 #   3 — bench   : SOTA benchmark sweep (all methods, ~15 min full / ~3 min fast)
 #   4 — profile : roofline profiler for the ragged kernel
+#   5 — e2e     : end-to-end tok/s benchmark (synthetic model)
 #
 # Usage:
 #   bash run_blackwell.sh                     # full run (all stages)
 #   bash run_blackwell.sh --fast              # small grid, fewer iters
 #   bash run_blackwell.sh --skip-profile      # skip profiler (no nvprof needed)
+#   bash run_blackwell.sh --skip-e2e          # skip end-to-end tok/s benchmark
 #   bash run_blackwell.sh --dtype bf16        # run benchmark in BF16
 #   bash run_blackwell.sh --no-sota           # skip optional SOTA libs
 #   bash run_blackwell.sh --out-dir /tmp/out  # custom output directory
@@ -31,6 +33,7 @@ fail()    { echo -e "${RED}✗  $*${NC}"; exit 1; }
 # ─── Defaults ────────────────────────────────────────────────────────────────
 FAST=0
 SKIP_PROFILE=0
+SKIP_E2E=0
 SKIP_SOTA_LIBS=0
 DTYPE="fp16"
 OUT_DIR="results"
@@ -40,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --fast)           FAST=1           ; shift ;;
         --skip-profile)   SKIP_PROFILE=1   ; shift ;;
+        --skip-e2e)       SKIP_E2E=1       ; shift ;;
         --no-sota)        SKIP_SOTA_LIBS=1 ; shift ;;
         --dtype)          DTYPE="$2"       ; shift 2 ;;
         --out-dir)        OUT_DIR="$2"     ; shift 2 ;;
@@ -81,15 +85,15 @@ else:
 PYEOF
 
 # ─── Stage 1 — Smoke test ────────────────────────────────────────────────────
-section "Stage 1 / 4 — Smoke test"
+section "Stage 1 / 5 — Smoke test"
 $PYTHON -m src.ragged_attn && ok "Smoke test passed"
 
 # ─── Stage 2 — Correctness (pytest) ─────────────────────────────────────────
-section "Stage 2 / 4 — Correctness tests (pytest)"
+section "Stage 2 / 5 — Correctness tests (pytest)"
 pytest tests/ -v --timeout=120 && ok "All correctness tests passed"
 
 # ─── Stage 3 — SOTA benchmark ────────────────────────────────────────────────
-section "Stage 3 / 4 — SOTA benchmark"
+section "Stage 3 / 5 — SOTA benchmark"
 
 SOTA_ARGS=(
     "--out-dir" "$OUT_DIR"
@@ -115,13 +119,37 @@ $PYTHON scripts/benchmark_sota.py "${SOTA_ARGS[@]}" && ok "SOTA benchmark comple
 
 # ─── Stage 4 — Roofline profiler ─────────────────────────────────────────────
 if [[ $SKIP_PROFILE -eq 0 ]]; then
-    section "Stage 4 / 4 — Roofline profiler"
+    section "Stage 4 / 5 — Roofline profiler"
     $PYTHON scripts/profile_kernel.py --csv "$OUT_DIR/profile.csv" \
         && ok "Profiler complete" \
         || warn "Profiler failed or not available — skipping (use --skip-profile to suppress)"
 else
-    section "Stage 4 / 4 — Roofline profiler (SKIPPED)"
+    section "Stage 4 / 5 — Roofline profiler (SKIPPED)"
     warn "Passed --skip-profile; skipping roofline profiler."
+fi
+
+# ─── Stage 5 — End-to-end tok/s benchmark ────────────────────────────────────
+if [[ $SKIP_E2E -eq 0 ]]; then
+    section "Stage 5 / 5 — End-to-end tok/s benchmark"
+    E2E_ARGS=("--out-dir" "$OUT_DIR")
+    if [[ $FAST -eq 1 ]]; then
+        E2E_ARGS+=(
+            "--model-size"        "synthetic"
+            "--batch-sizes"       "1,4"
+            "--depths"            "3,5"
+            "--branching-factors" "2"
+            "--warmup"            "2"
+            "--iters"             "5"
+        )
+    else
+        E2E_ARGS+=("--model-size" "7b")
+    fi
+    $PYTHON scripts/e2e_benchmark.py "${E2E_ARGS[@]}" \
+        && ok "E2E benchmark complete" \
+        || warn "E2E benchmark failed (use --skip-e2e to suppress)"
+else
+    section "Stage 5 / 5 — End-to-end tok/s benchmark (SKIPPED)"
+    warn "Passed --skip-e2e; skipping end-to-end benchmark."
 fi
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
