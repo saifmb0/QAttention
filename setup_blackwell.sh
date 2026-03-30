@@ -147,17 +147,16 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
     else
         # Pre-check: nvcc version must match torch.version.cuda.
         # torch cpp_extension hard-fails if they differ (saves 5-min wasted compile).
-        NVCC_VER=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+')
-        TORCH_CUDA_VER=$($PYTHON -c "import torch; print(torch.version.cuda or '')" 2>/dev/null)
-        # Normalise: compare only major.minor (e.g. 12.8 vs 13.0)
-        NVCC_MAJOR=$(echo "${NVCC_VER:-0}" | cut -d. -f1)
-        TORCH_MAJOR=$(echo "${TORCH_CUDA_VER:-0}" | cut -d. -f1)
-        if [[ -n "$NVCC_VER" && "$NVCC_VER" != "$TORCH_CUDA_VER" ]]; then
+        NVCC_VER=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' || true)
+        TORCH_CUDA_VER=$($PYTHON -c "import torch; print(torch.version.cuda or '')" 2>/dev/null || true)
+        # Only proceed if both versions are detected AND match exactly.
+        # If either is missing or they differ, skip — torch cpp_extension will hard-fail anyway.
+        if [[ -z "$NVCC_VER" || -z "$TORCH_CUDA_VER" || "$NVCC_VER" != "$TORCH_CUDA_VER" ]]; then
             warn "flash_attn source build skipped:"
-            warn "  system nvcc = CUDA $NVCC_VER  |  torch compiled with CUDA $TORCH_CUDA_VER"
-            warn "  These must match for torch cpp_extension to build CUDA extensions."
-            warn "  Install the matching CUDA $TORCH_CUDA_VER toolkit (with nvcc) and re-run,"
-            warn "  or use a Docker image where system CUDA matches torch.version.cuda."
+            warn "  system nvcc  = ${NVCC_VER:-<not found>}"
+            warn "  torch cuda   = ${TORCH_CUDA_VER:-<not found>}"
+            warn "  Build requires an exact match.  Use a Docker image where"
+            warn "  system nvcc and torch.version.cuda agree (e.g. nvcr.io/nvidia/pytorch:25.xx-py3)."
         else
             info "Building FlashAttention-2 from source (may take 5–10 min) …"
             # Ensure pip metadata reflects the torch we actually want to compile against.
