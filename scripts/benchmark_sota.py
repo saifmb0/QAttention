@@ -121,9 +121,25 @@ def _has(pkg: str) -> bool:
 
 HAS_FLASH_ATTN  = _has("flash_attn")
 HAS_FLASHINFER  = _has("flashinfer")
-HAS_XFORMERS    = _has("xformers")
 HAS_TENSORRT    = _has("tensorrt")
 HAS_TRT_LLM     = _has("tensorrt_llm")
+
+# xformers imports fine at the top level but memory_efficient_attention
+# internally loads flash_attn_2_cuda.so on some builds.  Probe once here.
+def _has_xformers_ops() -> bool:
+    if not _has("xformers"):
+        return False
+    try:
+        import xformers.ops as _xops
+        # Do a tiny dry-run to flush any lazy .so loading
+        _q = torch.zeros(1, 1, 1, 8, dtype=torch.float16,
+                         device="cuda" if torch.cuda.is_available() else "cpu")
+        _xops.memory_efficient_attention(_q, _q, _q)
+        return True
+    except Exception:
+        return False
+
+HAS_XFORMERS = _has_xformers_ops()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1077,31 +1093,71 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     device = torch.device("cuda:0")
 
+    # Checkpoint CSV — written after every row so a crash never loses data.
+    # If a partial run exists we resume from where it left off.
+    csv_path = os.path.join(args.out_dir, "sota_benchmark.csv")
+
     configs = [
         (B, b, d)
         for B in batch_sizes
         for b in branching_factors
         for d in depths
     ]
-    total = len(configs)
-    print(f"Running {total} configurations  [{args.warmup} warmup + {args.iters} timed iters each]\n")
 
-    rows = []
-    for idx, (B, b, d) in enumerate(configs):
-        row = benchmark_one(
-            batch_size=B,
-            branching_factor=b,
-            depth=d,
-            dtype_str=args.dtype,
-            warmup=args.warmup,
-            iters=args.iters,
-            device=device,
-            skip_flashattn  =args.skip_flashattn,
-            skip_flashinfer =args.skip_flashinfer,
-            skip_xformers   =args.skip_xformers,
-            skip_tensorrt   =args.skip_tensorrt,
-        )
+    # ── Resume support: skip configs already in checkpoint file ──────────────
+    completed: set[tuple] = set()
+    rows: list[dict] = []
+    if os.path.exists(csv_path):
+        try:
+            _existing = pd.read_csv(csv_path)
+            rows = _existing.to_dict("records")
+            for r in rows:
+                completed.add((int(r["batch_size"]),
+                               int(r["branching_factor"]),
+                               int(r["tree_depth"])))
+            print(f"[resume] Found {len(rows)} completed rows in {csv_path} — skipping those configs.")
+        except Exception as _e:
+            print(f"[resume] Could not parse existing checkpoint ({_e}) — starting fresh.")
+            rows = []
+
+    pending = [(B, b, d) for B, b, d in configs if (B, b, d) not in completed]
+    total   = len(configs)
+    done_so_far = len(completed)
+    print(f"Running {len(pending)} configurations  [{args.warmup} warmup + {args.iters} timed iters each]")
+    if done_so_far:
+        print(f"({done_so_far} already done from previous run)")
+    print()
+    for idx, (B, b, d) in enumerate(pending):
+        display_idx = done_so_far + idx + 1
+        try:
+            row = benchmark_one(
+                batch_size=B,
+                branching_factor=b,
+                depth=d,
+                dtype_str=args.dtype,
+                warmup=args.warmup,
+                iters=args.iters,
+                device=device,
+                skip_flashattn  =args.skip_flashattn,
+                skip_flashinfer =args.skip_flashinfer,
+                skip_xformers   =args.skip_xformers,
+                skip_tensorrt   =args.skip_tensorrt,
+            )
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            print(f"  [{display_idx:3d}/{total}]  B={B:2d} b={b} d={d} │  OOM — skipped")
+            continue
+        except Exception as exc:
+            print(f"  [{display_idx:3d}/{total}]  B={B:2d} b={b} d={d} │  ERROR: {exc} — skipped")
+            continue
+
         rows.append(asdict(row))
+
+        # ── Checkpoint: flush to CSV after every row ──────────────────────────
+        try:
+            pd.DataFrame(rows).to_csv(csv_path, index=False)
+        except Exception as _ce:
+            print(f"  [checkpoint] save failed: {_ce}")
 
         # ── Per-row progress ─────────────────────────────────────────────────
         def _fmt(ms):
@@ -1114,7 +1170,7 @@ def main() -> None:
         if not math.isnan(row.trt_attention_ms):
             extras += f"  trt={_fmt(row.trt_attention_ms)}"
         print(
-            f"  [{idx+1:3d}/{total}]  B={B:2d} b={b} d={d} │ "
+            f"  [{display_idx:3d}/{total}]  B={B:2d} b={b} d={d} │ "
             f"ragged={_fmt(row.ragged_fp16_ms)}  bf16={_fmt(row.ragged_bf16_ms)} │ "
             f"sdpa_math={_fmt(row.sdpa_math_ms)}  sdpa_flash={_fmt(row.sdpa_flash_ms)} │ "
             f"sdpa_flash_masked={_fmt(row.sdpa_flash_masked_ms)} │ "
@@ -1124,9 +1180,8 @@ def main() -> None:
         )
 
     df = pd.DataFrame(rows)
-    csv_path = os.path.join(args.out_dir, "sota_benchmark.csv")
     df.to_csv(csv_path, index=False)
-    print(f"\nSaved: {csv_path}")
+    print(f"\nSaved: {csv_path}  ({len(rows)} rows)")
 
     # ── Summary table ─────────────────────────────────────────────────────────
     print("\n── Speedup vs SDPA-math [tree mask] (mean over batch sizes) ─────────")

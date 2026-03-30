@@ -143,6 +143,17 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
         warn "flash_attn skipped — nvcc / CUDA_HOME not available."
     else
         info "Building FlashAttention-2 from source (may take 5–10 min) …"
+        # Ensure pip metadata reflects the torch we actually want to compile against.
+        # On images that pre-install torch 2.8+cu129, the metadata persists even
+        # after pip installs 2.11+cu130 into a different dist-info location,
+        # causing flash_attn's setup.py to link against the 2.8 ABI headers.
+        # Force-reinstalling torch here makes the metadata unambiguous before the build.
+        info "Pinning torch to $TORCH_INDEX before flash-attn source build …"
+        $PIP install --quiet --force-reinstall \
+            "torch>=2.2.0" \
+            --extra-index-url "$TORCH_INDEX" \
+        || warn "torch force-reinstall failed — flash-attn may link against wrong ABI"
+
         # --no-binary :force source build (avoids picking up a pre-built wheel
         #   compiled against a different torch/CUDA ABI)
         # --no-cache-dir  :  prevents reuse of a previously cached incompatible wheel
