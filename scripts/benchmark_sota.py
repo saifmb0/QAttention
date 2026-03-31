@@ -121,7 +121,7 @@ def _has(pkg: str) -> bool:
 
 HAS_FLASH_ATTN  = _has("flash_attn")
 HAS_FLASHINFER  = _has("flashinfer")
-HAS_TENSORRT    = _has("tensorrt") or _has("torch_tensorrt")
+# NOTE: HAS_TENSORRT must be set AFTER _has_torch_tensorrt is defined (below)
 HAS_TRT_LLM     = _has("tensorrt_llm")
 
 # xformers imports fine at the top level but memory_efficient_attention
@@ -140,6 +140,27 @@ def _has_xformers_ops() -> bool:
         return False
 
 HAS_XFORMERS = _has_xformers_ops()
+
+
+def _has_torch_tensorrt() -> bool:
+    """Probe torch_tensorrt by forcing the native .so to load.
+    'import torch_tensorrt' succeeds lazily (only executes __init__.py);
+    the actual libtorchtrt.so is dlopened on first use of the C++ API.
+    We trigger that load here so HAS_TENSORRT reflects runtime availability."""
+    if not _has("torch_tensorrt"):
+        return False
+    try:
+        import torch_tensorrt  # type: ignore
+        # Accessing _version or similar forces the C extension to initialise
+        _ = torch_tensorrt.__version__
+        # Actually force the .so: try creating a minimal Input spec
+        torch_tensorrt.Input([1, 1, 8, 8], dtype=torch.float16)
+        return True
+    except Exception:
+        return False
+
+
+HAS_TENSORRT = _has("tensorrt") or _has_torch_tensorrt()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -522,6 +543,8 @@ def _make_runner_trt_attention(Q_p, K_p, V_p, bias, B, H, N, D):
         try:
             import tensorrt as trt  # type: ignore  # noqa: F401
             import torch_tensorrt  # type: ignore  # noqa: F401
+            # Force .so load early so any OSError is caught here, not in the
+            # timed loop or the outer benchmark row handler
 
             scale = 1.0 / math.sqrt(D)
             q = Q_p.to(torch.float16).contiguous()
@@ -553,8 +576,8 @@ def _make_runner_trt_attention(Q_p, K_p, V_p, bias, B, H, N, D):
                 return fn
             except Exception as exc:
                 warnings.warn(f"[torch_tensorrt] compile failed: {exc}")
-        except ImportError:
-            pass
+        except Exception as exc:  # catches OSError (.so load failure), ImportError, etc.
+            warnings.warn(f"[torch_tensorrt] unavailable: {exc}")
 
     return None
 
