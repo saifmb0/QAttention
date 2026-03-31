@@ -272,6 +272,17 @@ print('torch'+v[:3].replace('.',''))
             && info "xformers installed." \
             || warn "xformers install failed — benchmark will skip xformers comparison."
     fi
+
+    # torch-tensorrt  (enables compiled TRT attention kernel baseline)
+    # Requires matching torch/CUDA; treated as best-effort.
+    if $PYTHON -c "import torch_tensorrt" 2>/dev/null; then
+        info "torch_tensorrt already installed — skipping."
+    else
+        info "Installing torch-tensorrt (TRT attention baseline) …"
+        $PIP install --quiet torch-tensorrt \
+            && info "torch_tensorrt installed." \
+            || warn "torch_tensorrt install failed — TRT attention baseline will be n/a."
+    fi
 else
     info "Skipping optional SOTA libraries (--no-sota)."
 fi

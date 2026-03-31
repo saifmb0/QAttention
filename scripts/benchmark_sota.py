@@ -121,7 +121,7 @@ def _has(pkg: str) -> bool:
 
 HAS_FLASH_ATTN  = _has("flash_attn")
 HAS_FLASHINFER  = _has("flashinfer")
-HAS_TENSORRT    = _has("tensorrt")
+HAS_TENSORRT    = _has("tensorrt") or _has("torch_tensorrt")
 HAS_TRT_LLM     = _has("tensorrt_llm")
 
 # xformers imports fine at the top level but memory_efficient_attention
@@ -579,7 +579,7 @@ class BenchRow:
     sdpa_batched_bool_ms: float     # FAIR: batched boolean mask → flash eligible
     sdpa_memeff_ms:    float
     flash_attn2_ms:    float        # FA-2 lib (causal, upper-bound ref)
-    fa2_varlen_ms:     float        # FA-2 varlen (ragged packed, causal UB ref)
+    fa2_varlen_ms:     float        # FA-2 varlen = vLLM/PagedAttn prefill kernel (ragged packed, causal UB ref)
     flashinfer_ms:     float        # FlashInfer ragged prefill (causal UB ref)
     xformers_ms:       float        # xformers mem-eff (causal UB ref)
     trt_attention_ms:  float        # TensorRT compiled attention (causal UB ref)
@@ -747,7 +747,7 @@ _ADA_PALETTE = {
     "sdpa_batched_bool":  "#2dc653",       # FAIR: batched boolean mask → flash eligible
     "sdpa_memeff":        "#ffb703",
     "flash_attn2":        "#8338ec",
-    "fa2_varlen":         "#c77dff",       # FA-2 varlen (ragged, causal UB)
+    "fa2_varlen":         "#c77dff",       # FA-2 varlen = vLLM/PagedAttn prefill kernel (ragged, causal UB)
     "flashinfer":         "#3a86ff",
     "xformers":           "#06d6a0",
     "trt_attention":      "#d62828",
@@ -764,7 +764,7 @@ _METHOD_COLS = {
     "SDPA [tree mask, bool, FAIR]": "sdpa_batched_bool_ms",
     "SDPA mem-eff":                 "sdpa_memeff_ms",
     "FlashAttention-2 [causal UB]": "flash_attn2_ms",
-    "FA-2 varlen [causal UB]":      "fa2_varlen_ms",
+    "FA-2 varlen [=vLLM/PA kernel, causal UB]":  "fa2_varlen_ms",
     "FlashInfer [causal UB]":       "flashinfer_ms",
     "xformers [causal UB]":         "xformers_ms",
     "TensorRT [causal UB]":         "trt_attention_ms",
@@ -1100,6 +1100,7 @@ def _print_banner(info: dict, args) -> None:
     print(f"    FlashAttention-2 : {'available' if HAS_FLASH_ATTN else 'NOT INSTALLED (pip install flash-attn)'}")
     print(f"    FlashInfer       : {'available' if HAS_FLASHINFER else 'NOT INSTALLED (pip install flashinfer)'}")
     print(f"    xformers         : {'available' if HAS_XFORMERS  else 'NOT INSTALLED (pip install xformers)'}")
+    print(f"    torch_tensorrt   : {'available' if HAS_TENSORRT  else 'NOT INSTALLED (pip install torch-tensorrt)'}")
     print("=" * 70)
     print()
 
