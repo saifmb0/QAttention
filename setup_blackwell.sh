@@ -138,48 +138,98 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
         warn "Use a 'devel' Docker image (e.g. pytorch/pytorch:*-devel) to get nvcc."
     fi
 
-    # FlashAttention-2
-    # Check flash_attn is not only present but actually loads without ABI errors
-    if $PYTHON -c "from flash_attn import flash_attn_func" 2>/dev/null; then
+    # ── FlashAttention-2 ─────────────────────────────────────────────────────
+    # Strategy (three-tier):
+    #
+    #  1. PREBUILT WHEEL (preferred, no nvcc required)
+    #     Download directly from the GitHub releases page.
+    #     The .so is already compiled; no cpp_extension version check fires.
+    #     Wheel naming: flash_attn-{VER}+cu{CUDA_MAJOR}torch{TORCH_MM}cxx11abi{ABI}
+    #     We try the matrix of (CUDA major=12|13) x (torch major.minor from installed
+    #     down through 2.5) x (cxx11abi TRUE|FALSE).
+    #
+    #  2. SOURCE BUILD (fallback, requires exact nvcc == torch.version.cuda)
+    #     torch cpp_extension does a hard string comparison; even a minor-version
+    #     mismatch (12.8 vs 12.9) aborts the build.
+    #
+    #  3. SKIP with actionable diagnostic.
+    if $PYTHON -c "from flash_attn import flash_attn_varlen_func" 2>/dev/null; then
         info "flash_attn already installed and functional — skipping."
-    elif [[ -z "${CUDA_HOME:-}" ]]; then
-        warn "flash_attn skipped — nvcc / CUDA_HOME not available."
     else
-        # Pre-check: nvcc version must match torch.version.cuda.
-        # torch cpp_extension hard-fails if they differ (saves 5-min wasted compile).
-        NVCC_VER=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' || true)
-        TORCH_CUDA_VER=$($PYTHON -c "import torch; print(torch.version.cuda or '')" 2>/dev/null || true)
-        # Only proceed if both versions are detected AND match exactly.
-        # If either is missing or they differ, skip — torch cpp_extension will hard-fail anyway.
-        if [[ -z "$NVCC_VER" || -z "$TORCH_CUDA_VER" || "$NVCC_VER" != "$TORCH_CUDA_VER" ]]; then
-            warn "flash_attn source build skipped:"
-            warn "  system nvcc  = ${NVCC_VER:-<not found>}"
-            warn "  torch cuda   = ${TORCH_CUDA_VER:-<not found>}"
-            warn "  Build requires an exact match.  Use a Docker image where"
-            warn "  system nvcc and torch.version.cuda agree (e.g. nvcr.io/nvidia/pytorch:25.xx-py3)."
-        else
-            info "Building FlashAttention-2 from source (may take 5–10 min) …"
-            # Ensure pip metadata reflects the torch we actually want to compile against.
-            # On images that pre-install torch 2.8+cu129, the metadata persists even
-            # after pip installs 2.11+cu130 into a different dist-info location,
-            # causing flash_attn's setup.py to link against the 2.8 ABI headers.
-            # Force-reinstalling torch here makes the metadata unambiguous before the build.
-            info "Pinning torch to $TORCH_INDEX before flash-attn source build …"
-            $PIP install --quiet --force-reinstall \
-                "torch>=2.2.0" \
-                --extra-index-url "$TORCH_INDEX" \
-            || warn "torch force-reinstall failed — flash-attn may link against wrong ABI"
+        FA_VERSION="2.8.3"
+        FA_BASE="https://github.com/Dao-AILab/flash-attention/releases/download/v${FA_VERSION}"
 
-            # --no-binary :force source build (avoids picking up a pre-built wheel
-            #   compiled against a different torch/CUDA ABI)
-            # --no-cache-dir  :  prevents reuse of a previously cached incompatible wheel
-            # --no-build-isolation : use the already-installed torch for compilation
-            MAX_JOBS=4 $PIP install flash-attn \
-                --no-binary flash-attn \
-                --no-cache-dir \
-                --no-build-isolation \
-                && info "flash_attn installed." \
-                || warn "flash_attn build failed — benchmark will skip FA2 comparison."
+        # Detect Python ABI tag (e.g. cp312)
+        PY_TAG=$($PYTHON -c \
+            "import sys; v=sys.version_info; print(f'cp{v.major}{v.minor}')" \
+            2>/dev/null || echo "cp312")
+
+        # Installed torch major.minor (e.g. "2.11", "2.8")
+        TORCH_MM=$($PYTHON -c "
+import torch
+v = torch.__version__.split('+')[0].split('.')
+print(v[0] + '.' + v[1])
+" 2>/dev/null || echo "")
+
+        # CUDA major from torch.version.cuda (e.g. "cu12" or "cu13")
+        CUDA_MAJ=$($PYTHON -c "
+import torch
+maj = (torch.version.cuda or '12').split('.')[0]
+print('cu' + maj)
+" 2>/dev/null || echo "cu12")
+
+        FA_INSTALLED=0
+
+        # ── Tier 1: prebuilt wheels ─────────────────────────────────────────
+        info "Trying FlashAttention-2 prebuilt wheels (no nvcc required) …"
+        for _cu in "$CUDA_MAJ" "cu12" "cu13"; do
+            for _tmm in "$TORCH_MM" "2.8" "2.7" "2.6" "2.5"; do
+                [[ -z "$_tmm" ]] && continue
+                for _abi in "TRUE" "FALSE"; do
+                    _whl="flash_attn-${FA_VERSION}+${_cu}torch${_tmm}cxx11abi${_abi}-${PY_TAG}-${PY_TAG}-linux_x86_64.whl"
+                    _url="${FA_BASE}/${_whl}"
+                    # HEAD check first to avoid a full download on 404
+                    _http=$(curl -o /dev/null -sILw "%{http_code}" --max-time 15 "$_url" 2>/dev/null || echo "000")
+                    if [[ "$_http" == "200" ]]; then
+                        info "  Found: ${_whl}  — installing …"
+                        if $PIP install --quiet "${_url}" 2>/dev/null; then
+                            # Verify the .so actually loads (catches ABI mismatches)
+                            if $PYTHON -c "from flash_attn import flash_attn_varlen_func" 2>/dev/null; then
+                                FA_INSTALLED=1
+                                info "flash_attn installed via prebuilt wheel."
+                                break 3
+                            else
+                                warn "  Wheel loaded but import failed — rolling back."
+                                $PIP uninstall -y flash-attn 2>/dev/null || true
+                            fi
+                        fi
+                    fi
+                done
+            done
+        done
+
+        # ── Tier 2: source build (only if nvcc exactly matches torch.version.cuda) ─
+        if [[ $FA_INSTALLED -eq 0 ]]; then
+            NVCC_VER=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' || true)
+            TORCH_CUDA_VER=$($PYTHON -c "import torch; print(torch.version.cuda or '')" 2>/dev/null || true)
+            if [[ -n "$NVCC_VER" && -n "$TORCH_CUDA_VER" && "$NVCC_VER" == "$TORCH_CUDA_VER" ]]; then
+                info "Prebuilt wheel not found — building from source (nvcc ${NVCC_VER} = torch.cuda) …"
+                MAX_JOBS=4 $PIP install flash-attn \
+                    --no-binary flash-attn \
+                    --no-cache-dir \
+                    --no-build-isolation \
+                    && FA_INSTALLED=1 \
+                    && info "flash_attn installed from source." \
+                    || warn "flash_attn source build failed."
+            fi
+        fi
+
+        # ── Tier 3: skip with diagnostic ──────────────────────────────────
+        if [[ $FA_INSTALLED -eq 0 ]]; then
+            warn "flash_attn not installed — benchmark will show n/a for FA2 baselines."
+            warn "  Tried prebuilt wheels: cu={${CUDA_MAJ},cu12,cu13} × torch={${TORCH_MM},2.8,2.7,2.6,2.5}"
+            warn "  nvcc=${NVCC_VER:-<not found>}, torch.cuda=${TORCH_CUDA_VER:-<not found>}"
+            warn "  Permanent fix: nvcr.io/nvidia/pytorch:25.xx-py3 (nvcc matches torch)."
         fi
     fi
 
