@@ -7,35 +7,63 @@ SOTA comparison benchmark — RTX PRO 6000 Blackwell Server Edition 94 GB (SM 12
 Compares ragged ancestor-sparse attention against every relevant baseline
 for tree-structured speculative decoding:
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│ Method                      │ Library          │ Type        │ Mask    │
-├─────────────────────────────┼──────────────────┼─────────────┼─────────┤
-│ Ours (ragged, fp16)         │ Triton (this)    │ ragged      │ sparse  │
-│ Ours (ragged, bf16)         │ Triton (this)    │ ragged      │ sparse  │
-│ PyTorch SDPA — math         │ torch            │ padded      │ dense   │
-│ PyTorch SDPA — flash (FA2)  │ torch            │ padded      │ dense   │
-│ PyTorch SDPA — mem-eff.     │ torch            │ padded      │ dense   │
-│ FlashAttention-2            │ flash_attn       │ padded/var  │ causal* │
-│ FlashInfer — batch prefill  │ flashinfer       │ ragged      │ sparse* │
-│ xformers — mem-eff          │ xformers         │ padded      │ dense   │
-└─────────────────────────────┴──────────────────┴─────────────┴─────────┘
+Baseline taxonomy
+──────────────────────────────────────────────────────────────────────────
+┌──────────────────────────────┬──────────────────┬─────────────┬─────────┬──────────┐
+│ Method                       │ Library          │ Type        │ Mask    │ Category │
+├──────────────────────────────┼──────────────────┼─────────────┼─────────┼──────────┤
+│ Ours — ragged fp16           │ Triton (this)    │ ragged      │ O(d+1)  │ OURS     │
+│ SDPA + bool tree mask [FAIR] │ torch.SDPA       │ padded      │ tree✓   │ FAIR †   │
+│ SDPA flash [causal UB]       │ torch.SDPA       │ padded      │ causal* │ UB ref‡  │
+│ FA-2 varlen (= vLLM PA kern) │ flash_attn       │ ragged      │ causal* │ UB ref‡  │
+│ FlashInfer batch prefill     │ flashinfer       │ ragged      │ causal* │ UB ref‡  │
+│ xformers mem-efficient       │ xformers         │ padded      │ causal* │ UB ref‡  │
+└──────────────────────────────┴──────────────────┴─────────────┴─────────┴──────────┘
 
-  * FlashAttention-2 and FlashInfer use standard causal masking, NOT the
-    tree-ancestor mask.  They are included as compute-ceiling references:
-    the best any padded/ragged method could possibly do on this input shape.
+  † FAIR baseline: sdpa_batched_bool uses the exact same tree-ancestor boolean
+    mask as our kernel, in a single batched SDPA call with flash backend
+    eligible (PyTorch accepts bool attn_mask on the flash path).  This is the
+    PRIMARY comparison — it measures what the best standard PyTorch path can do
+    with correct semantics on padded inputs.
+
+  ‡ Upper-bound (UB) reference: these use CAUSAL masking — semantically WRONG
+    for tree verification.  They measure the absolute compute ceiling and are
+    provided only to contextualise hardware utilisation.  DO NOT cite as
+    speedup against a correct baseline.
 
 Notes on research context
 --------------------------
-  EAGLE-2 (Li et al. 2024, arXiv:2406.16858) drives the demand for
-  tree-structured attention.  vLLM's current verification path uses
-  PyTorch SDPA with an explicit tree mask bias tensor (math backend for
-  correctness; flash backend for simple causal masks).  FlashInfer
-  (Ye et al. 2024, arXiv:2312.11508) is the closest published ragged
-  attention library; it targets standard causal attention and does not
-  explicitly support the ancestor-sparse tree pattern.
+  EAGLE-2 (Li et al. 2024, arXiv:2406.16858) drives the demand for efficient
+  tree-structured attention.  vLLM's current verification path uses PyTorch
+  SDPA with an explicit tree mask bias tensor (math backend for correctness;
+  flash backend for simple causal masks) — the sdpa_batched_bool baseline in
+  this script directly models that path with a boolean mask.
 
-  This benchmark measures the latency of the *attention kernel only*,
-  which is the bottlenecked component during the verification pass.
+  Related published systems (none use our O(d+1) BFS arithmetic approach):
+
+  • SpecInfer (Miao et al. 2023, arXiv:2305.09781, ASPLOS'24): Q-guided, 64-bit
+    integer bitmask, hard limit of 64 tree tokens.  Tree mask stored explicitly.
+
+  • DeFT (Yao et al. 2024, arXiv:2404.00242, ICLR'25): KV-guided grouping, A100
+    target, depth-first flatten + evenly block-wise + 64-bit BCM + LSE merge pass.
+    Requires a separate merge kernel; no single-pass guarantee.  Benchmarks
+    Llama-3.1-8B/34B on A100/RTX4090; reports 3.59× attn speedup over Radix Attn.
+    DeFT's Table 2 taxonomises Q-guided vs KV-guided grouping but does NOT
+    enumerate arithmetic-walk O(d+1) access as a Q-guided variant — our kernel
+    occupies this empty cell.
+
+  • FlashInfer (Ye et al. 2025, arXiv:2501.01005, MLSys'25): Block-sparse-row
+    (BSR) unified KV-cache abstraction, JIT-compiled CUDA/CUTLASS kernels.
+    Represents tree attention via BSR sparsity and iterates over KV blocks
+    (O(N_tree / block_size) per query), NOT O(d+1).  Covers sm75–sm90a;
+    does NOT cover sm120 (Blackwell).  Used here as a causal upper-bound ref.
+
+  Our kernel: Q-guided, O(d+1) KV accesses via analytical BFS parent formula
+  (no mask storage, no merge pass, trivially load-balanced).  This is the
+  first published work operating in this cell of DeFT's taxonomy.
+
+  This benchmark measures the latency of the *attention kernel only*, which
+  is the bottlenecked operation during the speculative decoding verification pass.
 
 Prerequisites (auto-checked at startup)
 -----------------------------------------
@@ -594,29 +622,20 @@ class BenchRow:
     num_tree_nodes:    int
     attn_padding_ratio: float
     # latencies (ms) — NaN = skipped / unavailable
-    ragged_fp16_ms:    float
-    ragged_bf16_ms:    float
-    sdpa_math_ms:      float
-    sdpa_flash_ms:     float        # causal upper-bound (no tree mask)
-    sdpa_flash_masked_ms: float     # padded float-bias → mem-eff/math backend
-    sdpa_batched_bool_ms: float     # FAIR: batched boolean mask → flash eligible
-    sdpa_memeff_ms:    float
-    flash_attn2_ms:    float        # FA-2 lib (causal, upper-bound ref)
-    fa2_varlen_ms:     float        # FA-2 varlen = vLLM/PagedAttn prefill kernel (ragged packed, causal UB ref)
-    flashinfer_ms:     float        # FlashInfer ragged prefill (causal UB ref)
-    xformers_ms:       float        # xformers mem-eff (causal UB ref)
-    trt_attention_ms:  float        # TensorRT compiled attention (causal UB ref)
+    ragged_fp16_ms:      float
+    sdpa_flash_ms:       float       # causal upper-bound (no tree mask)
+    sdpa_batched_bool_ms: float      # FAIR: batched boolean mask → flash eligible
+    fa2_varlen_ms:       float       # FA-2 varlen = vLLM/PagedAttn prefill kernel (ragged, causal UB)
+    flashinfer_ms:       float       # FlashInfer ragged prefill (causal UB)
+    xformers_ms:         float       # xformers mem-eff (causal UB)
+    trt_attention_ms:    float       # TensorRT compiled attention (causal UB)
     # Actual sparse TFLOPS (4·(d+1)·N·D·H / latency)
     ragged_sparse_tflops: float
-    # Dense-equivalent TFLOPS (how fast would dense need to run to match)
+    # Dense-equivalent TFLOPS (how fast dense would need to run to match our latency)
     ragged_dense_equiv_tflops: float
-    sdpa_math_tflops:  float
     # speedups vs named baselines
-    speedup_vs_sdpa_math:        float
     speedup_vs_sdpa_flash:       float   # vs causal UB
-    speedup_vs_sdpa_flash_masked: float  # vs padded float-bias baseline
-    speedup_vs_sdpa_batched_bool: float  # FAIR: vs batched boolean-mask (flash eligible)
-    speedup_vs_fa2:              float
+    speedup_vs_sdpa_batched_bool: float  # FAIR: PRIMARY headline number
     speedup_vs_fa2_varlen:       float
     speedup_vs_flashinfer:       float
     speedup_vs_trt:              float
@@ -658,9 +677,6 @@ def benchmark_one(
     Q_r16, K_r16, V_r16, cu_sl, qs_fp16, ks_fp16, vs_fp16 = _make_ragged(
         B, N, H, D, device, torch.float16
     )
-    Q_rbf, K_rbf, V_rbf, cu_sl_bf, _, _, _ = _make_ragged(
-        B, N, H, D, device, torch.bfloat16
-    )
     if not skip_dense:
         Q_p, K_p, V_p, attn_bias = _make_padded(
             qs_fp16, ks_fp16, vs_fp16, masks_np,
@@ -670,22 +686,15 @@ def benchmark_one(
         Q_p = K_p = V_p = attn_bias = None
 
     # ── Build runners ────────────────────────────────────────────────────────
-    run_ragged_fp16   = _make_runner_ragged(Q_r16, K_r16, V_r16, cu_sl,
-                                            branching_factor, depth)
-    run_ragged_bf16   = _make_runner_ragged(Q_rbf, K_rbf, V_rbf, cu_sl_bf,
-                                            branching_factor, depth)
-    run_sdpa_math     = None if skip_dense else _make_runner_sdpa_math(Q_p, K_p, V_p, attn_bias)
+    run_ragged_fp16 = _make_runner_ragged(Q_r16, K_r16, V_r16, cu_sl,
+                                          branching_factor, depth)
     # Causal upper-bound (NO tree mask — semantically wrong but fastest possible)
-    run_sdpa_flash    = None if skip_dense else _make_runner_sdpa_flash(Q_p, K_p, V_p)
-    # float-additive-bias baseline → always forces mem-eff/math path
-    run_sdpa_flash_m  = None if skip_dense else _make_runner_sdpa_flash_masked(Q_p, K_p, V_p, attn_bias)
+    run_sdpa_flash  = None if skip_dense else _make_runner_sdpa_flash(Q_p, K_p, V_p)
     # FAIR: single batched SDPA with boolean tree mask → flash kernel eligible
-    run_sdpa_bb       = None if skip_dense else _make_runner_sdpa_batched_bool(
+    run_sdpa_bb     = None if skip_dense else _make_runner_sdpa_batched_bool(
         Q_p, K_p, V_p, masks_np, B, N, device, torch.float16
     )
-    run_sdpa_meff     = None if skip_dense else _make_runner_sdpa_memeff(Q_p, K_p, V_p, attn_bias)
 
-    run_fa2     = None if (skip_flashattn  or skip_dense) else _make_runner_flash_attn(Q_p, K_p, V_p)
     run_fa2_var = None if skip_flashattn else _make_runner_fa2_varlen(
         Q_r16, K_r16, V_r16, cu_sl, B, N, H, D, depth
     )
@@ -698,23 +707,16 @@ def benchmark_one(
     )
 
     # ── Time everything ──────────────────────────────────────────────────────
-    t_r16   = _try_time(run_ragged_fp16,  warmup, iters, "ragged_fp16")
-    t_rbf   = _try_time(run_ragged_bf16,  warmup, iters, "ragged_bf16")
-    t_sm    = _try_time(run_sdpa_math,    warmup, iters, "sdpa_math")    if run_sdpa_math   else float("nan")
-    t_sf    = _try_time(run_sdpa_flash,   warmup, iters, "sdpa_flash")   if run_sdpa_flash  else float("nan")
-    t_sfm   = _try_time(run_sdpa_flash_m, warmup, iters, "sdpa_flash_masked") if run_sdpa_flash_m else float("nan")
-    t_sbb   = _try_time(run_sdpa_bb,       warmup, iters, "sdpa_batched_bool") if run_sdpa_bb      else float("nan")
-    t_me    = _try_time(run_sdpa_meff,    warmup, iters, "sdpa_memeff")  if run_sdpa_meff   else float("nan")
-    t_fa2   = _try_time(run_fa2,          warmup, iters, "flash_attn2")  if run_fa2         else float("nan")
-    t_fa2v  = _try_time(run_fa2_var,      warmup, iters, "fa2_varlen")   if run_fa2_var     else float("nan")
-    t_fi    = _try_time(run_fi,           warmup, iters, "flashinfer")   if run_fi          else float("nan")
-    t_xf    = _try_time(run_xf,           warmup, iters, "xformers")     if run_xf          else float("nan")
-    t_trt   = _try_time(run_trt,          warmup, iters, "trt")          if run_trt         else float("nan")
+    t_r16  = _try_time(run_ragged_fp16, warmup, iters, "ragged_fp16")
+    t_sf   = _try_time(run_sdpa_flash,  warmup, iters, "sdpa_flash")  if run_sdpa_flash else float("nan")
+    t_sbb  = _try_time(run_sdpa_bb,     warmup, iters, "sdpa_batched_bool") if run_sdpa_bb else float("nan")
+    t_fa2v = _try_time(run_fa2_var,     warmup, iters, "fa2_varlen")  if run_fa2_var    else float("nan")
+    t_fi   = _try_time(run_fi,          warmup, iters, "flashinfer")  if run_fi         else float("nan")
+    t_xf   = _try_time(run_xf,          warmup, iters, "xformers")    if run_xf         else float("nan")
+    t_trt  = _try_time(run_trt,         warmup, iters, "trt")         if run_trt        else float("nan")
 
     # ── Metrics ──────────────────────────────────────────────────────────────
-    # Actual sparse FLOPs (what the kernel really executes)
     sparse_flops = _ragged_flops(seq_lens, H, D, depth)
-    # Dense-equivalent FLOPs (for comparison context only)
     dense_flops  = _dense_equivalent_flops(seq_lens, H, D)
     pad_rat      = 1.0 - sum(l * l for l in seq_lens) / (B * N * N)
 
@@ -723,37 +725,26 @@ def benchmark_one(
             return float("nan")
         return round(t_ref / t_our, 3)
 
-    t_ours = t_r16   # fp16 ragged as "ours"
-
     return BenchRow(
         batch_size=B,
         branching_factor=branching_factor,
         tree_depth=depth,
         num_tree_nodes=N,
-        attn_padding_ratio=round(pad_rat, 4),
-        ragged_fp16_ms         =round(t_r16,  4),
-        ragged_bf16_ms         =round(t_rbf,  4),
-        sdpa_math_ms           =round(t_sm,   4),
-        sdpa_flash_ms          =round(t_sf,   4),
-        sdpa_flash_masked_ms   =round(t_sfm,  4),
-        sdpa_batched_bool_ms   =round(t_sbb,  4),
-        sdpa_memeff_ms         =round(t_me,   4),
-        flash_attn2_ms         =round(t_fa2,  4),
-        fa2_varlen_ms          =round(t_fa2v, 4),
-        flashinfer_ms          =round(t_fi,   4),
-        xformers_ms            =round(t_xf,   4),
-        trt_attention_ms       =round(t_trt,  4),
-        ragged_sparse_tflops       =round(_to_tflops(sparse_flops, t_r16), 5),
-        ragged_dense_equiv_tflops  =round(_to_tflops(dense_flops,  t_r16), 3),
-        sdpa_math_tflops           =round(_to_tflops(dense_flops,  t_sm),  3),
-        speedup_vs_sdpa_math        =_spdup(t_sm,   t_ours),
-        speedup_vs_sdpa_flash       =_spdup(t_sf,   t_ours),
-        speedup_vs_sdpa_flash_masked=_spdup(t_sfm,  t_ours),
-        speedup_vs_sdpa_batched_bool=_spdup(t_sbb,  t_ours),
-        speedup_vs_fa2              =_spdup(t_fa2,  t_ours),
-        speedup_vs_fa2_varlen       =_spdup(t_fa2v, t_ours),
-        speedup_vs_flashinfer       =_spdup(t_fi,   t_ours),
-        speedup_vs_trt              =_spdup(t_trt,  t_ours),
+        attn_padding_ratio       =round(pad_rat,  4),
+        ragged_fp16_ms           =round(t_r16,    4),
+        sdpa_flash_ms            =round(t_sf,     4),
+        sdpa_batched_bool_ms     =round(t_sbb,    4),
+        fa2_varlen_ms            =round(t_fa2v,   4),
+        flashinfer_ms            =round(t_fi,     4),
+        xformers_ms              =round(t_xf,     4),
+        trt_attention_ms         =round(t_trt,    4),
+        ragged_sparse_tflops     =round(_to_tflops(sparse_flops, t_r16), 5),
+        ragged_dense_equiv_tflops=round(_to_tflops(dense_flops,  t_r16), 3),
+        speedup_vs_sdpa_flash       =_spdup(t_sf,   t_r16),
+        speedup_vs_sdpa_batched_bool=_spdup(t_sbb,  t_r16),
+        speedup_vs_fa2_varlen       =_spdup(t_fa2v, t_r16),
+        speedup_vs_flashinfer       =_spdup(t_fi,   t_r16),
+        speedup_vs_trt              =_spdup(t_trt,  t_r16),
     )
 
 
@@ -762,35 +753,25 @@ def benchmark_one(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _ADA_PALETTE = {
-    "ragged_fp16":        "#00b4d8",
-    "ragged_bf16":        "#0096c7",
-    "sdpa_math":          "#ef233c",
-    "sdpa_flash":         "#fb8500",       # causal UB (wrong mask)
-    "sdpa_flash_masked":  "#e07b00",       # padded float-bias → mem-eff/math
-    "sdpa_batched_bool":  "#2dc653",       # FAIR: batched boolean mask → flash eligible
-    "sdpa_memeff":        "#ffb703",
-    "flash_attn2":        "#8338ec",
-    "fa2_varlen":         "#c77dff",       # FA-2 varlen = vLLM/PagedAttn prefill kernel (ragged, causal UB)
-    "flashinfer":         "#3a86ff",
-    "xformers":           "#06d6a0",
-    "trt_attention":      "#d62828",
+    "ragged_fp16":       "#00b4d8",   # ours
+    "sdpa_batched_bool": "#2dc653",   # FAIR: boolean tree mask
+    "sdpa_flash":        "#fb8500",   # causal UB
+    "fa2_varlen":        "#c77dff",   # FA-2 varlen = vLLM kernel (causal UB)
+    "flashinfer":        "#3a86ff",   # FlashInfer (causal UB)
+    "xformers":          "#06d6a0",   # xformers (causal UB)
+    "trt_attention":     "#d62828",   # TRT (causal UB)
 }
 
 # Columns in the order they appear in the latency-vs-depth plot
 # Key = display label, value = BenchRow field name
 _METHOD_COLS = {
-    "Ragged fp16 (ours)":           "ragged_fp16_ms",
-    "Ragged bf16 (ours)":           "ragged_bf16_ms",
-    "SDPA math [tree mask]":        "sdpa_math_ms",
-    "SDPA flash [causal UB]":       "sdpa_flash_ms",
-    "SDPA [tree mask, float bias]": "sdpa_flash_masked_ms",
-    "SDPA [tree mask, bool, FAIR]": "sdpa_batched_bool_ms",
-    "SDPA mem-eff":                 "sdpa_memeff_ms",
-    "FlashAttention-2 [causal UB]": "flash_attn2_ms",
-    "FA-2 varlen [=vLLM/PA kernel, causal UB]":  "fa2_varlen_ms",
-    "FlashInfer [causal UB]":       "flashinfer_ms",
-    "xformers [causal UB]":         "xformers_ms",
-    "TensorRT [causal UB]":         "trt_attention_ms",
+    "Ragged fp16 (ours)":                    "ragged_fp16_ms",
+    "SDPA [tree mask, bool — FAIR]": "sdpa_batched_bool_ms",
+    "SDPA flash [causal UB]":                "sdpa_flash_ms",
+    "FA-2 varlen [=vLLM/PA, causal UB]":     "fa2_varlen_ms",
+    "FlashInfer [causal UB]":                "flashinfer_ms",
+    "xformers [causal UB]":                  "xformers_ms",
+    "TensorRT [causal UB]":                  "trt_attention_ms",
 }
 
 
@@ -848,17 +829,16 @@ def plot_latency_vs_depth(df: pd.DataFrame, out_dir: str) -> None:
 
 def plot_speedup_heatmap(df: pd.DataFrame, out_dir: str) -> None:
     """
-    Fig 2: Two heatmaps per branching factor:
-      Left  — speedup vs sdpa_math with tree mask   (primary / fair production baseline)
-      Right — speedup vs sdpa_flash_masked with tree mask  (fairest possible comparison)
+    Fig 2: Speedup heatmap per branching factor.
+    Shows speedup_vs_sdpa_batched_bool (the FAIR primary comparison).
     Cells with OOM are shown as grey.
     """
     _info = device_info()
     _gpu_label = f"{_info['name']}  ({_info['arch']}  SM {_info['sm']})"
 
     pairs = [
-        ("speedup_vs_sdpa_math",          "vs SDPA-math [tree mask, padded float bias]"),
-        ("speedup_vs_sdpa_batched_bool",  "vs SDPA [tree mask, bool mask, FAIR]"),
+        ("speedup_vs_sdpa_batched_bool", "vs SDPA [tree mask, bool — FAIR]  ← PRIMARY"),
+        ("speedup_vs_sdpa_flash",        "vs SDPA flash [causal UB — for context only]"),
     ]
 
     for b in sorted(df["branching_factor"].unique()):
@@ -1012,10 +992,8 @@ def plot_tflops_roofline(df: pd.DataFrame, out_dir: str) -> None:
 
 def plot_fair_vs_causal_comparison(df: pd.DataFrame, out_dir: str) -> None:
     """
-    Fig 5: Direct comparison of speedup_vs_sdpa_flash (causal UB)
-    vs speedup_vs_sdpa_flash_masked (FAIR tree-mask) at B=8.
-    This is the key reviewer concern: are we comparing apples to apples?
-    Shows the gap between headline number and fair number explicitly.
+    Fig 5: FAIR (bool tree mask) vs causal UB speedup at B=8.
+    Shows the gap between the honest headline and the causal upper-bound.
     """
     _info = device_info()
     _gpu_label = f"{_info['name']}  ({_info['arch']}  SM {_info['sm']})"
@@ -1026,35 +1004,28 @@ def plot_fair_vs_causal_comparison(df: pd.DataFrame, out_dir: str) -> None:
             continue
 
         fig, ax = plt.subplots(figsize=(10, 5))
-        depths = sub["tree_depth"].values
-        spd_causal   = sub["speedup_vs_sdpa_flash"].values.astype(float)
-        spd_fair_pad = sub["speedup_vs_sdpa_flash_masked"].values.astype(float)
-        spd_fair_bb  = sub["speedup_vs_sdpa_batched_bool"].values.astype(float)
-        spd_math     = sub["speedup_vs_sdpa_math"].values.astype(float)
+        depths    = sub["tree_depth"].values
+        spd_fair  = sub["speedup_vs_sdpa_batched_bool"].values.astype(float)
+        spd_causal = sub["speedup_vs_sdpa_flash"].values.astype(float)
 
-        ax.fill_between(depths, spd_causal, spd_fair_bb,
-                        where=~(np.isnan(spd_causal) | np.isnan(spd_fair_bb)),
+        ax.fill_between(depths, spd_causal, spd_fair,
+                        where=~(np.isnan(spd_causal) | np.isnan(spd_fair)),
                         alpha=0.15, color="#fb8500",
-                        label="Headline inflation (causal UB vs fair)")
-        ax.plot(depths, spd_math,     marker="^", color="#ef233c", lw=2,
-                label="vs SDPA-math [tree mask, padded]")
-        ax.plot(depths, spd_fair_bb,  marker="o", color="#2dc653", lw=2.5,
-                label="vs SDPA [tree mask, bool — FAIR]")
-        ax.plot(depths, spd_fair_pad, marker="D", color="#e07b00", lw=1.5, linestyle="--",
-                label="vs SDPA [tree mask, float bias]")
-        ax.plot(depths, spd_causal,   marker="s", color="#fb8500", lw=1.5, linestyle=":",
-                label="vs SDPA-flash [causal UB — headline]")
+                        label="Headline inflation (causal UB vs FAIR)")
+        ax.plot(depths, spd_fair,   marker="o", color="#2dc653", lw=2.5,
+                label="vs SDPA bool mask [FAIR — PRIMARY]")
+        ax.plot(depths, spd_causal, marker="s", color="#fb8500", lw=1.5, linestyle=":",
+                label="vs SDPA flash [causal UB — context only]")
 
         ax.axhline(1.0, color="grey", linewidth=0.8, linestyle=":")
         ax.set_xlabel("Tree depth  d", fontsize=11)
         ax.set_ylabel("Speedup  (baseline / ours)", fontsize=11)
         ax.set_title(
             f"Fair vs Headline Speedup  (b={b}, B=8)  —  {_gpu_label}\n"
-            f"Green = FAIR+ (per-sample boolean mask, flash eligible).  "
-            f"Shaded = headline inflation from causal UB.",
+            f"Green = honest FAIR number.  Shaded = inflation from causal UB.",
             fontsize=10
         )
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=9)
         ax.grid(alpha=0.25)
         plt.tight_layout()
         path = os.path.join(out_dir, f"fig5_fair_vs_headline_b{b}.png")
@@ -1076,12 +1047,10 @@ def plot_batch_scaling(df: pd.DataFrame, out_dir: str) -> None:
 
     fig, ax = plt.subplots(figsize=(9, 5))
     methods_to_show = [
-        ("Ragged fp16 (ours)",             "ragged_fp16_ms",        "#00b4d8", "-",  2.5),
-        ("SDPA math [tree mask]",          "sdpa_math_ms",          "#ef233c", "-",  1.8),
-        ("SDPA bool mask [FAIR]",          "sdpa_batched_bool_ms",  "#2dc653", "--", 2.0),
-        ("SDPA float bias [padded]",       "sdpa_flash_masked_ms",  "#e07b00", "--", 1.4),
-        ("SDPA flash [causal UB]",         "sdpa_flash_ms",         "#fb8500", ":",  1.4),
-        ("FA-2 varlen [causal UB]",        "fa2_varlen_ms",         "#c77dff", ":",  1.4),
+        ("Ragged fp16 (ours)",       "ragged_fp16_ms",       "#00b4d8", "-",  2.5),
+        ("SDPA bool mask [FAIR]",    "sdpa_batched_bool_ms", "#2dc653", "--", 2.0),
+        ("SDPA flash [causal UB]",   "sdpa_flash_ms",        "#fb8500", ":",  1.4),
+        ("FA-2 varlen [causal UB]",  "fa2_varlen_ms",        "#c77dff", ":",  1.4),
     ]
     for label, col, color, ls, lw in methods_to_show:
         vals = sub[col].values.astype(float)
@@ -1111,9 +1080,9 @@ def plot_batch_scaling(df: pd.DataFrame, out_dir: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _print_banner(info: dict, args) -> None:
-    print("=" * 70)
+    print("=" * 72)
     print("  sd-ragged  ·  SOTA Benchmark  ·  blackwell branch")
-    print("=" * 70)
+    print("=" * 72)
     print(f"  Device : {info['name']}")
     print(f"  SM     : {info['sm']}  ({info['sm_count']} SMs)  [{info['arch']}]")
     print(f"  VRAM   : {info['vram_gb']} GB")
@@ -1124,7 +1093,18 @@ def _print_banner(info: dict, args) -> None:
     print(f"    FlashInfer       : {'available' if HAS_FLASHINFER else 'NOT INSTALLED (pip install flashinfer)'}")
     print(f"    xformers         : {'available' if HAS_XFORMERS  else 'NOT INSTALLED (pip install xformers)'}")
     print(f"    torch_tensorrt   : {'available' if HAS_TENSORRT  else 'NOT INSTALLED (pip install torch-tensorrt)'}")
-    print("=" * 70)
+    print()
+    print("  Baseline methodology:")
+    print("    FAIR  = sdpa_batched_bool — correct tree-ancestor boolean mask,")
+    print("            single batched SDPA call, flash-backend eligible.")
+    print("            PRIMARY comparison.  'speedup_vs_sdpa_batched_bool' is")
+    print("            the honest headline number.")
+    print("    UB    = causal-mask baselines (FA-2, FlashInfer, sdpa_flash).")
+    print("            Wrong mask semantics.  Measure compute ceiling only.")
+    print("            DO NOT cite as speedup over a correct baseline.")
+    print()
+    print("  Canonical EAGLE-2 operating point:  B=8, b=4, d=5, N=1365")
+    print("=" * 72)
     print()
 
 
@@ -1240,17 +1220,14 @@ def main() -> None:
         extras = ""
         if not math.isnan(row.fa2_varlen_ms):
             extras += f"  fa2v={_fmt(row.fa2_varlen_ms)}"
-        if not math.isnan(row.flash_attn2_ms):
-            extras += f"  fa2={_fmt(row.flash_attn2_ms)}"
         if not math.isnan(row.trt_attention_ms):
             extras += f"  trt={_fmt(row.trt_attention_ms)}"
         print(
             f"  [{display_idx:3d}/{total}]  B={B:2d} b={b} d={d} │ "
-            f"ragged={_fmt(row.ragged_fp16_ms)}  bf16={_fmt(row.ragged_bf16_ms)} │ "
-            f"math={_fmt(row.sdpa_math_ms)}  flash_causal={_fmt(row.sdpa_flash_ms)} │ "
-            f"bool_fair={_fmt(row.sdpa_batched_bool_ms)} │ "
-            f"spdup_vs_math={row.speedup_vs_sdpa_math:.2f}×  "
-            f"spdup_vs_bool_fair={row.speedup_vs_sdpa_batched_bool:.2f}×"
+            f"ragged={_fmt(row.ragged_fp16_ms)} │ "
+            f"bool_fair={_fmt(row.sdpa_batched_bool_ms)}  flash_ub={_fmt(row.sdpa_flash_ms)} │ "
+            f"spdup_FAIR={row.speedup_vs_sdpa_batched_bool:.2f}×  "
+            f"spdup_ub={row.speedup_vs_sdpa_flash:.2f}×"
             f"{extras}"
         )
 
@@ -1258,23 +1235,56 @@ def main() -> None:
     df.to_csv(csv_path, index=False)
     print(f"\nSaved: {csv_path}  ({len(rows)} rows)")
 
-    # ── Summary table ─────────────────────────────────────────────────────────
-    print("\n── Speedup vs SDPA-math [tree mask] (mean over batch sizes) ─────────")
-    if "speedup_vs_sdpa_math" in df.columns:
-        print(
-            df.groupby(["tree_depth", "branching_factor"])["speedup_vs_sdpa_math"]
-            .mean().round(2).unstack().to_string()
-        )
-    print("\n── Speedup vs SDPA [tree mask, bool, FAIR] (mean over batch sizes) ──────")
+    # ── Canonical EAGLE-2 config spotlight ────────────────────────────────────
+    # EAGLE-2 practical operating point: B=8, b=4, d=5, N=1365 tokens/seq.
+    # This is the config that matters for real deployment.  Report it first,
+    # prominently, before the full swept tables.
+    print()
+    print("=" * 72)
+    print("  CANONICAL EAGLE-2 CONFIG RESULTS  (B=8, b=4, d=5, N=1 365 tokens)")
+    print("=" * 72)
+    _canon = df[
+        (df["batch_size"] == 8) &
+        (df["branching_factor"] == 4) &
+        (df["tree_depth"] == 5)
+    ]
+    if not _canon.empty:
+        _r = _canon.iloc[0]
+        def _fms(v): return f"{v:.3f} ms" if not math.isnan(v) else "  n/a  "
+        def _fsx(v): return f"{v:.2f}×"  if not math.isnan(v) else "  n/a  "
+        print(f"  Ours (ragged fp16)              : {_fms(_r.ragged_fp16_ms)}")
+        print()
+        print("  ── FAIR baseline (correct tree-ancestor mask) ──")
+        print(f"  SDPA bool mask [FAIR, flash-elig]: {_fms(_r.sdpa_batched_bool_ms)}"
+              f"   speedup = {_fsx(_r.speedup_vs_sdpa_batched_bool)}  ← PRIMARY")
+        print()
+        print("  ── Upper-bound refs (causal mask — wrong semantics) ──")
+        print(f"  SDPA flash [causal UB]          : {_fms(_r.sdpa_flash_ms)}"
+              f"   speedup = {_fsx(_r.speedup_vs_sdpa_flash)}  (UB only)")
+        if not math.isnan(_r.fa2_varlen_ms):
+            print(f"  FA-2 varlen [causal UB]         : {_fms(_r.fa2_varlen_ms)}"
+                  f"   speedup = {_fsx(_r.speedup_vs_fa2_varlen)}  (UB only)")
+        if not math.isnan(_r.flashinfer_ms):
+            print(f"  FlashInfer [causal UB]          : {_fms(_r.flashinfer_ms)}"
+                  f"   speedup = {_fsx(_r.speedup_vs_flashinfer)}  (UB only)")
+        print()
+        print(f"  Padding waste (padded baselines): {_r.attn_padding_ratio:.1%} of attn work is padding")
+        print(f"  Tree nodes per sequence         : {int(_r.num_tree_nodes)}")
+    else:
+        print("  [EAGLE-2 canonical config not in sweep — re-run with b=4, d=5, B=8]")
+    print("=" * 72)
+
+    # ── Summary tables ────────────────────────────────────────────────────────
+    print("\n── Speedup vs SDPA bool mask [FAIR — PRIMARY] (mean over batch sizes) ──")
     if "speedup_vs_sdpa_batched_bool" in df.columns:
         print(
             df.groupby(["tree_depth", "branching_factor"])["speedup_vs_sdpa_batched_bool"]
             .mean().round(2).unstack().to_string()
         )
-    print("\n── Speedup vs SDPA [tree mask, float bias] (mean) ───────────────────────")
-    if "speedup_vs_sdpa_flash_masked" in df.columns:
+    print("\n── Speedup vs SDPA flash [causal UB — context] (mean over batch sizes) ─")
+    if "speedup_vs_sdpa_flash" in df.columns:
         print(
-            df.groupby(["tree_depth", "branching_factor"])["speedup_vs_sdpa_flash_masked"]
+            df.groupby(["tree_depth", "branching_factor"])["speedup_vs_sdpa_flash"]
             .mean().round(2).unstack().to_string()
         )
     print("\n── Speedup vs FA-2 varlen [causal UB] (mean over batch sizes) ────────")
@@ -1290,6 +1300,28 @@ def main() -> None:
             .groupby(["tree_depth", "branching_factor"])["ragged_sparse_tflops"]
             .mean().round(5).unstack().to_string()
         )
+
+    # ── Narrative summary for paper framing ───────────────────────────────────
+    print()
+    print("=" * 72)
+    print("  RESULT INTERPRETATION GUIDE")
+    print("=" * 72)
+    print("  The PRIMARY claimed speedup is vs 'sdpa_batched_bool' (FAIR baseline):")
+    print("    - Correct tree-ancestor mask semantics (same as our kernel)")
+    print("    - Single batched SDPA call (no per-sample Python dispatch)")
+    print("    - Boolean mask → PyTorch flash-SDP backend eligible")
+    print("    - This is the fastest PyTorch can do with correct semantics")
+    print()
+    print("  The gap between speedup_vs_sdpa_batched_bool and speedup_vs_sdpa_flash")
+    print("  quantifies the 'headline inflation' from comparing against a wrong-mask")
+    print("  causal upper bound.  The FAIR number should be the headline.")
+    print()
+    print("  Relevant published systems (do not use O(d+1) BFS arithmetic):")
+    print("    SpecInfer (ASPLOS'24, arXiv:2305.09781) — Q-guided, 64-bit bitmask, max 64 tokens")
+    print("    DeFT      (ICLR'25,  arXiv:2404.00242) — KV-guided, DeFT-Flatten, LSE merge pass")
+    print("    FlashInfer (MLSys'25, arXiv:2501.01005) — BSR block-sparse, O(N/block) per Q")
+    print("  Our kernel: Q-guided, O(d+1) BFS arithmetic walk, no mask, no merge pass.")
+    print("=" * 72)
 
     if not args.no_plot:
         print("\nGenerating plots …")

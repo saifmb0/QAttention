@@ -1,6 +1,22 @@
 """
 End-to-end tokens-per-second benchmark for tree-structured speculative decoding.
 
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  IMPORTANT SCOPE NOTE                                                        ║
+║  This is a SYNTHETIC benchmark only.  The model weights are random fp16.    ║
+║  There is no draft model, no real token sampling, and no EAGLE-2 pipeline.  ║
+║  Numbers here measure raw kernel + projection throughput on representative   ║
+║  LLM architecture sizes, NOT real end-to-end speculative decoding speedup.  ║
+║  Do not use these tok/s figures as real EAGLE-2 performance claims.         ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+What it does measure (honestly):
+  - Attention kernel forward pass time as a fraction of total transformer time
+    (attn_frac).  This shows how much headroom kernel improvement creates.
+  - Full-stack throughput on correctly-shaped inputs for LLaMA-2 7B/13B dims
+    with the ragged ancestor-sparse attention path.
+  - Scaling behavior of the ragged kernel across batch sizes and tree shapes.
+
 Wraps our ragged attention kernel inside a minimal single-layer transformer
 (Q/K/V projection → ragged_attention → output projection → RMSNorm → FFN)
 and measures full-stack throughput in tokens/sec for several tree shapes.
@@ -9,6 +25,10 @@ Model presets (hidden, num_heads, head_dim, ffn_hidden, label):
   synthetic …  1 024-dim, 8 heads,  128 D, 2 816 FFN, 4 layers   (fast smoke test)
   7b        …  4 096-dim, 32 heads, 128 D, 11 008 FFN, 32 layers  (LLaMA-2 7B dims)
   13b       …  5 120-dim, 40 heads, 128 D, 13 824 FFN, 40 layers  (LLaMA-2 13B dims)
+
+  NOTE: head_dim=128 is used throughout this benchmark.  The standalone kernel
+  sweep in benchmark_sota.py uses head_dim=64.  Verify the kernel supports
+  head_dim=128 before publishing model-shaped numbers: pytest tests/
 
 Usage
 -----
@@ -22,7 +42,7 @@ Usage
 Output
 ------
   results/e2e_benchmark.csv  — per-row: model, batch, depth, bfactor, tokens,
-                                layers, fwd_ms, forward_ms_attn, tok_per_sec,
+                                layers, fwd_ms, attn_only_ms, tok_per_sec,
                                 attn_frac
 """
 
@@ -306,6 +326,11 @@ def main():
         f"({cfg['L']} layers, hidden={cfg['hidden']}, H={cfg['H']}, D={cfg['D']})"
         f"\nDevice: {device}   dtype=fp16"
     )
+    print()
+    print("  *** SYNTHETIC BENCHMARK — random fp16 weights, no real draft model ***")
+    print("  attn_frac shows kernel overhead as share of total transformer time.")
+    print("  tok/s numbers are throughput on the ragged path only (not real EAGLE-2).")
+    print()
 
     total_runs = len(batch_sizes) * len(depths) * len(branching_factors)
     run_idx    = 0
@@ -373,6 +398,14 @@ def main():
         groups2[(r["depth"], r["branching_factor"])].append(r["attn_frac"])
     for (d, b), vals in sorted(groups2.items()):
         print(f"  depth={d}  b={b}  attn_frac={sum(vals)/len(vals):.1%}")
+
+    print()
+    print("─" * 70)
+    print("  REMINDER: the above tok/s and attn_frac numbers are from a")
+    print("  SYNTHETIC model with random weights.  They are useful for")
+    print("  understanding kernel overhead share and scaling trends, but")
+    print("  they do not predict real EAGLE-2 end-to-end speedup.")
+    print("─" * 70)
 
 
 if __name__ == "__main__":
