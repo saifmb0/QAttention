@@ -1,4 +1,43 @@
-# Requirements for RTX PRO 6000 Blackwell Server Edition (SM 12.0, 94 GB GDDR7)
+# Requirements for NVIDIA H100 / H200  (SM 9.0, Hopper)
+# "hopper" branch — sd-ragged
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Core toolchain ────────────────────────────────────────────────────────────
+# Pinned to 2.8.0 so FlashInfer pre-built wheels (cu121/torch2.8) match exactly.
+# Do not bump torch without re-checking the FlashInfer index.
+torch==2.8.0
+triton>=3.0.0,<4.0.0
+
+# ── Numerical / data ─────────────────────────────────────────────────────────
+numpy>=1.24.0
+pandas>=2.0.0
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
+matplotlib>=3.7.0
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest>=7.4.0
+pytest-timeout>=2.1.0
+ninja
+
+# ── SOTA baseline libraries ───────────────────────────────────────────────────
+#
+# flash-attn: NOT required.
+# torch.nn.functional.scaled_dot_product_attention with enable_flash=True
+# calls the same FlashAttention-2 kernel without the fragile .so ABI binding.
+# Installing flash-attn separately risks the undefined symbol crash seen in
+# the blackwell branch when torch and flash-attn share mismatched ABIs.
+#
+# FlashInfer — ragged tree-attention competitor baseline
+#   Pre-built wheels for torch2.8/cu121 (stable, tested):
+#     pip install flashinfer -i https://flashinfer.ai/whl/cu121/torch2.8/
+#   Alternative for cu124 hosts:
+#     pip install flashinfer -i https://flashinfer.ai/whl/cu124/torch2.8/
+# flashinfer>=0.1.6
+#
+# DeFT (arXiv:2404.00242, ICLR'25) — no public pip release.
+# Comparison against DeFT is algorithmic only (see paper/paper.tex §4 and §5).
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Core toolchain ────────────────────────────────────────────────────────────

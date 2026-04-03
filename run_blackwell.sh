@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
 # run_blackwell.sh
-# Single entry-point for the sd-ragged blackwell branch.
-# Target: NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB  (SM 12.0 Blackwell)
+# Single entry-point for the sd-ragged "hopper" branch.
+# Target: NVIDIA H100 / H200  (SM 9.0, Hopper)
 #
 # Stages (all on by default):
 #   1 — smoke   : Python smoke test (kernel launches, shapes correct)
-#   2 — test    : full pytest correctness suite (41 cases, ~2 min)
+#   2 — test    : full pytest correctness suite (~2 min)
 #   3 — bench   : SOTA benchmark sweep (all methods, ~15 min full / ~3 min fast)
 #   4 — profile : roofline profiler for the ragged kernel
 #   5 — e2e     : end-to-end tok/s benchmark (synthetic model)
@@ -14,7 +14,7 @@
 # Usage:
 #   bash run_blackwell.sh                     # full run (all stages)
 #   bash run_blackwell.sh --fast              # small grid, fewer iters
-#   bash run_blackwell.sh --skip-profile      # skip profiler (no nvprof needed)
+#   bash run_blackwell.sh --skip-profile      # skip profiler
 #   bash run_blackwell.sh --skip-e2e          # skip end-to-end tok/s benchmark
 #   bash run_blackwell.sh --dtype bf16        # run benchmark in BF16
 #   bash run_blackwell.sh --no-sota           # skip optional SOTA libs
@@ -60,8 +60,8 @@ mkdir -p "$OUT_DIR"
 # ─── Header ─────────────────────────────────────────────────────────────────
 echo -e "${BOLD}"
 echo "  ╔══════════════════════════════════════════════════════╗"
-echo "  ║  sd-ragged · blackwell branch                        ║"
-echo "  ║  NVIDIA RTX PRO 6000 Blackwell  (SM 12.0)            ║"
+echo "  ║  sd-ragged · hopper branch                           ║"
+echo "  ║  NVIDIA H100 / H200  (SM 9.0, Hopper)               ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -73,12 +73,14 @@ if torch.cuda.is_available():
     print(f"  SM    : {p.major}{p.minor}  ({p.multi_processor_count} SMs)")
     print(f"  VRAM  : {p.total_memory // 1024**3} GB")
     sm = (p.major, p.minor)
-    if sm >= (12, 0):
-        tier = 'SM120 configs active (Blackwell)'
+    if sm >= (9, 0) and sm < (12, 0):
+        tier = 'SM90 configs active (Hopper)'
+    elif sm >= (12, 0):
+        tier = 'SM120 configs active (Blackwell — use blackwell branch)'
     elif sm >= (8, 9):
         tier = 'SM89 configs active (Lovelace)'
     else:
-        tier = 'SM75 configs active (Turing/other)'
+        tier = 'SM75 configs active (fallback)'
     print(f"  Config tier: {tier}")
 else:
     print("  NO CUDA GPU DETECTED")
@@ -112,7 +114,7 @@ if [[ $FAST -eq 1 ]]; then
 fi
 
 if [[ $SKIP_SOTA_LIBS -eq 1 ]]; then
-    SOTA_ARGS+=("--skip-flashattn" "--skip-flashinfer" "--skip-xformers")
+    SOTA_ARGS+=("--skip-flashinfer")
 fi
 
 $PYTHON scripts/benchmark_sota.py "${SOTA_ARGS[@]}" && ok "SOTA benchmark complete"

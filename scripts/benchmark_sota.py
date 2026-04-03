@@ -1,8 +1,8 @@
 """
 benchmark_sota.py
 =================
-SOTA comparison benchmark — RTX PRO 6000 Blackwell Server Edition 94 GB (SM 12.0)
-"blackwell" branch
+SOTA comparison benchmark — NVIDIA H100 / H200 (SM 9.0, Hopper)
+"hopper" branch
 
 Compares ragged ancestor-sparse attention against every relevant baseline
 for tree-structured speculative decoding:
@@ -14,10 +14,9 @@ Baseline taxonomy
 ├──────────────────────────────┼──────────────────┼─────────────┼─────────┼──────────┤
 │ Ours — ragged fp16           │ Triton (this)    │ ragged      │ O(d+1)  │ OURS     │
 │ SDPA + bool tree mask [FAIR] │ torch.SDPA       │ padded      │ tree✓   │ FAIR †   │
+│ FlashInfer + tree mask [FAIR]│ flashinfer       │ ragged      │ tree✓   │ FAIR †   │
 │ SDPA flash [causal UB]       │ torch.SDPA       │ padded      │ causal* │ UB ref‡  │
-│ FA-2 varlen (= vLLM PA kern) │ flash_attn       │ ragged      │ causal* │ UB ref‡  │
 │ FlashInfer batch prefill     │ flashinfer       │ ragged      │ causal* │ UB ref‡  │
-│ xformers mem-efficient       │ xformers         │ padded      │ causal* │ UB ref‡  │
 └──────────────────────────────┴──────────────────┴─────────────┴─────────┴──────────┘
 
   † FAIR baseline: sdpa_batched_bool uses the exact same tree-ancestor boolean
@@ -67,10 +66,11 @@ Notes on research context
 
 Prerequisites (auto-checked at startup)
 -----------------------------------------
-  Required : torch >= 2.1,  triton >= 2.3
-  Optional : flash_attn >= 2.5   (pip install flash-attn --no-build-isolation)
-             flashinfer           (pip install flashinfer)
-             xformers             (pip install xformers)
+  Required : torch == 2.8.0 (cu121),  triton >= 3.0
+  Optional : flashinfer  (see requirements_blackwell.txt for cu121/torch2.8 URLs)
+  Note     : flash-attn is intentionally NOT installed.  torch.sdp_kernel(enable_flash=True)
+             provides the same FA-2 kernel natively with no .so ABI dependency.
+  Note     : DeFT (arXiv:2404.00242, ICLR'25) has no public code release.
 
 Usage
 ------
@@ -80,13 +80,13 @@ Usage
   # Selected sweep (faster)
   python scripts/benchmark_sota.py --batch-sizes 1,8,32 --depths 1,3,5
 
-  # Skip optional SOTA libs, only compare SDPA backends
-  python scripts/benchmark_sota.py --skip-flashattn --skip-flashinfer --skip-xformers
+  # Skip FlashInfer (if not installed), only compare SDPA baselines
+  python scripts/benchmark_sota.py --skip-flashinfer
 
   # Disable plots (CI / headless mode)
   python scripts/benchmark_sota.py --no-plot
 
-  # Run with bfloat16 (Ada natively accelerated)
+  # Run with bfloat16 (native on H100)
   python scripts/benchmark_sota.py --dtype bf16
 """
 
@@ -147,48 +147,12 @@ def _has(pkg: str) -> bool:
         return False
 
 
-HAS_FLASH_ATTN  = _has("flash_attn")
-HAS_FLASHINFER  = _has("flashinfer")
-# NOTE: HAS_TENSORRT must be set AFTER _has_torch_tensorrt is defined (below)
-HAS_TRT_LLM     = _has("tensorrt_llm")
+HAS_FLASHINFER = _has("flashinfer")
 
-# xformers imports fine at the top level but memory_efficient_attention
-# internally loads flash_attn_2_cuda.so on some builds.  Probe once here.
-def _has_xformers_ops() -> bool:
-    if not _has("xformers"):
-        return False
-    try:
-        import xformers.ops as _xops
-        # Do a tiny dry-run to flush any lazy .so loading
-        _q = torch.zeros(1, 1, 1, 8, dtype=torch.float16,
-                         device="cuda" if torch.cuda.is_available() else "cpu")
-        _xops.memory_efficient_attention(_q, _q, _q)
-        return True
-    except Exception:
-        return False
-
-HAS_XFORMERS = _has_xformers_ops()
-
-
-def _has_torch_tensorrt() -> bool:
-    """Probe torch_tensorrt by forcing the native .so to load.
-    'import torch_tensorrt' succeeds lazily (only executes __init__.py);
-    the actual libtorchtrt.so is dlopened on first use of the C++ API.
-    We trigger that load here so HAS_TENSORRT reflects runtime availability."""
-    if not _has("torch_tensorrt"):
-        return False
-    try:
-        import torch_tensorrt  # type: ignore
-        # Accessing _version or similar forces the C extension to initialise
-        _ = torch_tensorrt.__version__
-        # Actually force the .so: try creating a minimal Input spec
-        torch_tensorrt.Input([1, 1, 8, 8], dtype=torch.float16)
-        return True
-    except Exception:
-        return False
-
-
-HAS_TENSORRT = _has("tensorrt") or _has_torch_tensorrt()
+# flash-attn is intentionally not installed on this branch.
+# torch.sdp_kernel(enable_flash=True) provides the same FA-2 kernel via
+# PyTorch native bindings with no .so ABI dependency.
+# xformers and TensorRT are not used in the hopper branch benchmarks.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -198,13 +162,16 @@ HAS_TENSORRT = _has("tensorrt") or _has_torch_tensorrt()
 def device_info() -> dict:
     if not torch.cuda.is_available():
         return {"name": "CPU", "sm": "N/A", "vram_gb": 0, "sm_count": 0,
-                "is_ada": False, "is_blackwell": False, "arch": "cpu"}
+                "is_hopper": False, "is_ada": False, "is_blackwell": False, "arch": "cpu"}
     p = torch.cuda.get_device_properties(0)
     sm = (p.major, p.minor)
+    is_hopper    = (9, 0) <= sm < (10, 0)
     is_blackwell = sm >= (12, 0)
-    is_ada       = (not is_blackwell) and sm >= (8, 9)
+    is_ada       = (8, 9) <= sm < (9, 0)
     if is_blackwell:
         arch = "Blackwell"
+    elif is_hopper:
+        arch = "Hopper"
     elif is_ada:
         arch = "Lovelace"
     elif sm >= (8, 0):
@@ -218,8 +185,9 @@ def device_info() -> dict:
         "sm":           f"{p.major}{p.minor}",
         "vram_gb":      round(p.total_memory / 1024**3, 1),
         "sm_count":     p.multi_processor_count,
-        "is_ada":       is_ada,
+        "is_hopper":    is_hopper,
         "is_blackwell": is_blackwell,
+        "is_ada":       is_ada,
         "arch":         arch,
     }
 
@@ -357,33 +325,7 @@ def _make_runner_sdpa_flash(Q_p, K_p, V_p):
     return fn
 
 
-def _make_runner_sdpa_memeff(Q_p, K_p, V_p, bias):
-    scale = 1.0 / math.sqrt(Q_p.shape[-1])
-    def fn():
-        with torch.backends.cuda.sdp_kernel(
-            enable_flash=False, enable_math=False, enable_mem_efficient=True
-        ):
-            F.scaled_dot_product_attention(Q_p, K_p, V_p,
-                                           attn_mask=bias, scale=scale)
-    return fn
 
-
-def _make_runner_flash_attn(Q_p, K_p, V_p):
-    """FlashAttention-2 via flash_attn library (causal, no tree bias)."""
-    if not HAS_FLASH_ATTN:
-        return None
-    try:
-        from flash_attn import flash_attn_func  # type: ignore
-        # flash_attn_func expects [B, L, H, D]
-        q = Q_p.permute(0, 2, 1, 3).contiguous().to(torch.float16)
-        k = K_p.permute(0, 2, 1, 3).contiguous().to(torch.float16)
-        v = V_p.permute(0, 2, 1, 3).contiguous().to(torch.float16)
-        def fn():
-            flash_attn_func(q, k, v, causal=True)
-        return fn
-    except Exception as exc:
-        warnings.warn(f"[flash_attn] setup failed: {exc}")
-        return None
 
 
 def _make_runner_flashinfer(Q, K, V, cu_sl, B, L_max, H, D, device):
@@ -424,38 +366,7 @@ def _make_runner_flashinfer(Q, K, V, cu_sl, B, L_max, H, D, device):
         return None
 
 
-def _make_runner_xformers(Q_p, K_p, V_p):
-    """xformers memory-efficient attention (causal, no tree bias)."""
-    if not HAS_XFORMERS:
-        return None
-    try:
-        import xformers.ops as xops  # type: ignore
-        q = Q_p.permute(0, 2, 1, 3).contiguous().to(torch.float16)  # [B, L, H, D]
-        k = K_p.permute(0, 2, 1, 3).contiguous().to(torch.float16)
-        v = V_p.permute(0, 2, 1, 3).contiguous().to(torch.float16)
-        def fn():
-            xops.memory_efficient_attention(q, k, v,
-                                            attn_bias=xops.LowerTriangularMask())
-        return fn
-    except Exception as exc:
-        warnings.warn(f"[xformers] setup failed: {exc}")
-        return None
 
-
-def _make_runner_sdpa_flash_masked(Q_p, K_p, V_p, bias):
-    """
-    PyTorch SDPA with tree-ancestry float-additive bias on PADDED tensors.
-
-    NOTE: a float attn_mask forces the mem-efficient or math backend — the
-    flash kernel cannot accept an arbitrary float bias.  This baseline measures
-    the best PyTorch can do for the correct mask semantics when given padded
-    batch tensors (the typical deployment path in vLLM today).
-    """
-    scale = 1.0 / math.sqrt(Q_p.shape[-1])
-    def fn():
-        F.scaled_dot_product_attention(Q_p, K_p, V_p,
-                                       attn_mask=bias, scale=scale)
-    return fn
 
 
 def _make_runner_sdpa_batched_bool(Q_p, K_p, V_p, masks_np, B, N, device, dtype):
@@ -494,120 +405,51 @@ def _make_runner_sdpa_batched_bool(Q_p, K_p, V_p, masks_np, B, N, device, dtype)
     return fn
 
 
-def _make_runner_fa2_varlen(Q, K, V, cu_sl, B, N, H, D, tree_depth):
+def _make_runner_flashinfer_tree(Q, K, V, cu_sl, B, N, H, D, masks_np, device):
     """
-    FlashAttention-2 flash_attn_varlen_func (ragged packed inputs, causal).
+    FlashInfer per-sample prefill with the EXACT tree-ancestor boolean mask.
 
-    Important framing: FA-2 varlen handles *inter-sequence* variable lengths
-    natively (no padding between sequences) but still applies standard causal
-    masking *within* each sequence — NOT the ancestor-sparse tree mask.
-    This is the answer to: "what if you just use FA-2 varlen on the packed
-    tokens without exploiting tree structure?"
-    Result is mathematically INCORRECT for tree verification, but tests the
-    latency of the fastest available attention primitive on the same input shape.
+    This is the FAIR ragged competitor: correct tree semantics, FlashInfer
+    kernel, no padding waste between sequences.
+    Uses flashinfer.single_prefill_with_kv_cache with custom_mask= per item.
+
+    Architecture note: serial per-item dispatch — measures FlashInfer's kernel
+    efficiency on the correct problem, not batch dispatch overhead.  Each item
+    is warmed independently before timing.
     """
-    if not HAS_FLASH_ATTN:
+    if not HAS_FLASHINFER:
         return None
     try:
-        from flash_attn import flash_attn_varlen_func  # type: ignore
-        device = Q.device
-        cu = cu_sl.to(device=device, dtype=torch.int32)
-        q = Q.to(torch.float16).contiguous()  # [total_tokens, H, D]
-        k = K.to(torch.float16).contiguous()
-        v = V.to(torch.float16).contiguous()
-        max_seqlen = N  # all seqs same length in this benchmark
+        import flashinfer  # type: ignore
+        starts = cu_sl[:-1].cpu().tolist()
+        ends   = cu_sl[1:].cpu().tolist()
+        qs = [Q[s:e].to(torch.float16) for s, e in zip(starts, ends)]
+        ks = [K[s:e].to(torch.float16) for s, e in zip(starts, ends)]
+        vs = [V[s:e].to(torch.float16) for s, e in zip(starts, ends)]
+        # Boolean masks per item [N, N] — True = attend
+        bool_masks = [
+            torch.from_numpy(m.astype(bool)).to(device)
+            for m in masks_np
+        ]
 
         def fn():
-            flash_attn_varlen_func(
-                q, k, v,
-                cu_seqlens_q=cu,
-                cu_seqlens_k=cu,
-                max_seqlen_q=max_seqlen,
-                max_seqlen_k=max_seqlen,
-                causal=True,
-            )
-        # warm up once
+            for q_i, k_i, v_i, mask_i in zip(qs, ks, vs, bool_masks):
+                flashinfer.single_prefill_with_kv_cache(
+                    q_i, k_i, v_i,
+                    custom_mask=mask_i,
+                    causal=False,
+                )
+
+        # Warmup — also validates API signature
         try:
-            fn(); torch.cuda.synchronize()
+            fn()
+            torch.cuda.synchronize()
         except Exception:
-            pass
+            return None
         return fn
     except Exception as exc:
-        warnings.warn(f"[fa2_varlen] setup failed: {exc}")
+        warnings.warn(f"[flashinfer_tree] setup failed: {exc}")
         return None
-
-
-def _make_runner_trt_attention(Q_p, K_p, V_p, bias, B, H, N, D):
-    """
-    TensorRT attention kernel via tensorrt_llm or tensorrt directly.
-
-    Attempts three escalating fallbacks:
-      1. tensorrt_llm.functional.bert_attention  (full TRT-LLM)
-      2. torch.ops.tensorrt.scaled_dot_product_attention (TRT torch-tensorrt)
-      3. Returns None if neither is importable.
-
-    Note: TRT-LLM requires building a TensorRT engine first. The latency here
-    includes the PyTorch→TRT dispatch overhead but NOT engine build time.
-    No tree-mask support in TRT-LLM's prefill FMHA by default; this measures
-    the *causal* upper-bound on their stack, same as the FA-2 causal baseline.
-    """
-    if not (HAS_TENSORRT or HAS_TRT_LLM):
-        return None
-
-    # Attempt 1: tensorrt_llm
-    if HAS_TRT_LLM:
-        try:
-            import tensorrt_llm  # type: ignore  # noqa: F401
-            # TRT-LLM attention requires GPT model context — not directly callable
-            # as a standalone op.  We skip and fall through.
-            warnings.warn("[trt_llm] tensorrt_llm is installed but its attention "
-                          "primitive requires a full model context. "
-                          "Use trt_llm_e2e benchmark instead. Skipping.")
-        except Exception:
-            pass
-
-    # Attempt 2: torch-tensorrt compiled module
-    if HAS_TENSORRT:
-        try:
-            import tensorrt as trt  # type: ignore  # noqa: F401
-            import torch_tensorrt  # type: ignore  # noqa: F401
-            # Force .so load early so any OSError is caught here, not in the
-            # timed loop or the outer benchmark row handler
-
-            scale = 1.0 / math.sqrt(D)
-            q = Q_p.to(torch.float16).contiguous()
-            k = K_p.to(torch.float16).contiguous()
-            v = V_p.to(torch.float16).contiguous()
-
-            # Compile a simple SDPA module with TRT backend
-            class _SDPA(torch.nn.Module):
-                def forward(self, q, k, v):
-                    return F.scaled_dot_product_attention(
-                        q, k, v, is_causal=True, scale=scale
-                    )
-
-            m = _SDPA().eval().cuda()
-            try:
-                compiled = torch_tensorrt.compile(
-                    m,
-                    inputs=[
-                        torch_tensorrt.Input(q.shape, dtype=torch.float16),
-                        torch_tensorrt.Input(k.shape, dtype=torch.float16),
-                        torch_tensorrt.Input(v.shape, dtype=torch.float16),
-                    ],
-                    enabled_precisions={torch.float16},
-                    truncate_double=True,
-                )
-                compiled(q, k, v); torch.cuda.synchronize()  # warmup
-                def fn():
-                    compiled(q, k, v)
-                return fn
-            except Exception as exc:
-                warnings.warn(f"[torch_tensorrt] compile failed: {exc}")
-        except Exception as exc:  # catches OSError (.so load failure), ImportError, etc.
-            warnings.warn(f"[torch_tensorrt] unavailable: {exc}")
-
-    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -622,23 +464,20 @@ class BenchRow:
     num_tree_nodes:    int
     attn_padding_ratio: float
     # latencies (ms) — NaN = skipped / unavailable
-    ragged_fp16_ms:      float
-    sdpa_flash_ms:       float       # causal upper-bound (no tree mask)
-    sdpa_batched_bool_ms: float      # FAIR: batched boolean mask → flash eligible
-    fa2_varlen_ms:       float       # FA-2 varlen = vLLM/PagedAttn prefill kernel (ragged, causal UB)
-    flashinfer_ms:       float       # FlashInfer ragged prefill (causal UB)
-    xformers_ms:         float       # xformers mem-eff (causal UB)
-    trt_attention_ms:    float       # TensorRT compiled attention (causal UB)
+    ragged_fp16_ms:       float
+    sdpa_flash_ms:        float        # causal upper-bound (no tree mask)
+    sdpa_batched_bool_ms: float        # FAIR: batched boolean mask, flash-eligible
+    flashinfer_ms:        float        # FlashInfer ragged prefill (causal UB)
+    flashinfer_tree_ms:   float        # FlashInfer per-item tree-mask (FAIR ragged competitor)
     # Actual sparse TFLOPS (4·(d+1)·N·D·H / latency)
     ragged_sparse_tflops: float
     # Dense-equivalent TFLOPS (how fast dense would need to run to match our latency)
     ragged_dense_equiv_tflops: float
     # speedups vs named baselines
-    speedup_vs_sdpa_flash:       float   # vs causal UB
-    speedup_vs_sdpa_batched_bool: float  # FAIR: PRIMARY headline number
-    speedup_vs_fa2_varlen:       float
-    speedup_vs_flashinfer:       float
-    speedup_vs_trt:              float
+    speedup_vs_sdpa_flash:        float   # vs causal UB
+    speedup_vs_sdpa_batched_bool: float   # FAIR: PRIMARY headline number
+    speedup_vs_flashinfer:        float   # vs causal UB
+    speedup_vs_flashinfer_tree:   float   # FAIR: ragged competitor with tree mask
 
 
 def benchmark_one(
@@ -652,10 +491,7 @@ def benchmark_one(
     warmup:            int  = WARMUP_ITERS,
     iters:             int  = BENCH_ITERS,
     device:            torch.device | None = None,
-    skip_flashattn:    bool = False,
     skip_flashinfer:   bool = False,
-    skip_xformers:     bool = False,
-    skip_tensorrt:     bool = False,
 ) -> BenchRow:
     if device is None:
         device = torch.device("cuda")
@@ -695,25 +531,19 @@ def benchmark_one(
         Q_p, K_p, V_p, masks_np, B, N, device, torch.float16
     )
 
-    run_fa2_var = None if skip_flashattn else _make_runner_fa2_varlen(
-        Q_r16, K_r16, V_r16, cu_sl, B, N, H, D, depth
-    )
     run_fi      = None if skip_flashinfer else _make_runner_flashinfer(
         Q_r16, K_r16, V_r16, cu_sl, B, N, H, D, device
     )
-    run_xf      = None if (skip_xformers   or skip_dense) else _make_runner_xformers(Q_p, K_p, V_p)
-    run_trt     = None if (skip_dense or skip_tensorrt) else _make_runner_trt_attention(
-        Q_p, K_p, V_p, attn_bias, B, H, N, D
+    run_fi_tree = None if skip_flashinfer else _make_runner_flashinfer_tree(
+        Q_r16, K_r16, V_r16, cu_sl, B, N, H, D, masks_np, device
     )
 
     # ── Time everything ──────────────────────────────────────────────────────
     t_r16  = _try_time(run_ragged_fp16, warmup, iters, "ragged_fp16")
-    t_sf   = _try_time(run_sdpa_flash,  warmup, iters, "sdpa_flash")  if run_sdpa_flash else float("nan")
-    t_sbb  = _try_time(run_sdpa_bb,     warmup, iters, "sdpa_batched_bool") if run_sdpa_bb else float("nan")
-    t_fa2v = _try_time(run_fa2_var,     warmup, iters, "fa2_varlen")  if run_fa2_var    else float("nan")
-    t_fi   = _try_time(run_fi,          warmup, iters, "flashinfer")  if run_fi         else float("nan")
-    t_xf   = _try_time(run_xf,          warmup, iters, "xformers")    if run_xf         else float("nan")
-    t_trt  = _try_time(run_trt,         warmup, iters, "trt")         if run_trt        else float("nan")
+    t_sf      = _try_time(run_sdpa_flash,  warmup, iters, "sdpa_flash")       if run_sdpa_flash else float("nan")
+    t_sbb     = _try_time(run_sdpa_bb,     warmup, iters, "sdpa_batched_bool") if run_sdpa_bb    else float("nan")
+    t_fi      = _try_time(run_fi,          warmup, iters, "flashinfer")        if run_fi         else float("nan")
+    t_fi_tree = _try_time(run_fi_tree,     warmup, iters, "flashinfer_tree")   if run_fi_tree    else float("nan")
 
     # ── Metrics ──────────────────────────────────────────────────────────────
     sparse_flops = _ragged_flops(seq_lens, H, D, depth)
@@ -730,21 +560,18 @@ def benchmark_one(
         branching_factor=branching_factor,
         tree_depth=depth,
         num_tree_nodes=N,
-        attn_padding_ratio       =round(pad_rat,  4),
-        ragged_fp16_ms           =round(t_r16,    4),
-        sdpa_flash_ms            =round(t_sf,     4),
-        sdpa_batched_bool_ms     =round(t_sbb,    4),
-        fa2_varlen_ms            =round(t_fa2v,   4),
-        flashinfer_ms            =round(t_fi,     4),
-        xformers_ms              =round(t_xf,     4),
-        trt_attention_ms         =round(t_trt,    4),
-        ragged_sparse_tflops     =round(_to_tflops(sparse_flops, t_r16), 5),
-        ragged_dense_equiv_tflops=round(_to_tflops(dense_flops,  t_r16), 3),
-        speedup_vs_sdpa_flash       =_spdup(t_sf,   t_r16),
-        speedup_vs_sdpa_batched_bool=_spdup(t_sbb,  t_r16),
-        speedup_vs_fa2_varlen       =_spdup(t_fa2v, t_r16),
-        speedup_vs_flashinfer       =_spdup(t_fi,   t_r16),
-        speedup_vs_trt              =_spdup(t_trt,  t_r16),
+        attn_padding_ratio          =round(pad_rat,      4),
+        ragged_fp16_ms              =round(t_r16,        4),
+        sdpa_flash_ms               =round(t_sf,         4),
+        sdpa_batched_bool_ms        =round(t_sbb,        4),
+        flashinfer_ms               =round(t_fi,         4),
+        flashinfer_tree_ms          =round(t_fi_tree,    4),
+        ragged_sparse_tflops        =round(_to_tflops(sparse_flops, t_r16), 5),
+        ragged_dense_equiv_tflops   =round(_to_tflops(dense_flops,  t_r16), 3),
+        speedup_vs_sdpa_flash       =_spdup(t_sf,        t_r16),
+        speedup_vs_sdpa_batched_bool=_spdup(t_sbb,       t_r16),
+        speedup_vs_flashinfer       =_spdup(t_fi,        t_r16),
+        speedup_vs_flashinfer_tree  =_spdup(t_fi_tree,   t_r16),
     )
 
 
@@ -754,24 +581,20 @@ def benchmark_one(
 
 _ADA_PALETTE = {
     "ragged_fp16":       "#00b4d8",   # ours
-    "sdpa_batched_bool": "#2dc653",   # FAIR: boolean tree mask
+    "sdpa_batched_bool": "#2dc653",   # FAIR: batched boolean tree mask
+    "flashinfer_tree":   "#7b2d8b",   # FAIR: FlashInfer per-item tree mask
     "sdpa_flash":        "#fb8500",   # causal UB
-    "fa2_varlen":        "#c77dff",   # FA-2 varlen = vLLM kernel (causal UB)
     "flashinfer":        "#3a86ff",   # FlashInfer (causal UB)
-    "xformers":          "#06d6a0",   # xformers (causal UB)
-    "trt_attention":     "#d62828",   # TRT (causal UB)
 }
 
 # Columns in the order they appear in the latency-vs-depth plot
 # Key = display label, value = BenchRow field name
 _METHOD_COLS = {
-    "Ragged fp16 (ours)":                    "ragged_fp16_ms",
+    "Ragged fp16 (ours)":                         "ragged_fp16_ms",
     "SDPA [tree mask, bool — FAIR]": "sdpa_batched_bool_ms",
-    "SDPA flash [causal UB]":                "sdpa_flash_ms",
-    "FA-2 varlen [=vLLM/PA, causal UB]":     "fa2_varlen_ms",
-    "FlashInfer [causal UB]":                "flashinfer_ms",
-    "xformers [causal UB]":                  "xformers_ms",
-    "TensorRT [causal UB]":                  "trt_attention_ms",
+    "FlashInfer [tree mask, FAIR]": "flashinfer_tree_ms",
+    "SDPA flash [causal UB]":                     "sdpa_flash_ms",
+    "FlashInfer [causal UB]":                     "flashinfer_ms",
 }
 
 
@@ -1050,7 +873,7 @@ def plot_batch_scaling(df: pd.DataFrame, out_dir: str) -> None:
         ("Ragged fp16 (ours)",       "ragged_fp16_ms",       "#00b4d8", "-",  2.5),
         ("SDPA bool mask [FAIR]",    "sdpa_batched_bool_ms", "#2dc653", "--", 2.0),
         ("SDPA flash [causal UB]",   "sdpa_flash_ms",        "#fb8500", ":",  1.4),
-        ("FA-2 varlen [causal UB]",  "fa2_varlen_ms",        "#c77dff", ":",  1.4),
+        ("FlashInfer [tree mask, FAIR]", "flashinfer_tree_ms",  "#7b2d8b", "--", 1.8),
     ]
     for label, col, color, ls, lw in methods_to_show:
         vals = sub[col].values.astype(float)
@@ -1081,7 +904,7 @@ def plot_batch_scaling(df: pd.DataFrame, out_dir: str) -> None:
 
 def _print_banner(info: dict, args) -> None:
     print("=" * 72)
-    print("  sd-ragged  ·  SOTA Benchmark  ·  blackwell branch")
+    print("  sd-ragged  ·  SOTA Benchmark  ·  hopper branch")
     print("=" * 72)
     print(f"  Device : {info['name']}")
     print(f"  SM     : {info['sm']}  ({info['sm_count']} SMs)  [{info['arch']}]")
@@ -1089,17 +912,18 @@ def _print_banner(info: dict, args) -> None:
     print(f"  dtype  : {args.dtype}")
     print()
     print("  Optional SOTA backends:")
-    print(f"    FlashAttention-2 : {'available' if HAS_FLASH_ATTN else 'NOT INSTALLED (pip install flash-attn)'}")
-    print(f"    FlashInfer       : {'available' if HAS_FLASHINFER else 'NOT INSTALLED (pip install flashinfer)'}")
-    print(f"    xformers         : {'available' if HAS_XFORMERS  else 'NOT INSTALLED (pip install xformers)'}")
-    print(f"    torch_tensorrt   : {'available' if HAS_TENSORRT  else 'NOT INSTALLED (pip install torch-tensorrt)'}")
+    print(f"    FlashInfer (causal UB)   : {'available' if HAS_FLASHINFER else 'NOT INSTALLED (see requirements_blackwell.txt)'}")
+    print(f"    FlashInfer (tree FAIR)   : {'available' if HAS_FLASHINFER else 'NOT INSTALLED'}")
+    print( "    flash-attn               : skipped (using torch.sdp_kernel(enable_flash=True) natively)")
+    print( "    DeFT (arXiv:2404.00242)  : no public library release — comparison is algorithmic only")
     print()
     print("  Baseline methodology:")
-    print("    FAIR  = sdpa_batched_bool — correct tree-ancestor boolean mask,")
+    print("    FAIR  = sdpa_batched_bool  — correct tree-ancestor boolean mask,")
     print("            single batched SDPA call, flash-backend eligible.")
+    print("            FlashInfer [tree mask, FAIR] — FlashInfer kernel with same mask.")
     print("            PRIMARY comparison.  'speedup_vs_sdpa_batched_bool' is")
     print("            the honest headline number.")
-    print("    UB    = causal-mask baselines (FA-2, FlashInfer, sdpa_flash).")
+    print("    UB    = causal-mask baselines (FlashInfer causal, sdpa_flash).")
     print("            Wrong mask semantics.  Measure compute ceiling only.")
     print("            DO NOT cite as speedup over a correct baseline.")
     print()
@@ -1126,11 +950,8 @@ def main() -> None:
                         help="Comma-separated branching factors")
     parser.add_argument("--warmup",            type=int, default=WARMUP_ITERS)
     parser.add_argument("--iters",             type=int, default=BENCH_ITERS)
-    parser.add_argument("--skip-flashattn",    action="store_true")
-    parser.add_argument("--skip-flashinfer",   action="store_true")
-    parser.add_argument("--skip-xformers",     action="store_true")
-    parser.add_argument("--skip-tensorrt",     action="store_true",
-                        help="Skip TensorRT Attention baseline even if tensorrt is installed")
+    parser.add_argument("--skip-flashinfer",   action="store_true",
+                        help="Skip FlashInfer baselines (causal UB and tree-mask FAIR)")
     parser.add_argument("--no-plot",           action="store_true")
     args = parser.parse_args()
 
@@ -1193,10 +1014,7 @@ def main() -> None:
                 warmup=args.warmup,
                 iters=args.iters,
                 device=device,
-                skip_flashattn  =args.skip_flashattn,
-                skip_flashinfer =args.skip_flashinfer,
-                skip_xformers   =args.skip_xformers,
-                skip_tensorrt   =args.skip_tensorrt,
+                skip_flashinfer=args.skip_flashinfer,
             )
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
@@ -1218,10 +1036,8 @@ def main() -> None:
         def _fmt(ms):
             return f"{ms:.3f}ms" if not math.isnan(ms) else "  n/a "
         extras = ""
-        if not math.isnan(row.fa2_varlen_ms):
-            extras += f"  fa2v={_fmt(row.fa2_varlen_ms)}"
-        if not math.isnan(row.trt_attention_ms):
-            extras += f"  trt={_fmt(row.trt_attention_ms)}"
+        if not math.isnan(row.flashinfer_tree_ms):
+            extras += f"  fi_tree={_fmt(row.flashinfer_tree_ms)}"
         print(
             f"  [{display_idx:3d}/{total}]  B={B:2d} b={b} d={d} │ "
             f"ragged={_fmt(row.ragged_fp16_ms)} │ "
@@ -1261,9 +1077,9 @@ def main() -> None:
         print("  ── Upper-bound refs (causal mask — wrong semantics) ──")
         print(f"  SDPA flash [causal UB]          : {_fms(_r.sdpa_flash_ms)}"
               f"   speedup = {_fsx(_r.speedup_vs_sdpa_flash)}  (UB only)")
-        if not math.isnan(_r.fa2_varlen_ms):
-            print(f"  FA-2 varlen [causal UB]         : {_fms(_r.fa2_varlen_ms)}"
-                  f"   speedup = {_fsx(_r.speedup_vs_fa2_varlen)}  (UB only)")
+        if not math.isnan(_r.flashinfer_tree_ms):
+            print(f"  FlashInfer [tree mask, FAIR]    : {_fms(_r.flashinfer_tree_ms)}"
+                  f"   speedup = {_fsx(_r.speedup_vs_flashinfer_tree)}  (FAIR)")
         if not math.isnan(_r.flashinfer_ms):
             print(f"  FlashInfer [causal UB]          : {_fms(_r.flashinfer_ms)}"
                   f"   speedup = {_fsx(_r.speedup_vs_flashinfer)}  (UB only)")
@@ -1287,10 +1103,10 @@ def main() -> None:
             df.groupby(["tree_depth", "branching_factor"])["speedup_vs_sdpa_flash"]
             .mean().round(2).unstack().to_string()
         )
-    print("\n── Speedup vs FA-2 varlen [causal UB] (mean over batch sizes) ────────")
-    if "speedup_vs_fa2_varlen" in df.columns:
+    print("\n── Speedup vs FlashInfer [tree mask, FAIR] (mean over batch sizes) ────")
+    if "speedup_vs_flashinfer_tree" in df.columns:
         print(
-            df.groupby(["tree_depth", "branching_factor"])["speedup_vs_fa2_varlen"]
+            df.groupby(["tree_depth", "branching_factor"])["speedup_vs_flashinfer_tree"]
             .mean().round(2).unstack().to_string()
         )
     print("\n── Actual sparse TFLOPS (B=8, all branching) ────────────────────────")
