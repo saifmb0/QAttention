@@ -358,22 +358,26 @@ def _make_runner_sdpa_math(Q_p, K_p, V_p, bias):
 
 def _make_runner_sdpa_flash_tree(Q_p, K_p, V_p, masks_np, B, N, device, dtype):
     """
-    PRIMARY baseline: SDPBackend.FLASH_ATTENTION forced explicitly, with exact
-    tree-ancestor masking.
+    PRIMARY baseline: SDPBackend.EFFICIENT_ATTENTION forced explicitly, with
+    exact tree-ancestor masking via float additive bias.
 
-    Uses a float additive bias [B, 1, N, N] (not bool) because PyTorch's flash
-    SDP backend does not guarantee accepting dtype=bool attn_mask — on many
-    PyTorch / CUDA version combos it silently falls back to EFFICIENT_ATTENTION
-    or MATH when a bool mask is provided.  A float bias with the same semantics
-    (0 for attend, finfo.min/2 for masked) is required to reliably invoke flash.
+    Why EFFICIENT_ATTENTION and not FLASH_ATTENTION:
+      PyTorch's SDPBackend.FLASH_ATTENTION unconditionally rejects any non-null
+      attn_mask ('Flash Attention does not support non-null attn_mask').  The
+      only masking it accepts natively is is_causal=True.  For arbitrary custom
+      masks, SDPBackend.EFFICIENT_ATTENTION (CUTLASS memory-efficient attention)
+      is the correct and fastest PyTorch-native backend on H100.  This is also
+      the backend the original bool-mask baseline was actually dispatching to,
+      now made explicit and deterministic.
 
-    Raises RuntimeError at construction time if FLASH_ATTENTION rejects the
-    mask shape / dtype so the benchmark fails loudly instead of measuring the
-    wrong backend.
+    Uses a float additive bias [B, 1, N, N]: bool masks silently fall through
+    to MATH on some builds; a float mask reliably targets EFFICIENT_ATTENTION.
+
+    Raises RuntimeError at construction time if EFFICIENT_ATTENTION also rejects
+    so the benchmark fails loudly rather than silently measuring MATH.
 
     One kernel launch — no serial per-sample dispatch overhead.
     Correct tree-ancestor semantics.
-    Padding tokens present (homogeneous batch, so padding waste = 0 here).
     """
     NEG_INF = torch.finfo(dtype).min / 2
     float_bias = torch.full((B, 1, N, N), NEG_INF, device=device, dtype=dtype)
@@ -388,18 +392,18 @@ def _make_runner_sdpa_flash_tree(Q_p, K_p, V_p, masks_np, B, N, device, dtype):
     scale = 1.0 / math.sqrt(Q_p.shape[-1])
 
     def fn():
-        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
             F.scaled_dot_product_attention(Q_p, K_p, V_p,
                                            attn_mask=float_bias, scale=scale)
 
-    # Validate immediately — fail loudly if Flash SDP rejects this mask.
+    # Validate immediately — fail loudly if the backend rejects this mask.
     try:
         fn()
         torch.cuda.synchronize()
     except RuntimeError as exc:
         raise RuntimeError(
-            f"[sdpa_flash_tree] SDPBackend.FLASH_ATTENTION rejected float attn_mask "
-            f"({exc}).  Ensure seq_len % 8 == 0 and head_dim in {{32,64,128,256}}."
+            f"[sdpa_flash_tree] SDPBackend.EFFICIENT_ATTENTION rejected float attn_mask "
+            f"({exc}).  Check dtype and shape constraints."
         ) from exc
 
     return fn
@@ -972,10 +976,10 @@ def plot_batch_scaling(df: pd.DataFrame, out_dir: str) -> None:
 
     fig, ax = plt.subplots(figsize=(9, 5))
     methods_to_show = [
-        ("Ragged fp16 (ours)",          "ragged_fp16_ms",       "#00b4d8", "-",  2.5),
-        ("SDPA [tree mask, bool]",      "sdpa_batched_bool_ms", "#2dc653", "--", 2.0),
-        ("FlashInfer [tree mask]",      "flashinfer_tree_ms",   "#7b2d8b", "--", 1.8),
-        ("DeFT [arXiv:2404.00242]",     "deft_ms",              "#e76f51", "--", 1.8),
+        ("Ragged fp16 (ours)",                   "ragged_fp16_ms",      "#00b4d8", "-",  2.5),
+        ("SDPA memeff [tree mask, forced]",       "sdpa_flash_tree_ms",  "#2dc653", "--", 2.0),
+        ("FlashInfer [tree mask]",               "flashinfer_tree_ms",  "#7b2d8b", "--", 1.8),
+        ("DeFT [arXiv:2404.00242]",              "deft_ms",             "#e76f51", "--", 1.8),
     ]
     for label, col, color, ls, lw in methods_to_show:
         vals = sub[col].values.astype(float)
@@ -1153,8 +1157,8 @@ def main() -> None:
         print(
             f"  [{display_idx:3d}/{total}]  B={B:2d} b={b} d={d} │ "
             f"ragged={_fmt(row.ragged_fp16_ms)} │ "
-            f"sdpa_bool={_fmt(row.sdpa_batched_bool_ms)} │ "
-            f"spdup={row.speedup_vs_sdpa_batched_bool:.2f}×"
+            f"sdpa_tree={_fmt(row.sdpa_flash_tree_ms)} │ "
+            f"spdup={row.speedup_vs_sdpa_flash_tree:.2f}×"
             f"{extras}"
         )
 
@@ -1243,11 +1247,12 @@ def main() -> None:
     print("=" * 72)
     print("  RESULT INTERPRETATION GUIDE")
     print("=" * 72)
-    print("  The PRIMARY claimed speedup is vs 'sdpa_batched_bool':")
+    print("  The PRIMARY claimed speedup is vs 'sdpa_flash_tree' (EFFICIENT_ATTENTION forced):")
     print("    - Correct tree-ancestor mask semantics (same as our kernel)")
-    print("    - Single batched SDPA call (no per-sample Python dispatch)")
-    print("    - Boolean mask → PyTorch flash-SDP backend eligible")
-    print("    - This is the fastest PyTorch can do with correct semantics")
+    print("    - SDPBackend.EFFICIENT_ATTENTION explicitly forced (CUTLASS, not math fallback)")
+    print("    - Single batched call — no per-sample Python dispatch overhead")
+    print("    - PyTorch FLASH_ATTENTION unconditionally rejects non-null attn_mask;")
+    print("      EFFICIENT_ATTENTION is the fastest PyTorch-native path with correct semantics")
     print()
     print("  All baselines use correct tree-ancestor masking.")
     print()
