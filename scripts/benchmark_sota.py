@@ -101,6 +101,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import datetime
 import math
 import os
 import sys
@@ -1069,6 +1070,7 @@ def _print_banner(info: dict, args) -> None:
     print(f"  SM     : {info['sm']}  ({info['sm_count']} SMs)  [{info['arch']}]")
     print(f"  VRAM   : {info['vram_gb']} GB")
     print(f"  dtype  : {args.dtype}")
+    print(f"  run-id : {args.run_id}")
     print()
     print("  Optional SOTA backends:")
     print(f"    FlashInfer (causal UB)   : {'available' if HAS_FLASHINFER else 'NOT INSTALLED (see requirements_blackwell.txt)'}")
@@ -1117,8 +1119,16 @@ def main() -> None:
                         help="Skip FlashInfer baselines (causal UB and tree-mask FAIR)")
     parser.add_argument("--skip-deft",         action="store_true",
                         help="Skip DeFT baseline (requires third_party/FastTree clone)")
+    parser.add_argument("--run-id",            default=None,
+                        help="Run identifier used in output CSV name "
+                             "(default: timestamp).  Re-using the same ID resumes "
+                             "that specific run; each new ID starts fresh.")
     parser.add_argument("--no-plot",           action="store_true")
     args = parser.parse_args()
+
+    # Assign run_id: explicit override, else timestamp
+    if args.run_id is None:
+        args.run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if not torch.cuda.is_available():
         print("[ERROR] CUDA not available — benchmark requires a CUDA GPU.")
@@ -1134,9 +1144,9 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     device = torch.device("cuda:0")
 
-    # Checkpoint CSV — written after every row so a crash never loses data.
-    # If a partial run exists we resume from where it left off.
-    csv_path = os.path.join(args.out_dir, "sota_benchmark.csv")
+    # Checkpoint CSV — one file per run_id so old results are never touched.
+    # Re-running with the same --run-id resumes that run; new runs start fresh.
+    csv_path = os.path.join(args.out_dir, f"sota_benchmark_{args.run_id}.csv")
 
     configs = [
         (B, b, d)
@@ -1145,7 +1155,7 @@ def main() -> None:
         for d in depths
     ]
 
-    # ── Resume support: skip configs already in checkpoint file ──────────────
+    # ── Resume support: pick up an interrupted run of the same run_id ────────
     completed: set[tuple] = set()
     rows: list[dict] = []
     if os.path.exists(csv_path):
@@ -1156,17 +1166,17 @@ def main() -> None:
                 completed.add((int(r["batch_size"]),
                                int(r["branching_factor"]),
                                int(r["tree_depth"])))
-            print(f"[resume] Found {len(rows)} completed rows in {csv_path} — skipping those configs.")
+            print(f"[resume] run-id={args.run_id}: found {len(rows)} completed rows — resuming.")
         except Exception as _e:
-            print(f"[resume] Could not parse existing checkpoint ({_e}) — starting fresh.")
+            print(f"[resume] Could not parse {csv_path} ({_e}) — starting fresh.")
             rows = []
+    else:
+        print(f"[new run] run-id={args.run_id}  →  {csv_path}")
 
     pending = [(B, b, d) for B, b, d in configs if (B, b, d) not in completed]
     total   = len(configs)
     done_so_far = len(completed)
-    print(f"Running {len(pending)} configurations  [{args.warmup} warmup + {args.iters} timed iters each]")
-    if done_so_far:
-        print(f"({done_so_far} already done from previous run)")
+    print(f"Running {len(pending)}/{total} configurations  [{args.warmup} warmup + {args.iters} timed iters each]")
     print()
     for idx, (B, b, d) in enumerate(pending):
         display_idx = done_so_far + idx + 1
@@ -1234,29 +1244,44 @@ def main() -> None:
     ]
     if not _canon.empty:
         _r = _canon.iloc[0]
+
+        def _rget(col: str) -> float:
+            """Safe column access on a pandas Series — returns NaN for missing cols."""
+            try:
+                v = _r.get(col, float("nan"))
+                f = float(v)
+                return float("nan") if math.isnan(f) else f
+            except (TypeError, ValueError):
+                return float("nan")
+
         def _fms(v): return f"{v:.3f} ms" if not math.isnan(v) else "  n/a  "
         def _fsx(v): return f"{v:.2f}×"  if not math.isnan(v) else "  n/a  "
-        print(f"  Ours (ragged fp16)              : {_fms(_r.ragged_fp16_ms)}")
+
+        print(f"  Ours (ragged fp16)              : {_fms(_rget('ragged_fp16_ms'))}")
         print()
         print("  ── FAIR baseline (correct tree-ancestor mask) ──")
-        print(f"  SDPA bool mask [FAIR, flash-elig]: {_fms(_r.sdpa_batched_bool_ms)}"
-              f"   speedup = {_fsx(_r.speedup_vs_sdpa_batched_bool)}  ← PRIMARY")
+        print(f"  SDPA bool mask [FAIR, flash-elig]: {_fms(_rget('sdpa_batched_bool_ms'))}"
+              f"   speedup = {_fsx(_rget('speedup_vs_sdpa_batched_bool'))}  ← PRIMARY")
         print()
         print("  ── Upper-bound refs (causal mask — wrong semantics) ──")
-        print(f"  SDPA flash [causal UB]          : {_fms(_r.sdpa_flash_ms)}"
-              f"   speedup = {_fsx(_r.speedup_vs_sdpa_flash)}  (UB only)")
-        if not math.isnan(_r.flashinfer_tree_ms):
-            print(f"  FlashInfer [tree mask, FAIR]    : {_fms(_r.flashinfer_tree_ms)}"
-                  f"   speedup = {_fsx(_r.speedup_vs_flashinfer_tree)}  (FAIR)")
-        if not math.isnan(_r.deft_ms):
-            print(f"  DeFT [arXiv:2404.00242, FAIR]   : {_fms(_r.deft_ms)}"
-                  f"   speedup = {_fsx(_r.speedup_vs_deft)}  (FAIR)")
-        if not math.isnan(_r.flashinfer_ms):
-            print(f"  FlashInfer [causal UB]          : {_fms(_r.flashinfer_ms)}"
-                  f"   speedup = {_fsx(_r.speedup_vs_flashinfer)}  (UB only)")
+        print(f"  SDPA flash [causal UB]          : {_fms(_rget('sdpa_flash_ms'))}"
+              f"   speedup = {_fsx(_rget('speedup_vs_sdpa_flash'))}  (UB only)")
+        _fi_tree = _rget("flashinfer_tree_ms")
+        if not math.isnan(_fi_tree):
+            print(f"  FlashInfer [tree mask, FAIR]    : {_fms(_fi_tree)}"
+                  f"   speedup = {_fsx(_rget('speedup_vs_flashinfer_tree'))}  (FAIR)")
+        _deft = _rget("deft_ms")
+        if not math.isnan(_deft):
+            print(f"  DeFT [arXiv:2404.00242, FAIR]   : {_fms(_deft)}"
+                  f"   speedup = {_fsx(_rget('speedup_vs_deft'))}  (FAIR)")
+        _fi = _rget("flashinfer_ms")
+        if not math.isnan(_fi):
+            print(f"  FlashInfer [causal UB]          : {_fms(_fi)}"
+                  f"   speedup = {_fsx(_rget('speedup_vs_flashinfer'))}  (UB only)")
         print()
-        print(f"  Padding waste (padded baselines): {_r.attn_padding_ratio:.1%} of attn work is padding")
-        print(f"  Tree nodes per sequence         : {int(_r.num_tree_nodes)}")
+        print(f"  Padding waste (padded baselines): {_rget('attn_padding_ratio'):.1%} of attn work is padding")
+        print(f"  Tree nodes per sequence         : {int(_rget('num_tree_nodes'))}")
+        print(f"  run-id                          : {args.run_id}")
     else:
         print("  [EAGLE-2 canonical config not in sweep — re-run with b=4, d=5, B=8]")
     print("=" * 72)
