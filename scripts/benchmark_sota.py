@@ -356,39 +356,52 @@ def _make_runner_sdpa_math(Q_p, K_p, V_p, bias):
 
 
 
-def _make_runner_sdpa_batched_bool(Q_p, K_p, V_p, masks_np, B, N, device, dtype):
+def _make_runner_sdpa_flash_tree(Q_p, K_p, V_p, masks_np, B, N, device, dtype):
     """
-    Naive baseline: single batched SDPA call with exact tree-ancestor BOOLEAN
-    mask of shape [B, 1, N, N] on padded tensors.
+    PRIMARY baseline: SDPBackend.FLASH_ATTENTION forced explicitly, with exact
+    tree-ancestor masking.
 
-    Why this is the right comparison:
-    - One kernel launch — no serial per-sample dispatch overhead
-    - Boolean attn_mask: PyTorch's flash-SDP backend accepts booleans
-      (converts to -inf additive internally), so this CAN use flash on
-      supported shapes/dtypes, unlike the float-additive-bias path which
-      always falls back to mem-efficient or math
-    - Correct tree-ancestor semantics (same as our kernel)
-    - Padding tokens present (this measures padding waste honestly)
+    Uses a float additive bias [B, 1, N, N] (not bool) because PyTorch's flash
+    SDP backend does not guarantee accepting dtype=bool attn_mask — on many
+    PyTorch / CUDA version combos it silently falls back to EFFICIENT_ATTENTION
+    or MATH when a bool mask is provided.  A float bias with the same semantics
+    (0 for attend, finfo.min/2 for masked) is required to reliably invoke flash.
 
-    The gap between this and our ragged kernel is the combined benefit of:
-      (1) eliminating O(N²) work via ancestor-sparse computation
-      (2) eliminating padding waste across the batch
+    Raises RuntimeError at construction time if FLASH_ATTENTION rejects the
+    mask shape / dtype so the benchmark fails loudly instead of measuring the
+    wrong backend.
 
-    Reviewer note: no attention library (FA-2, FlashInfer) exposes a
-    packed-varlen API that also accepts a custom per-sequence sparse mask.
-    This single-call boolean-mask approach is therefore the FASTEST achievable
-    with correct semantics using standard PyTorch.
+    One kernel launch — no serial per-sample dispatch overhead.
+    Correct tree-ancestor semantics.
+    Padding tokens present (homogeneous batch, so padding waste = 0 here).
     """
-    # Build batched boolean mask [B, 1, N, N]: True = attend
-    bool_bias = torch.zeros(B, 1, N, N, dtype=torch.bool, device=device)
+    NEG_INF = torch.finfo(dtype).min / 2
+    float_bias = torch.full((B, 1, N, N), NEG_INF, device=device, dtype=dtype)
     for i, m in enumerate(masks_np):
         Li = m.shape[0]
-        bool_bias[i, 0, :Li, :Li] = torch.from_numpy(m.astype(bool)).to(device=device)
+        tb = torch.from_numpy(m.astype(bool)).to(device=device)
+        float_bias[i, 0, :Li, :Li] = torch.where(
+            tb,
+            torch.zeros(Li, Li, device=device, dtype=dtype),
+            torch.full((Li, Li), NEG_INF, device=device, dtype=dtype),
+        )
     scale = 1.0 / math.sqrt(Q_p.shape[-1])
 
     def fn():
-        F.scaled_dot_product_attention(Q_p, K_p, V_p,
-                                       attn_mask=bool_bias, scale=scale)
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
+            F.scaled_dot_product_attention(Q_p, K_p, V_p,
+                                           attn_mask=float_bias, scale=scale)
+
+    # Validate immediately — fail loudly if Flash SDP rejects this mask.
+    try:
+        fn()
+        torch.cuda.synchronize()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"[sdpa_flash_tree] SDPBackend.FLASH_ATTENTION rejected float attn_mask "
+            f"({exc}).  Ensure seq_len % 8 == 0 and head_dim in {{32,64,128,256}}."
+        ) from exc
+
     return fn
 
 
@@ -520,13 +533,8 @@ def _make_runner_deft(Q, K, V, cu_sl, B, N, H, D, branching_factor, depth, devic
             node.requests     = all_subtrees[j]  # j is first — DeFT address invariant
             tree_info.append(node)
 
-        # Build K_cache for batch item 0: [N, d+1, H, D]
-        #   K_cache[i, pos] = K_flat[ancestor_chains[i][pos]]
-        # All B trees are identical, so we time DeFT B times on the same tensors.
-        K_flat_b0 = K[0:N].contiguous()    # [N, H, D]
-        V_flat_b0 = V[0:N].contiguous()
-
-        # Scatter index: idx[i, pos] = ancestor of node i at depth pos
+        # Scatter index: idx[i, pos] = ancestor of node i at depth pos.
+        # Identical across all B sequences (same tree topology).
         idx = torch.zeros(N, max_path_len, dtype=torch.long, device=device)
         for i in range(N):
             chain = ancestor_chains[i]
@@ -536,8 +544,12 @@ def _make_runner_deft(Q, K, V, cu_sl, B, N, H, D, branching_factor, depth, devic
             for pos in range(len(chain), max_path_len):
                 idx[i, pos] = chain[-1]
 
-        K_cache = K_flat_b0[idx.view(-1)].view(N, max_path_len, H, D).contiguous()
-        V_cache = V_flat_b0[idx.view(-1)].view(N, max_path_len, H, D).contiguous()
+        # DeFT_preparation uses seq-0 K_cache for CPU-side topology bookkeeping.
+        # K values are NOT baked into DeFT_aux — only positional metadata is.
+        K_flat_b0 = K[0:N].contiguous()
+        V_flat_b0 = V[0:N].contiguous()
+        K_cache_b0 = K_flat_b0[idx.view(-1)].view(N, max_path_len, H, D).contiguous()
+        V_cache_b0 = V_flat_b0[idx.view(-1)].view(N, max_path_len, H, D).contiguous()
 
         # DeFT_preparation is CPU-side positional bookkeeping — run once.
         # DeFT.py uses a module-level `cur_length` global that is never reset
@@ -550,19 +562,32 @@ def _make_runner_deft(Q, K, V, cu_sl, B, N, H, D, branching_factor, depth, devic
         mask_len    = 64
         _deft_mod.cur_length = 0
         DeFT_aux    = DeFT_preparation(
-            tree_info, K_cache, subtree_len, mask_len, H, D
+            tree_info, K_cache_b0, subtree_len, mask_len, H, D
         )
 
-        Q_b0  = Q[0:N].contiguous()  # [N, H, D]
-        Out   = torch.empty(N, H, D, device=device, dtype=torch.float16)
         sm_scale = 1.0 / math.sqrt(D)
-        K_flat = K_cache.view(-1, H, D)
-        V_flat = V_cache.view(-1, H, D)
+        Out      = torch.empty(N, H, D, device=device, dtype=torch.float16)
+
+        # Pre-build per-batch Q slices and K/V ancestor-chain caches.
+        # All B sequences share the same tree topology; only Q/K/V values differ.
+        # This ensures we measure B distinct sequences, not B copies of seq-0.
+        Qs_deft      = [Q[b_i * N:(b_i + 1) * N].contiguous() for b_i in range(B)]
+        K_flats_deft = []
+        V_flats_deft = []
+        for b_i in range(B):
+            K_b = K[b_i * N:(b_i + 1) * N].contiguous()
+            V_b = V[b_i * N:(b_i + 1) * N].contiguous()
+            K_flats_deft.append(
+                K_b[idx.view(-1)].view(N, max_path_len, H, D).contiguous().view(-1, H, D)
+            )
+            V_flats_deft.append(
+                V_b[idx.view(-1)].view(N, max_path_len, H, D).contiguous().view(-1, H, D)
+            )
 
         def fn():
-            for _b in range(B):
+            for b_i in range(B):
                 DeFT_decode(
-                    Q_b0, K_flat, V_flat, Out,
+                    Qs_deft[b_i], K_flats_deft[b_i], V_flats_deft[b_i], Out,
                     *DeFT_aux,
                     Q_TILE_SIZE=16, KV_TILE_SIZE=32,
                     sm_scale=sm_scale,
@@ -594,18 +619,18 @@ class BenchRow:
     num_tree_nodes:    int
     attn_padding_ratio: float
     # latencies (ms) — NaN = skipped / unavailable
-    ragged_fp16_ms:       float
-    sdpa_batched_bool_ms: float        # SDPA batched boolean tree mask, flash-eligible
-    flashinfer_tree_ms:   float        # FlashInfer per-item tree mask
-    deft_ms:              float        # DeFT (FastTree Triton, all-N-queries)
+    ragged_fp16_ms:      float
+    sdpa_flash_tree_ms:  float   # FA3 (SDPBackend.FLASH_ATTENTION forced), float tree mask
+    flashinfer_tree_ms:  float   # FlashInfer per-item tree mask (serial dispatch)
+    deft_ms:             float   # DeFT (FastTree Triton, all-N-queries, all-B sequences)
     # Actual sparse TFLOPS (4·(d+1)·N·D·H / latency)
     ragged_sparse_tflops: float
     # Dense-equivalent TFLOPS (how fast dense would need to run to match our latency)
     ragged_dense_equiv_tflops: float
     # speedups vs named baselines
-    speedup_vs_sdpa_batched_bool: float   # PRIMARY headline number
-    speedup_vs_flashinfer_tree:   float   # FlashInfer with tree mask
-    speedup_vs_deft:              float   # DeFT same all-N-queries workload
+    speedup_vs_sdpa_flash_tree:  float   # PRIMARY headline — vs FA3 with correct mask
+    speedup_vs_flashinfer_tree:  float   # FlashInfer with tree mask
+    speedup_vs_deft:             float   # DeFT same all-N-queries workload
 
 
 def benchmark_one(
@@ -653,8 +678,8 @@ def benchmark_one(
     # ── Build runners ────────────────────────────────────────────────────────
     run_ragged_fp16 = _make_runner_ragged(Q_r16, K_r16, V_r16, cu_sl,
                                           branching_factor, depth)
-    # SDPA batched boolean tree mask → flash kernel eligible
-    run_sdpa_bb     = None if skip_dense else _make_runner_sdpa_batched_bool(
+    # FA3 (FLASH_ATTENTION forced) with float additive tree mask — PRIMARY baseline
+    run_sdpa_fl     = None if skip_dense else _make_runner_sdpa_flash_tree(
         Q_p, K_p, V_p, masks_np, B, N, device, torch.float16
     )
 
@@ -667,7 +692,7 @@ def benchmark_one(
 
     # ── Time everything ──────────────────────────────────────────────────────
     t_r16     = _try_time(run_ragged_fp16, warmup, iters, "ragged_fp16")
-    t_sbb     = _try_time(run_sdpa_bb,     warmup, iters, "sdpa_batched_bool") if run_sdpa_bb    else float("nan")
+    t_sbb     = _try_time(run_sdpa_fl,     warmup, iters, "sdpa_flash_tree")   if run_sdpa_fl    else float("nan")
     t_fi_tree = _try_time(run_fi_tree,     warmup, iters, "flashinfer_tree")   if run_fi_tree    else float("nan")
     t_deft    = _try_time(run_deft,        warmup, iters, "deft")              if run_deft       else float("nan")
 
@@ -687,15 +712,15 @@ def benchmark_one(
         tree_depth=depth,
         num_tree_nodes=N,
         attn_padding_ratio          =round(pad_rat,      4),
-        ragged_fp16_ms              =round(t_r16,        4),
-        sdpa_batched_bool_ms        =round(t_sbb,        4),
-        flashinfer_tree_ms          =round(t_fi_tree,    4),
-        deft_ms                     =round(t_deft,       4),
-        ragged_sparse_tflops        =round(_to_tflops(sparse_flops, t_r16), 5),
-        ragged_dense_equiv_tflops   =round(_to_tflops(dense_flops,  t_r16), 3),
-        speedup_vs_sdpa_batched_bool=_spdup(t_sbb,       t_r16),
-        speedup_vs_flashinfer_tree  =_spdup(t_fi_tree,   t_r16),
-        speedup_vs_deft             =_spdup(t_deft,      t_r16),
+        ragged_fp16_ms             =round(t_r16,        4),
+        sdpa_flash_tree_ms         =round(t_sbb,        4),
+        flashinfer_tree_ms         =round(t_fi_tree,    4),
+        deft_ms                    =round(t_deft,       4),
+        ragged_sparse_tflops       =round(_to_tflops(sparse_flops, t_r16), 5),
+        ragged_dense_equiv_tflops  =round(_to_tflops(dense_flops,  t_r16), 3),
+        speedup_vs_sdpa_flash_tree =_spdup(t_sbb,       t_r16),
+        speedup_vs_flashinfer_tree =_spdup(t_fi_tree,   t_r16),
+        speedup_vs_deft            =_spdup(t_deft,      t_r16),
     )
 
 
@@ -704,19 +729,19 @@ def benchmark_one(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _ADA_PALETTE = {
-    "ragged_fp16":       "#00b4d8",   # ours
-    "sdpa_batched_bool": "#2dc653",   # SDPA batched boolean tree mask
-    "flashinfer_tree":   "#7b2d8b",   # FlashInfer per-item tree mask
-    "deft":              "#e76f51",   # DeFT FastTree Triton (all-N-queries)
+    "ragged_fp16":      "#00b4d8",   # ours
+    "sdpa_flash_tree":  "#2dc653",   # FA3 (forced), float tree mask
+    "flashinfer_tree":  "#7b2d8b",   # FlashInfer per-item tree mask
+    "deft":             "#e76f51",   # DeFT FastTree Triton (all-N-queries)
 }
 
 # Columns in the order they appear in the latency-vs-depth plot
 # Key = display label, value = BenchRow field name
 _METHOD_COLS = {
-    "Ragged fp16 (ours)":                "ragged_fp16_ms",
-    "SDPA [tree mask, bool]":            "sdpa_batched_bool_ms",
-    "FlashInfer [tree mask]":            "flashinfer_tree_ms",
-    "DeFT [arXiv:2404.00242]":           "deft_ms",
+    "Ragged fp16 (ours)":                    "ragged_fp16_ms",
+    "FA3 [tree mask, flash forced]":         "sdpa_flash_tree_ms",
+    "FlashInfer [tree mask]": "flashinfer_tree_ms",
+    "DeFT [arXiv:2404.00242]":               "deft_ms",
 }
 
 
@@ -780,8 +805,8 @@ def plot_speedup_heatmap(df: pd.DataFrame, out_dir: str) -> None:
     _gpu_label = f"{_info['name']}  ({_info['arch']}  SM {_info['sm']})"
 
     pairs = [
-        ("speedup_vs_sdpa_batched_bool", "vs SDPA [tree mask, bool]  ← PRIMARY"),
-        ("speedup_vs_flashinfer_tree",   "vs FlashInfer [tree mask]"),
+        ("speedup_vs_sdpa_flash_tree",  "vs FA3 [tree mask, flash forced]  ← PRIMARY"),
+        ("speedup_vs_flashinfer_tree",  "vs FlashInfer [tree mask]"),
     ]
 
     for b in sorted(df["branching_factor"].unique()):
@@ -999,7 +1024,7 @@ def _print_banner(info: dict, args) -> None:
     print(f"    DeFT (arXiv:2404.00242)  : {_deft_status}")
     print()
     print("  All baselines use correct tree-ancestor masking.")
-    print("  PRIMARY comparison: speedup_vs_sdpa_batched_bool")
+    print("  PRIMARY comparison: speedup_vs_sdpa_flash_tree  (FA3 forced, float mask)")
     print()
     print("  Canonical EAGLE-2 operating point:  B=8, b=4, d=5, N=1365")
     print("=" * 72)
@@ -1168,8 +1193,8 @@ def main() -> None:
         print(f"  Ours (ragged fp16)              : {_fms(_rget('ragged_fp16_ms'))}")
         print()
         print("  ── Baselines (all correct tree-ancestor mask) ──")
-        print(f"  SDPA [tree mask, bool, flash-elig]       : {_fms(_rget('sdpa_batched_bool_ms'))}"
-              f"   speedup = {_fsx(_rget('speedup_vs_sdpa_batched_bool'))}  ← PRIMARY")
+        print(f"  FA3  [tree mask, flash forced, float]    : {_fms(_rget('sdpa_flash_tree_ms'))}"
+              f"   speedup = {_fsx(_rget('speedup_vs_sdpa_flash_tree'))}  ← PRIMARY")
         _fi_tree = _rget("flashinfer_tree_ms")
         if not math.isnan(_fi_tree):
             print(f"  FlashInfer [tree mask]                   : {_fms(_fi_tree)}"
@@ -1187,10 +1212,10 @@ def main() -> None:
     print("=" * 72)
 
     # ── Summary tables ────────────────────────────────────────────────────────
-    print("\n── Speedup vs SDPA [tree mask, bool — PRIMARY] (mean over batch sizes) ──")
-    if "speedup_vs_sdpa_batched_bool" in df.columns:
+    print("\n── Speedup vs FA3 [tree mask, flash forced — PRIMARY] (mean over batch sizes) ──")
+    if "speedup_vs_sdpa_flash_tree" in df.columns:
         print(
-            df.groupby(["tree_depth", "branching_factor"])["speedup_vs_sdpa_batched_bool"]
+            df.groupby(["tree_depth", "branching_factor"])["speedup_vs_sdpa_flash_tree"]
             .mean().round(2).unstack().to_string()
         )
     print("\n── Speedup vs FlashInfer [tree mask] (mean over batch sizes) ────")
