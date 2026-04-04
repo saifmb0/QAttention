@@ -9,10 +9,10 @@
 #      wheel that matches FlashInfer's pre-built index.
 #   2. Does NOT install flash-attn.
 #      Reason: every torch/CUDA minor-version bump breaks the .so ABI, and
-#      torch.backends.cuda.sdp_kernel(enable_flash=True) uses the same
+#      torch.nn.attention.sdpa_kernel(SDPBackend.FLASH_ATTENTION) uses the same
 #      FlashAttention-2 kernel natively without the separate package.
 #   3. Installs FlashInfer from its official pre-built index for torch2.8/cu121.
-#      FlashInfer is used as the FAIR ragged-tree-attention competitor.
+#      FlashInfer is used as the Naive baseline ragged-tree-attention competitor.
 #
 # Usage:
 #   bash setup_blackwell.sh              # full setup

@@ -109,9 +109,7 @@ def padded_sdpa_reference(
     attn_bias = _build_sdpa_bias(seq_lens, masks_np, L_max, device)
 
     # Force math backend so SM75 always works without flash-attn
-    with torch.backends.cuda.sdp_kernel(
-        enable_flash=False, enable_math=True, enable_mem_efficient=False
-    ):
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
         out_pad = F.scaled_dot_product_attention(
             Q_pad, K_pad, V_pad,
             attn_mask=attn_bias,
@@ -135,6 +133,26 @@ RTOL = 1e-2   # fp16-safe relative tolerance
 
 
 # ---------------------------------------------------------------------------
+# Error statistics dataclass (for paper reporting)
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+
+@dataclass
+class ErrorStats:
+    """Numerical error statistics for a single (B, b, d) configuration."""
+    batch_size: int
+    branching_factor: int
+    depth: int
+    num_tokens: int
+    passed: bool
+    peak_abs_err: float     # max |ragged - ref| across all elements
+    avg_abs_err: float      # mean |ragged - ref|
+    peak_rel_err: float     # max |ragged - ref| / (|ref| + eps)
+    avg_rel_err: float      # mean of same
+
+
+# ---------------------------------------------------------------------------
 # Core comparison function (used by both pytest and standalone main)
 # ---------------------------------------------------------------------------
 
@@ -146,10 +164,10 @@ def run_correctness_check(
     head_dim: int = 64,
     device_str: str = "cuda",
     verbose: bool = False,
-) -> bool:
+) -> ErrorStats:
     """
-    Returns True if ragged kernel output matches padded SDPA reference.
-    Raises AssertionError on mismatch when called from pytest.
+    Compare ragged kernel output to padded SDPA reference.
+    Returns an ErrorStats dataclass with peak/avg absolute and relative errors.
     """
     device = torch.device(device_str)
     torch.manual_seed(batch_size * 100 + branching_factor * 10 + depth)
@@ -187,27 +205,46 @@ def run_correctness_check(
     # ---- Padded SDPA reference ----
     ref_outs = padded_sdpa_reference(qs, ks, vs, masks_np, device)
 
-    # ---- Compare ----
+    # ---- Compute error statistics across all sequences ----
+    all_abs_errs = []
+    all_rel_errs = []
     all_ok = True
     for i in range(batch_size):
         r   = ragged_outs[i].float()
         ref = ref_outs   [i].float()
+        abs_err = (r - ref).abs()
+        rel_err = abs_err / (ref.abs() + 1e-6)
+        all_abs_errs.append(abs_err)
+        all_rel_errs.append(rel_err)
         if not torch.allclose(r, ref, atol=ATOL, rtol=RTOL):
-            max_err = (r - ref).abs().max().item()
-            rel_err = ((r - ref).abs() / (ref.abs() + 1e-6)).max().item()
             if verbose:
                 print(
-                    f"  MISMATCH seq {i}: max_abs={max_err:.4f}  max_rel={rel_err:.4f}"
+                    f"  MISMATCH seq {i}: peak_abs={abs_err.max().item():.6f}  "
+                    f"peak_rel={rel_err.max().item():.6f}"
                 )
             all_ok = False
         else:
             if verbose:
-                max_err = (r - ref).abs().max().item()
                 print(
-                    f"  OK seq {i}: max_abs={max_err:.5f}"
+                    f"  OK seq {i}: peak_abs={abs_err.max().item():.6f}  "
+                    f"avg_abs={abs_err.mean().item():.6f}"
                 )
 
-    return all_ok
+    # Aggregate across all sequences
+    cat_abs = torch.cat([e.flatten() for e in all_abs_errs])
+    cat_rel = torch.cat([e.flatten() for e in all_rel_errs])
+
+    return ErrorStats(
+        batch_size=batch_size,
+        branching_factor=branching_factor,
+        depth=depth,
+        num_tokens=N,
+        passed=all_ok,
+        peak_abs_err=cat_abs.max().item(),
+        avg_abs_err=cat_abs.mean().item(),
+        peak_rel_err=cat_rel.max().item(),
+        avg_rel_err=cat_rel.mean().item(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +271,7 @@ _BENCHMARK_CONFIGS = [
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("batch_size,branching_factor,depth", _CONFIGURATIONS)
 def test_ragged_vs_sdpa(batch_size: int, branching_factor: int, depth: int):
-    ok = run_correctness_check(
+    stats = run_correctness_check(
         batch_size=batch_size,
         branching_factor=branching_factor,
         depth=depth,
@@ -242,9 +279,10 @@ def test_ragged_vs_sdpa(batch_size: int, branching_factor: int, depth: int):
         head_dim=64,
         verbose=True,
     )
-    assert ok, (
+    assert stats.passed, (
         f"Ragged attention mismatch for "
-        f"B={batch_size} b={branching_factor} d={depth}"
+        f"B={batch_size} b={branching_factor} d={depth}  "
+        f"peak_abs={stats.peak_abs_err:.6f}  peak_rel={stats.peak_rel_err:.6f}"
     )
 
 
@@ -252,7 +290,7 @@ def test_ragged_vs_sdpa(batch_size: int, branching_factor: int, depth: int):
 @pytest.mark.parametrize("batch_size,branching_factor,depth", _BENCHMARK_CONFIGS)
 def test_benchmark_configs(batch_size: int, branching_factor: int, depth: int):
     """Exact shapes used in benchmark_sota.py – ensures no silent correctness regressions."""
-    ok = run_correctness_check(
+    stats = run_correctness_check(
         batch_size=batch_size,
         branching_factor=branching_factor,
         depth=depth,
@@ -260,8 +298,9 @@ def test_benchmark_configs(batch_size: int, branching_factor: int, depth: int):
         head_dim=128,   # LLaMA-style head dim
         verbose=True,
     )
-    assert ok, (
-        f"Benchmark-config mismatch: B={batch_size} b={branching_factor} d={depth}"
+    assert stats.passed, (
+        f"Benchmark-config mismatch: B={batch_size} b={branching_factor} d={depth}  "
+        f"peak_abs={stats.peak_abs_err:.6f}  peak_rel={stats.peak_rel_err:.6f}"
     )
 
 
@@ -269,7 +308,7 @@ def test_benchmark_configs(batch_size: int, branching_factor: int, depth: int):
 @pytest.mark.parametrize("head_dim", [32, 64, 128])
 def test_head_dims(head_dim: int):
     """Verify kernel works for different head dimensions (32/64/128)."""
-    ok = run_correctness_check(
+    stats = run_correctness_check(
         batch_size=4,
         branching_factor=2,
         depth=3,
@@ -277,13 +316,16 @@ def test_head_dims(head_dim: int):
         head_dim=head_dim,
         verbose=True,
     )
-    assert ok, f"Ragged attention mismatch for head_dim={head_dim}"
+    assert stats.passed, (
+        f"Ragged attention mismatch for head_dim={head_dim}  "
+        f"peak_abs={stats.peak_abs_err:.6f}"
+    )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_single_token():
     """Edge case: tree of depth 0 = single root token only."""
-    ok = run_correctness_check(
+    stats = run_correctness_check(
         batch_size=4,
         branching_factor=1,
         depth=0,
@@ -291,13 +333,13 @@ def test_single_token():
         head_dim=64,
         verbose=True,
     )
-    assert ok, "Single-token edge case failed"
+    assert stats.passed, f"Single-token edge case failed  peak_abs={stats.peak_abs_err:.6f}"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_linear_chain():
     """Chain tree (b=1): degenerates to standard causal attention."""
-    ok = run_correctness_check(
+    stats = run_correctness_check(
         batch_size=4,
         branching_factor=1,
         depth=8,
@@ -305,7 +347,7 @@ def test_linear_chain():
         head_dim=64,
         verbose=True,
     )
-    assert ok, "Linear chain (b=1, d=8) failed"
+    assert stats.passed, f"Linear chain (b=1, d=8) failed  peak_abs={stats.peak_abs_err:.6f}"
 
 
 # ---------------------------------------------------------------------------
@@ -324,18 +366,50 @@ if __name__ == "__main__":
     )) + _BENCHMARK_CONFIGS
     # Deduplicate
     configs = list(dict.fromkeys(configs))
-    n_pass = n_fail = 0
+
+    all_stats: list[ErrorStats] = []
     for B, b, d in configs:
-        ok = run_correctness_check(
+        stats = run_correctness_check(
             batch_size=B, branching_factor=b, depth=d,
             num_heads=4, head_dim=64, verbose=False,
         )
-        status = "PASS" if ok else "FAIL"
-        print(f"B={B:2d}  b={b}  d={d}  →  {status}")
-        if ok:
-            n_pass += 1
-        else:
-            n_fail += 1
+        all_stats.append(stats)
 
-    print(f"\nResults: {n_pass} passed, {n_fail} failed out of {len(configs)} configs.")
+    # ---- Formatted summary table ----
+    hdr = (
+        f"{'B':>3s}  {'b':>2s}  {'d':>2s}  {'N':>6s}  {'status':>6s}  "
+        f"{'peak_abs':>10s}  {'avg_abs':>10s}  {'peak_rel':>10s}  {'avg_rel':>10s}"
+    )
+    print("\n" + "=" * len(hdr))
+    print("Numerical Correctness Summary  (ragged vs. padded SDPA reference)")
+    print("=" * len(hdr))
+    print(hdr)
+    print("-" * len(hdr))
+    for s in all_stats:
+        tag = " PASS" if s.passed else "*FAIL"
+        print(
+            f"{s.batch_size:3d}  {s.branching_factor:2d}  {s.depth:2d}  "
+            f"{s.num_tokens:6d}  {tag:>6s}  "
+            f"{s.peak_abs_err:10.2e}  {s.avg_abs_err:10.2e}  "
+            f"{s.peak_rel_err:10.2e}  {s.avg_rel_err:10.2e}"
+        )
+    print("-" * len(hdr))
+
+    n_pass = sum(1 for s in all_stats if s.passed)
+    n_fail = len(all_stats) - n_pass
+
+    # Global aggregates (across ALL configs)
+    if all_stats:
+        global_peak_abs = max(s.peak_abs_err for s in all_stats)
+        global_avg_abs  = sum(s.avg_abs_err for s in all_stats) / len(all_stats)
+        global_peak_rel = max(s.peak_rel_err for s in all_stats)
+        global_avg_rel  = sum(s.avg_rel_err for s in all_stats) / len(all_stats)
+        print(
+            f"\nGlobal  |  peak_abs = {global_peak_abs:.2e}  "
+            f"avg_abs = {global_avg_abs:.2e}  "
+            f"peak_rel = {global_peak_rel:.2e}  "
+            f"avg_rel = {global_avg_rel:.2e}"
+        )
+
+    print(f"Result  |  {n_pass} passed, {n_fail} failed out of {len(all_stats)} configs.\n")
     sys.exit(0 if n_fail == 0 else 1)

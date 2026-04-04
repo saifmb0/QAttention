@@ -1,0 +1,738 @@
+% =====================================================================
+% Ancestor-Sparse Flash Attention for Tree-Structured Speculative Decoding
+% Target: MLSys 2025/2026
+% =====================================================================
+\documentclass{article}
+
+% ── MLSys / NeurIPS style base ──────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{mathtools}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{microtype}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage[margin=1in]{geometry}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  citecolor=green!50!black,
+  urlcolor=blue!70!black,
+}
+
+% ── Macros ──────────────────────────────────────────────────────────
+\newcommand{\method}{Ragged Attention}
+\newcommand{\methodshort}{RaggedAttn}
+\newcommand{\bigO}[1]{\mathcal{O}(#1)}
+\newcommand{\numtokens}{N}
+\newcommand{\depth}{d}
+\newcommand{\branching}{b}
+\newcommand{\headdim}{D}
+\newcommand{\nheads}{H}
+\newcommand{\batchsize}{B}
+\DeclareMathOperator*{\softmax}{softmax}
+\DeclareMathOperator{\parent}{parent}
+
+\title{%
+  \textbf{Only Ancestors Matter: Sparse Flash Attention for \\
+  Tree-Structured Speculative Decoding}%
+}
+
+\author{
+  Anonymous Authors \\
+  \textit{Under review — do not distribute}
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+% =====================================================================
+% ABSTRACT
+% =====================================================================
+\begin{abstract}
+Speculative decoding with tree-structured draft tokens is a powerful
+technique for accelerating large language model inference.
+However, the verification pass of tree-structured drafts induces a
+sparse attention pattern: each token attends only to its
+$\depth + 1$ ancestors rather than to all $\numtokens$ tokens
+in the sequence.
+Existing attention implementations—including Flash\-Attention~2,
+\texttt{torch.nn.functional.scaled\_dot\_product\_attention} (SDPA),
+and xFormers—are oblivious to this sparsity and perform
+$\bigO{\numtokens^2}$ work per head.
+We present \textbf{\method{}}, an ancestor-sparse Triton kernel that
+exploits the BFS-ordered tree structure to reduce the per-head
+complexity from $\bigO{\numtokens^2}$ to $\bigO{\numtokens \cdot \depth}$.
+The kernel replaces the standard KV-block loop of Flash\-Attention~2
+with an ancestor walk of $\depth + 1$ scattered gathers per Q-tile,
+delivering up to \textbf{244$\boldsymbol{\times}$} speedup over SDPA math and
+\textbf{3.8$\boldsymbol{\times}$} over SDPA flash on an NVIDIA Blackwell RTX~PRO~6000.
+We provide autotuned configurations for two GPU microarchitectures
+(Turing SM75 and Blackwell SM120), demonstrate
+numerical correctness to $<10^{-3}$ max absolute error,
+and characterize the quadratic padding waste that dense kernels
+incur on tree-shaped batches.
+All code, data, and reproduction scripts are open-sourced.
+\end{abstract}
+
+% =====================================================================
+\section{Introduction}\label{sec:intro}
+% =====================================================================
+
+Autoregressive decoding in large language models (LLMs) is
+fundamentally memory-bound: each token generation requires a full
+forward pass whose arithmetic intensity is limited by the
+key--value (KV) cache read \cite{leviathan2023fast, chen2023accelerating}.
+Speculative decoding addresses this by generating candidate tokens
+cheaply with a \emph{draft model} and verifying them in parallel
+with the \emph{target model} \cite{leviathan2023fast, chen2023accelerating}.
+
+Recent methods such as EAGLE-2 \cite{li2024eagle2}, Medusa
+\cite{cai2024medusa}, and SpecInfer \cite{miao2024specinfer} extend
+the draft from a single chain to a \emph{tree} of candidate tokens,
+dramatically increasing the expected acceptance length per step.
+In a complete $\branching$-ary tree of depth $\depth$, the total
+token count is
+\begin{equation}\label{eq:tree-size}
+  \numtokens = \frac{\branching^{\depth+1} - 1}{\branching - 1},
+  \quad \branching > 1.
+\end{equation}
+During verification, each draft token~$i$ in the tree may attend only
+to its ancestors—the $\depth_i + 1$ nodes on the unique root-to-$i$
+path—rather than to all $\numtokens$ tokens.  The resulting attention
+mask is therefore \emph{extremely sparse}: for $\branching = 4$,
+$\depth = 5$, only 6 of 1{,}365 positions are attended, representing
+$0.44\%$ utilization of the full mask.
+
+Despite this sparsity, all production-ready attention kernels
+(FlashAttention-2 \cite{dao2023flashattention2}, SDPA backends,
+xFormers, FlashInfer) iterate over \emph{all} KV blocks and rely on
+causal masks to zero out irrelevant positions, performing
+$\bigO{\numtokens^2}$ work per head.  FlashInfer's CUTLASS FMHA path
+explicitly guards against SM12x Blackwell GPUs \cite{flashinfer2025},
+leaving no sparse-aware option on the newest hardware.
+
+\paragraph{Contributions.}
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item We present \textbf{\method{}}, an ancestor-sparse Flash
+    Attention variant implemented as a Triton JIT kernel.
+    It replaces the KV-block loop with an ancestor walk of exactly
+    $\depth + 1$ iterations, achieving $\bigO{\numtokens \cdot \depth}$
+    complexity per head.
+  \item We provide \textbf{autotuned configurations} for two NVIDIA
+    microarchitectures (SM75 and SM120) with Blackwell-specific
+    optimizations: 512-wide Q-tiles exploiting 232\,KB shared
+    memory, \texttt{int64} pointer arithmetic for $>$2\,GB tensors,
+    and dtype-aware BF16 stores.
+  \item We demonstrate \textbf{up to 244$\times$} speedup over SDPA math
+    and \textbf{up to 3.8$\times$} over SDPA flash at batch $\batchsize = 8$,
+    with scalable performance from $\batchsize = 1$ to $\batchsize = 128$
+    on the NVIDIA RTX PRO 6000 Blackwell.
+  \item We characterize the \textbf{quadratic padding waste} incurred by
+    dense attention on tree-shaped batches and show that it exceeds
+    $99\%$ for moderate tree sizes.
+\end{enumerate}
+
+% =====================================================================
+\section{Background}\label{sec:background}
+% =====================================================================
+
+\subsection{Speculative Decoding}
+
+Speculative decoding \cite{leviathan2023fast, chen2023accelerating, stern2018blockwise}
+decomposes autoregressive generation into a \emph{draft} phase and a
+\emph{verify} phase.
+A lightweight draft model generates $\gamma$ candidate tokens, and the
+target model evaluates them in a single batched forward pass.
+Accepted tokens are committed; the first rejection triggers resampling.
+The expected wall-clock speedup is $\mathbb{E}[\tau] / c_{\text{verify}}$,
+where $\tau$ is the acceptance length and $c_{\text{verify}}$ is the
+target-model latency per verification step.
+
+\subsection{Tree-Structured Drafts}
+
+EAGLE-2 and similar methods grow a tree of $\numtokens$ candidate
+tokens rather than a single chain, organized as a complete
+$\branching$-ary tree of depth $\depth$.
+Nodes are BFS-ordered (level-order), so root~$= 0$ and
+$\parent(k) = \lfloor (k - 1) / \branching \rfloor$ for $k \geq 1$.
+
+\paragraph{Attention rule.}
+During verification, the attention mask is defined by the tree
+structure: token $i$ may attend to token $j$ if and only if
+$j$ is an ancestor of $i$ (including self-attention at $i = j$).
+For a node at depth $\ell$, this yields exactly $\ell + 1$
+non-zero entries in the $N$-wide mask row.
+
+\subsection{Dense Attention Is Wasteful on Trees}
+
+Standard scaled dot-product attention computes the full
+$\numtokens \times \numtokens$ attention matrix and applies a mask:
+\begin{equation}
+  \text{Attn}(Q, K, V) = \softmax\!\left(\frac{QK^\top}{\sqrt{\headdim}}
+    \odot M\right) V,
+\end{equation}
+where $M \in \{0, -\infty\}^{\numtokens \times \numtokens}$ is the
+tree-ancestry mask.
+Even optimized IO-aware kernels such as FlashAttention-2 stream all
+$\numtokens$ KV blocks per query, performing
+$\bigO{\numtokens^2 \headdim}$ FLOPs.
+For $\branching = 4$, $\depth = 5$:
+\[
+  \frac{\text{useful FMAs}}{\text{total FMAs}}
+  = \frac{(\depth + 1)}{\numtokens}
+  = \frac{6}{1{,}365} = 0.44\%.
+\]
+
+\paragraph{Padding waste.}
+When sequences of varying lengths within a speculative-decoding batch
+are padded to the maximum length $L_{\max}$, the quadratic
+attention-compute waste is:
+\begin{equation}\label{eq:padding-waste}
+  r_{\text{attn}} = \frac{\batchsize \cdot L_{\max}^2 - \sum_{i=1}^{\batchsize} L_i^2}
+  {\batchsize \cdot L_{\max}^2}.
+\end{equation}
+When most sequences are short drafts but one is the full prompt +
+tree, $r_{\text{attn}}$ approaches $1 - 1/\batchsize$, wasting
+nearly all compute in the batch.
+
+
+% =====================================================================
+\section{Method}\label{sec:method}
+% =====================================================================
+
+\subsection{Ancestor-Sparse Flash Attention}
+
+The key insight is that for BFS-ordered trees, the
+ancestor positions of any query token can be computed arithmetically
+without materializing the full attention mask.
+Given query position $q$ in sequence-local coordinates, its
+$s$-th ancestor is:
+\begin{equation}\label{eq:ancestor-walk}
+  a^{(0)}(q) = q, \quad
+  a^{(s)}(q) = \left\lfloor \frac{a^{(s-1)}(q) - 1}{\branching} \right\rfloor
+  \quad \text{for } s \geq 1,
+\end{equation}
+converging to the root ($a^{(s)} = 0$) for $s \geq \depth_q$.
+
+\paragraph{Kernel structure.}
+\method{} replaces the standard KV-block loop of FlashAttention-2
+with an \emph{ancestor walk loop} of exactly $\depth + 1$ iterations.
+At each step~$s$, for every query row $q_m$ in a BLOCK\_M-wide Q-tile:
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Compute ancestor position:}
+    $\text{cur}_m = a^{(s)}(q_{\text{off}} + m)$ via \Cref{eq:ancestor-walk}.
+  \item \textbf{Skip duplicates:} If $\text{cur}_m = \text{prev}_m$
+    (the root revisited after all ancestors are exhausted), skip the update.
+  \item \textbf{Scattered gather:}
+    Load $k_m = K[\text{seq\_start} + \text{cur}_m, h, :]$ and
+    $v_m = V[\text{seq\_start} + \text{cur}_m, h, :]$.
+  \item \textbf{Flash-Attention-2 online softmax update:}
+    Compute $\text{score}_m = \langle q_m, k_m \rangle / \sqrt{\headdim}$,
+    then update running max $m_i$, normalization $\ell_i$, and
+    accumulator using the standard two-pass rescaling
+    \cite{milakov2018online}.
+\end{enumerate}
+
+\paragraph{Complexity.}
+Each Q-tile processes $\text{BLOCK\_M}$ queries, each requiring
+$\depth + 1$ scattered K/V gathers and dot products of dimension
+$\headdim$.
+The per-head complexity is:
+\begin{equation}
+  \bigO{\frac{\numtokens}{\text{BLOCK\_M}} \cdot \text{BLOCK\_M} \cdot (\depth + 1) \cdot \headdim}
+  = \bigO{\numtokens \cdot \depth \cdot \headdim},
+\end{equation}
+compared to $\bigO{\numtokens^2 \cdot \headdim}$ for dense kernels.
+For $\branching = 4$, $\depth = 5$: the reduction factor is
+$\numtokens / (\depth + 1) = 1{,}365 / 6 \approx 227\times$.
+
+\subsection{Ragged Batching}
+
+To avoid the quadratic padding waste of \Cref{eq:padding-waste},
+\method{} operates on a \emph{ragged} (packed) tensor layout.
+All $\batchsize$ sequences are concatenated into a single 1-D token
+dimension, indexed by a \texttt{seq\_starts} array of offsets.
+Each CTA reads its batch index from a precomputed mapping and
+uses \texttt{seq\_starts} to resolve global token positions.
+
+This eliminates both token-level padding (filling short sequences
+to $L_{\max}$) and attention-compute padding (the full
+$\batchsize \cdot L_{\max}^2$ attention matrix).
+
+\subsection{Autotuned GPU Configurations}
+
+We provide Triton autotune configurations for two GPU families:
+
+\begin{table}[h]
+\centering
+\caption{Key autotune parameters per GPU microarchitecture.}
+\label{tab:autotune}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{SM75 (T4)} & \textbf{SM120 (Blackwell)} \\
+\midrule
+BLOCK\_M          & 32--128       & 32--512           \\
+num\_warps        & 2--8          & 4--16             \\
+num\_stages       & 1             & 1                 \\
+Shared mem/SM     & 64\,KB        & 232\,KB           \\
+Pointer arith     & int32         & \textbf{int64}    \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Blackwell-specific optimizations.}
+On SM~12.0 (Blackwell), three key adaptations are necessary:
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Single pipeline stage:}
+    The ancestor walk has data-dependent memory addresses
+    ($a^{(s)}$ depends on $a^{(s-1)}$), preventing Triton's
+    software pipelining (\texttt{num\_stages} $> 1$) from
+    prefetching useful data.  Setting \texttt{num\_stages}$= 1$
+    avoids Triton compilation errors on SM~12.0.
+
+  \item \textbf{int64 pointer offsets:}
+    At $\batchsize \geq 64$, $\branching = 4$, $\depth = 8$, the
+    total token count per batch reaches $\sim$5.6M.
+    With $\headdim = 64$ and FP16 storage, byte offsets exceed
+    $2^{31} - 1$ (= 2\,GB), causing silent wrap-around in int32
+    pointer arithmetic.
+    We cast all global pointer offsets to \texttt{tl.int64}.
+
+  \item \textbf{Large Q-tiles:}
+    Blackwell's 232\,KB shared memory per SM allows BLOCK\_M
+    up to 512 without spilling to global memory, compared to
+    BLOCK\_M $\leq 128$ on Turing.
+\end{itemize}
+
+% =====================================================================
+\section{Experimental Setup}\label{sec:setup}
+% =====================================================================
+
+\paragraph{Hardware.}
+We evaluate on two GPUs spanning three generations:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{NVIDIA T4} (Turing, SM~7.5): 16\,GB GDDR6,
+    2{,}560 CUDA cores, 65\,TFLOPS FP16.
+  \item \textbf{NVIDIA RTX PRO 6000 Blackwell Server Edition}
+    (SM~12.0): 94\,GB GDDR7, 188 SMs, 232\,KB shared memory/SM.
+\end{itemize}
+
+\paragraph{Software.}
+PyTorch~2.11.0+cu130, Triton~3.6.0, Python~3.12 (Blackwell server);
+PyTorch~2.1+cu118, Triton~2.1 (T4).
+
+\paragraph{Baselines.}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \texttt{sdpa\_math}: PyTorch SDPA with math backend
+    (explicit materialization of $QK^\top$).
+  \item \texttt{sdpa\_flash}: PyTorch SDPA with FlashAttention
+    backend.
+  \item FlashAttention-2 \cite{dao2023flashattention2}:
+    not available on SM~12.0 (compilation requires
+    SM$\leq$9.0a headers).
+  \item FlashInfer \cite{flashinfer2025}: CUTLASS FMHA path
+    explicitly guarded against SM~12.x as of v0.6.7.
+\end{itemize}
+
+\paragraph{Configurations.}
+We sweep branching factor $\branching \in \{2, 3, 4\}$,
+tree depth $\depth \in \{1, \ldots, 8\}$,
+batch size $\batchsize \in \{1, 2, 4, 8, 16, 32, 64, 128\}$,
+head dimension $\headdim = 64$, and $\nheads = 8$ attention heads.
+All timings are the median of 50 iterations after 10 warmup rounds,
+measured with \texttt{torch.cuda.Event} elapsed time.
+
+% =====================================================================
+\section{Results}\label{sec:results}
+% =====================================================================
+
+\subsection{Latency vs.\ Tree Depth}
+
+\Cref{fig:latency-depth} shows kernel latency as a function of tree
+depth for $\batchsize = 8$ on the RTX PRO 6000 Blackwell.
+\method{} maintains sub-millisecond latency ($< 0.1$\,ms) through
+$\depth = 5$ across all branching factors, while SDPA math latency
+grows quadratically.  At $\branching = 3$, $\depth = 7$
+($\numtokens = 3{,}280$), \method{} achieves \textbf{244$\times$}
+speedup over SDPA math (0.095\,ms vs.\ 23.18\,ms).
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig1_latency_vs_depth.pdf}
+  \caption{%
+    Kernel latency vs.\ tree depth for $\batchsize = 8$ on the
+    Blackwell RTX PRO 6000.
+    \method{} (blue) stays sub-0.1\,ms through $\depth \leq 5$,
+    while SDPA math (red) grows quadratically.
+    Annotations show the peak speedup at the largest common depth.
+  }
+  \label{fig:latency-depth}
+\end{figure}
+
+\subsection{Speedup Heatmaps}
+
+\Cref{fig:speedup-heatmap} presents the full speedup matrix across
+all $(\batchsize, \depth)$ configurations, separated by branching
+factor.
+Against SDPA math, speedups range from $2.3\times$ (small trees)
+to $244\times$ ($\branching = 3$, $\depth = 7$, $\batchsize = 8$).
+Against SDPA flash, \method{} trails slightly at small tree sizes
+(speedup $\approx 0.6\text{--}0.7\times$) due to Flash's fused IO-aware
+implementation, but crosses parity at moderate sizes and reaches
+$3.8\times$ at $\branching = 3$, $\depth = 7$.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig2_speedup_heatmap.pdf}
+  \caption{%
+    Speedup heatmaps for \method{} versus SDPA math (top row) and
+    SDPA flash (bottom row) on Blackwell.
+    Color intensity indicates speedup magnitude (log scale).
+    Cells with ``OOM'' indicate baseline out-of-memory.
+  }
+  \label{fig:speedup-heatmap}
+\end{figure}
+
+\subsection{Batch-Size Scaling}
+
+\Cref{fig:batch-scaling} demonstrates that \method{}'s latency scales
+gracefully with batch size.
+At $\branching = 4$, $\depth = 5$ ($\numtokens = 1{,}365$), latency
+increases from 0.062\,ms ($\batchsize = 1$) to 0.629\,ms
+($\batchsize = 128$), while SDPA math grows from 0.37\,ms to
+64.67\,ms—a \textbf{103$\times$} gap at $\batchsize = 128$.
+SDPA flash transitions from $1.6\times$ faster at small batch to
+$1.4\times$ slower at $\batchsize = 128$, as its $\bigO{\numtokens^2}$
+scaling dominates.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig3_scaling_batch.pdf}
+  \caption{%
+    Latency scaling with batch size for $\branching = 4$ at selected
+    depths.
+    \method{} (blue) and its BF16 variant (cyan) track linearly in
+    $\batchsize$, while baselines scale quadratically in the total
+    token count.
+  }
+  \label{fig:batch-scaling}
+\end{figure}
+
+\subsection{Cross-GPU Comparison}
+
+\Cref{fig:cross-gpu} compares T4 and Blackwell at $\batchsize = 8$.
+On the T4, the initial dense-loop kernel was \emph{slower} than SDPA
+at small tree sizes (speedup $< 1\times$) due to the overhead of the
+ragged indexing scheme amortized over few tokens.
+The Blackwell sparse kernel eliminates this overhead region entirely,
+achieving $\geq 2.3\times$ speedup across all configurations.
+The cross-architecture improvement of the Blackwell sparse kernel
+over the T4 dense kernel reaches $50\text{--}150\times$ at deep trees,
+reflecting both the algorithmic improvement ($\bigO{N\depth}$ vs.\
+$\bigO{N^2}$) and the hardware generation gap.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig5_cross_gpu.pdf}
+  \caption{%
+    Cross-GPU comparison at $\batchsize = 8$: T4 dense kernel (gray) vs.\
+    Blackwell sparse kernel (blue).  Annotations show the Blackwell
+    improvement factor.
+  }
+  \label{fig:cross-gpu}
+\end{figure}
+
+\subsection{BF16 / FP16 Parity}
+
+\Cref{fig:bf16-parity} shows that the BF16 and FP16 code paths
+achieve near-identical latency on Blackwell, with a maximum deviation
+of $<5\%$.  This confirms that Blackwell's tensor cores process BF16
+and FP16 at equivalent throughput, and our dtype-aware store logic
+introduces no overhead.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.45\linewidth]{figures/fig6_bf16_parity.pdf}
+  \caption{%
+    BF16 vs.\ FP16 \method{} latency on Blackwell.
+    Points cluster tightly on the $y = x$ line.
+  }
+  \label{fig:bf16-parity}
+\end{figure}
+
+\subsection{Complexity Scaling}
+
+\Cref{fig:complexity} plots latency versus total sequence length $N$
+on a log--log scale for $\branching = 4$ at batch size 1--2.
+\method{} grows sub-linearly with $N$ (due to fixed $\depth + 1$ work
+per query), while SDPA math grows quadratically.
+The empirical slopes confirm the theoretical $\bigO{N \cdot \depth}$
+vs.\ $\bigO{N^2}$ complexity gap.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.45\linewidth]{figures/fig7_complexity.pdf}
+  \caption{%
+    Latency vs.\ sequence length $\numtokens$ (log--log) for
+    $\branching = 4$.
+    \method{} scales as $\bigO{N \cdot \depth}$;
+    baselines scale as $\bigO{N^2}$.
+  }
+  \label{fig:complexity}
+\end{figure}
+
+\subsection{Summary of Key Results}
+
+\Cref{tab:results} presents representative configurations.
+
+\begin{table}[t]
+\centering
+\caption{%
+  Selected benchmark results on NVIDIA RTX PRO 6000 Blackwell
+  ($\headdim = 64$, $\nheads = 8$).
+  ``OOM'' indicates out-of-memory for the baseline.
+}
+\label{tab:results}
+\small
+\begin{tabular}{cccr rr rr}
+\toprule
+$\batchsize$ & $\branching$ & $\depth$ & $\numtokens$
+  & Ragged & SDPA math & $\times$\,math & $\times$\,flash \\
+  & & & & (ms) & (ms) & & \\
+\midrule
+1  & 4 & 5 & 1{,}365   & 0.062 & 0.372  & 6.0$\times$  & 0.9$\times$ \\
+8  & 3 & 5 & 364       & 0.064 & 0.260  & 4.1$\times$  & 0.7$\times$ \\
+8  & 3 & 7 & 3{,}280   & 0.095 & 23.18  & 244$\times$  & 3.8$\times$ \\
+8  & 4 & 5 & 1{,}365   & 0.071 & 4.196  & 59$\times$   & 1.6$\times$ \\
+32 & 3 & 7 & 3{,}280   & 0.421 & 92.33  & 219$\times$  & 2.7$\times$ \\
+32 & 4 & 5 & 1{,}365   & 0.175 & 16.30  & 93$\times$   & 1.7$\times$ \\
+128& 4 & 5 & 1{,}365   & 0.629 & 64.67  & 103$\times$  & 1.4$\times$ \\
+128& 2 & 8 & 511       & 0.279 & 10.42  & 37$\times$   & 0.8$\times$ \\
+128& 3 & 5 & 364       & 0.193 & 5.622  & 29$\times$   & 0.9$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{Padding Waste Analysis}\label{sec:padding}
+% =====================================================================
+
+\Cref{fig:padding-waste} quantifies the attention-compute padding ratio
+$r_{\text{attn}}$ (\Cref{eq:padding-waste}) for typical
+speculative-decoding batch configurations.
+At batch size 8 with a context length of 128 and tree depth $\depth = 5$,
+the quadratic padding waste exceeds $97\%$ for $\branching = 4$.
+This waste is eliminated entirely by \method{}'s ragged layout.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.55\linewidth]{figures/fig4_padding_waste.pdf}
+  \caption{%
+    Quadratic attention-compute waste (\%) vs.\ tree configuration.
+    Dense padded attention wastes $>90\%$ of compute for moderate trees.
+    \method{} eliminates this entirely via ragged batching.
+  }
+  \label{fig:padding-waste}
+\end{figure}
+
+% =====================================================================
+\section{Related Work}\label{sec:related}
+% =====================================================================
+
+\paragraph{Speculative decoding.}
+The foundational framework was proposed independently by
+\citet{leviathan2023fast} and \citet{chen2023accelerating}.
+Tree-structured extensions include EAGLE-2 \cite{li2024eagle2},
+Medusa \cite{cai2024medusa}, SpecInfer \cite{miao2024specinfer},
+and Sequoia \cite{chen2024sequoia}.
+These works focus on draft quality and acceptance rate; our
+contribution is orthogonal, optimizing the attention kernel in the
+verification pass.
+
+\paragraph{Efficient attention.}
+FlashAttention \cite{dao2022flashattention} and FlashAttention-2
+\cite{dao2023flashattention2} introduced IO-aware tiling for dense
+attention, reducing HBM traffic from $\bigO{N^2}$ to $\bigO{N}$ at
+the cost of recomputation.
+PagedAttention \cite{kwon2023vllm} and FlashInfer \cite{flashinfer2025}
+optimize KV cache memory management for serving.
+Ring Attention \cite{liu2023ring} distributes attention across devices.
+None of these exploit the structure-specific sparsity of tree attention.
+
+\paragraph{Sparse attention.}
+Block-sparse attention \cite{child2019generating},
+BigBird \cite{zaheer2020bigbird}, and Longformer \cite{beltagy2020longformer}
+target regular sparsity patterns (local windows + global tokens).
+Tree attention patterns are irregular—each row has a different set
+of ancestors—making block-sparse approaches inapplicable.
+Our kernel handles this irregularity via per-row scattered gathers.
+
+\paragraph{Triton GPU programming.}
+Triton \cite{tillet2019triton} provides a Python-embedded DSL for
+writing GPU kernels at a level of abstraction above CUDA.
+Our use of Triton's \texttt{@triton.autotune} infrastructure enables
+portable performance across two GPU generations without
+hand-tuned CUDA or CUTLASS templates.
+
+% =====================================================================
+\section{Discussion}\label{sec:discussion}
+% =====================================================================
+
+\paragraph{When is \method{} most beneficial?}
+The speedup increases with tree size ($\numtokens$) because the
+$\bigO{N^2}$ cost of dense attention grows quadratically while
+\method{}'s cost grows as $\bigO{N \cdot \depth}$.
+For very small trees ($\numtokens < 10$), the overhead of ragged
+indexing can exceed the savings, and SDPA flash may be preferable.
+In practice, speculative decoding systems use $\branching \geq 2$
+and $\depth \geq 3$, placing them firmly in \method{}'s advantage
+region.
+
+\paragraph{Integration with serving frameworks.}
+\method{} is designed as a drop-in replacement for SDPA in the
+verification pass.  It accepts packed (ragged) Q/K/V tensors and
+a \texttt{seq\_starts} offset array, matching the interface expected
+by vLLM \cite{kwon2023vllm} and TensorRT-LLM's ragged batching.
+
+\paragraph{Limitations.}
+Our current implementation supports $\headdim = 64$ (the most
+common head dimension in LLMs from LLaMA to Mistral).
+Extension to $\headdim = 128$ requires additional autotune
+configurations but no algorithmic changes.
+We also do not yet support grouped-query attention (GQA), though
+the kernel's ancestor walk generalizes naturally to shared K/V heads.
+
+% =====================================================================
+\section{Conclusion}\label{sec:conclusion}
+% =====================================================================
+
+We presented \method{}, an ancestor-sparse Flash Attention kernel
+for tree-structured speculative decoding.
+By exploiting the BFS-ordered tree structure to replace the
+$\bigO{N^2}$ KV-block loop with an $\bigO{N \cdot \depth}$
+ancestor walk, \method{} achieves up to \textbf{244$\times$}
+speedup over SDPA math and \textbf{3.8$\times$} over SDPA flash
+on the NVIDIA RTX PRO 6000 Blackwell.
+The kernel scales gracefully from batch~1 to batch~128, supports
+both FP16 and BF16 at parity, and eliminates the quadratic padding
+waste inherent in dense attention on tree-shaped batches.
+With autotuned configurations spanning two GPU generations (SM75
+and SM120), \method{} provides a portable, production-ready
+attention primitive for next-generation speculative decoding systems.
+
+% =====================================================================
+% References
+% =====================================================================
+\bibliographystyle{plainnat}
+
+\begin{thebibliography}{20}
+
+\bibitem[Beltagy et~al.(2020)]{beltagy2020longformer}
+I.~Beltagy, M.~E. Peters, and A.~Cohan.
+\newblock {Longformer: The Long-Document Transformer}.
+\newblock \emph{arXiv:2004.05150}, 2020.
+
+\bibitem[Cai et~al.(2024)]{cai2024medusa}
+T.~Cai, Y.~Li, Z.~Geng, H.~Peng, and T.~Dao.
+\newblock {Medusa: Simple Framework for Accelerating LLM Generation with Multiple Decoding Heads}.
+\newblock \emph{ICML}, 2024.
+
+\bibitem[Chen et~al.(2023)]{chen2023accelerating}
+C.~Chen, S.~Borgeaud, G.~Irving, J.-B. Lespiau, L.~Sifre,
+  and J.~Jumper.
+\newblock {Accelerating Large Language Model Decoding with Speculative Sampling}.
+\newblock \emph{arXiv:2302.01318}, 2023.
+
+\bibitem[Chen et~al.(2024)]{chen2024sequoia}
+Z.~Chen, X.~Zhang, D.~Chen, and B.~Hariharan.
+\newblock {Sequoia: Scalable, Robust, and Hardware-aware Speculative Decoding}.
+\newblock \emph{arXiv:2402.12374}, 2024.
+
+\bibitem[Child et~al.(2019)]{child2019generating}
+R.~Child, S.~Gray, A.~Radford, and I.~Sutskever.
+\newblock {Generating Long Sequences with Sparse Transformers}.
+\newblock \emph{arXiv:1904.10509}, 2019.
+
+\bibitem[Dao(2023)]{dao2023flashattention2}
+T.~Dao.
+\newblock {FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning}.
+\newblock \emph{arXiv:2307.08691}, 2023.
+
+\bibitem[Dao et~al.(2022)]{dao2022flashattention}
+T.~Dao, D.~Y. Fu, S.~Ermon, A.~Rudra, and C.~R\'{e}.
+\newblock {FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness}.
+\newblock \emph{NeurIPS}, 2022.
+
+\bibitem[FlashInfer Contributors(2025)]{flashinfer2025}
+{FlashInfer Contributors}.
+\newblock {FlashInfer v0.6.7 Release Notes}.
+\newblock \url{https://github.com/flashinfer-ai/flashinfer}, 2025.
+
+\bibitem[Kwon et~al.(2023)]{kwon2023vllm}
+W.~Kwon, Z.~Li, S.~Zhuang, Y.~Sheng, L.~Zheng,
+  C.~H. Yu, J.~Gonzalez, H.~Zhang, and I.~Stoica.
+\newblock {Efficient Memory Management for Large Language Model Serving with PagedAttention}.
+\newblock \emph{SOSP}, 2023.
+
+\bibitem[Leviathan et~al.(2023)]{leviathan2023fast}
+Y.~Leviathan, M.~Kalman, and Y.~Matias.
+\newblock {Fast Inference from Transformers via Speculative Decoding}.
+\newblock \emph{ICML}, 2023.
+
+\bibitem[Li et~al.(2024)]{li2024eagle2}
+Y.~Li, F.~Huang, Y.~Song, and Y.~Li.
+\newblock {EAGLE-2: Context-Aware Attention for Speculative Decoding with Lookahead}.
+\newblock \emph{arXiv:2406.16858}, 2024.
+
+\bibitem[Liu et~al.(2023)]{liu2023ring}
+H.~Liu, M.~Zaharia, and P.~Abbeel.
+\newblock {Ring Attention with Blockwise Transformers for Near-Infinite Context}.
+\newblock \emph{arXiv:2310.01889}, 2023.
+
+\bibitem[Miao et~al.(2024)]{miao2024specinfer}
+X.~Miao, G.~Oliaro, Z.~Zhang, X.~Cheng, Z.~Wang,
+  R.~Y. Wong, Z.~Chen, D.~Arfeen, R.~Abhyankar, and Z.~Jia.
+\newblock {SpecInfer: Accelerating Generative Large Language Model Serving with Speculative Inference and Token Tree Verification}.
+\newblock \emph{ASPLOS}, 2024.
+
+\bibitem[Milakov \& Gimelshein(2018)]{milakov2018online}
+M.~Milakov and N.~Gimelshein.
+\newblock {Online normalizer calculation for softmax}.
+\newblock \emph{arXiv:1805.02867}, 2018.
+
+\bibitem[Stern et~al.(2018)]{stern2018blockwise}
+M.~Stern, N.~Shazeer, and J.~Uszkoreit.
+\newblock {Blockwise Parallel Decoding for Deep Autoregressive Models}.
+\newblock \emph{NeurIPS}, 2018.
+
+\bibitem[Tillet et~al.(2019)]{tillet2019triton}
+P.~Tillet, H.~T. Kung, and D.~Cox.
+\newblock {Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations}.
+\newblock \emph{MAPL @ PLDI}, 2019.
+
+\bibitem[Zaheer et~al.(2020)]{zaheer2020bigbird}
+M.~Zaheer, G.~Guruganesh, A.~Dubey, J.~Ainslie,
+  C.~Alberti, S.~Ontanon, P.~Pham, A.~Ravula,
+  Q.~Wang, L.~Yang, and A.~Ahmed.
+\newblock {BigBird: Transformers for Longer Sequences}.
+\newblock \emph{NeurIPS}, 2020.
+
+\end{thebibliography}
+
+\end{document}

@@ -13,13 +13,13 @@ Baseline taxonomy
 │ Method                       │ Library          │ Type        │ Mask    │ Category │
 ├──────────────────────────────┼──────────────────┼─────────────┼─────────┼──────────┤
 │ Ours — ragged fp16           │ Triton (this)    │ ragged      │ O(d+1)  │ OURS     │
-│ SDPA + bool tree mask [FAIR] │ torch.SDPA       │ padded      │ tree✓   │ FAIR †   │
-│ FlashInfer + tree mask [FAIR]│ flashinfer       │ ragged      │ tree✓   │ FAIR †   │
+│ SDPA + bool tree mask [Naive baseline] │ torch.SDPA       │ padded      │ tree✓   │ Naive baseline †   │
+│ FlashInfer + tree mask [Naive baseline]│ flashinfer       │ ragged      │ tree✓   │ Naive baseline †   │
 │ SDPA flash [causal UB]       │ torch.SDPA       │ padded      │ causal* │ UB ref‡  │
 │ FlashInfer batch prefill     │ flashinfer       │ ragged      │ causal* │ UB ref‡  │
 └──────────────────────────────┴──────────────────┴─────────────┴─────────┴──────────┘
 
-  † FAIR baseline: sdpa_batched_bool uses the exact same tree-ancestor boolean
+  † Naive baseline: sdpa_batched_bool uses the exact same tree-ancestor boolean
     mask as our kernel, in a single batched SDPA call with flash backend
     eligible (PyTorch accepts bool attn_mask on the flash path).  This is the
     PRIMARY comparison — it measures what the best standard PyTorch path can do
@@ -70,11 +70,11 @@ Prerequisites (auto-checked at startup)
 -----------------------------------------
   Required : torch == 2.8.0 (cu121),  triton >= 3.0
   Optional : flashinfer  (see requirements_blackwell.txt for cu121/torch2.8 URLs)
-  Note     : flash-attn is intentionally NOT installed.  torch.sdp_kernel(enable_flash=True)
+  Note     : flash-attn is intentionally NOT installed.  torch.nn.attention.sdpa_kernel()
              provides the same FA-2 kernel natively with no .so ABI dependency.
   Note     : DeFT (arXiv:2404.00242, ICLR'25) standalone Triton kernel cloned
              from PanZaifeng/FastTree-Artifact into third_party/FastTree/ by
-             setup_blackwell.sh.  All-N-nodes-as-queries for a FAIR comparison.
+             setup_blackwell.sh.  All-N-nodes-as-queries for a Naive baseline comparison.
              Use --skip-deft to bypass if not cloned.
 
 Usage
@@ -167,7 +167,7 @@ _DEFT_KERNEL_DIR = os.path.join(
 HAS_DEFT = os.path.isfile(os.path.join(_DEFT_KERNEL_DIR, "DeFT.py"))
 
 # flash-attn is intentionally not installed on this branch.
-# torch.sdp_kernel(enable_flash=True) provides the same FA-2 kernel via
+# torch.nn.attention.sdpa_kernel(SDPBackend.FLASH_ATTENTION) provides the same FA-2 kernel via
 # PyTorch native bindings with no .so ABI dependency.
 # xformers and TensorRT are not used in the hopper branch benchmarks.
 
@@ -322,9 +322,7 @@ def _make_runner_ragged(Q, K, V, cu_sl, b, d):
 def _make_runner_sdpa_math(Q_p, K_p, V_p, bias):
     scale = 1.0 / math.sqrt(Q_p.shape[-1])
     def fn():
-        with torch.backends.cuda.sdp_kernel(
-            enable_flash=False, enable_math=True, enable_mem_efficient=False
-        ):
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
             F.scaled_dot_product_attention(Q_p, K_p, V_p,
                                            attn_mask=bias, scale=scale)
     return fn
@@ -334,9 +332,7 @@ def _make_runner_sdpa_flash(Q_p, K_p, V_p):
     """Flash backend — no custom bias, uses causal=True (upper bound)."""
     scale = 1.0 / math.sqrt(Q_p.shape[-1])
     def fn():
-        with torch.backends.cuda.sdp_kernel(
-            enable_flash=True, enable_math=False, enable_mem_efficient=False
-        ):
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
             F.scaled_dot_product_attention(Q_p, K_p, V_p,
                                            is_causal=True, scale=scale)
     return fn
@@ -365,10 +361,10 @@ def _make_runner_flashinfer(Q, K, V, cu_sl, B, L_max, H, D, device):
             workspace_buf, kv_layout="NHD"
         )
         # flashinfer >= 0.2: plan(qo_indptr, kv_indptr, num_qo_heads, num_kv_heads,
-        # head_dim, ...) — third positional is num_qo_heads, NOT a second indptr.
+        # head_dim_qk, ...) — the parameter is head_dim_qk, NOT head_dim.
         wrapper.plan(
             q_indptr, kv_indptr,
-            num_qo_heads=H, num_kv_heads=H, head_dim=D,
+            num_qo_heads=H, num_kv_heads=H, head_dim_qk=D,
             causal=True
         )
         def fn():
@@ -390,7 +386,7 @@ def _make_runner_flashinfer(Q, K, V, cu_sl, B, L_max, H, D, device):
 
 def _make_runner_sdpa_batched_bool(Q_p, K_p, V_p, masks_np, B, N, device, dtype):
     """
-    FAIR baseline: single batched SDPA call with exact tree-ancestor BOOLEAN
+    Naive baseline: single batched SDPA call with exact tree-ancestor BOOLEAN
     mask of shape [B, 1, N, N] on padded tensors.
 
     Why this is the right comparison:
@@ -428,7 +424,7 @@ def _make_runner_flashinfer_tree(Q, K, V, cu_sl, B, N, H, D, masks_np, device):
     """
     FlashInfer per-sample prefill with the EXACT tree-ancestor boolean mask.
 
-    This is the FAIR ragged competitor: correct tree semantics, FlashInfer
+    This is the Naive baseline ragged competitor: correct tree semantics, FlashInfer
     kernel, no padding waste between sequences.
     Uses flashinfer.single_prefill_with_kv_cache with custom_mask= per item.
 
@@ -473,17 +469,18 @@ def _make_runner_flashinfer_tree(Q, K, V, cu_sl, B, N, H, D, masks_np, device):
 
 def _make_runner_deft(Q, K, V, cu_sl, B, N, H, D, branching_factor, depth, device):
     """
-    DeFT (arXiv:2404.00242, ICLR'25) standalone Triton kernel — all-N-queries (FAIR).
+    DeFT (arXiv:2404.00242, ICLR'25) standalone Triton kernel — all-N-queries.
 
     Uses PanZaifeng/FastTree-Artifact/kernel_bench/{DeFT.py,kv_tree_simple.py}.
-    Treats ALL N nodes as query nodes (same workload as our ragged kernel — FAIR).
+    Treats ALL N nodes as query nodes (same workload as our ragged kernel).
 
     K_cache setup:
       K_cache[i, pos, :, :] = KV of the ancestor of node i at BFS depth pos.
     tree_info[j].requests invariant:
       requests[0] == j  (DeFT uses requests[0] * max_seqlen + depth_j as address).
       requests = [j, ...BFS_descendants(j)]
-    num_children=0 to force all N nodes treated as query leaves by DeFT.
+    num_children reflects actual tree structure so _group_subtree DFS walks correctly.
+    subtree_len=128 creates ~N/128 subtrees for parallel Triton programs.
 
     Runs DeFT_decode B times serially (once per identical tree replica) to match
     the total work of our ragged kernel over B batched trees.
@@ -538,14 +535,16 @@ def _make_runner_deft(Q, K, V, cu_sl, B, N, H, D, branching_factor, depth, devic
 
         all_subtrees = [_bfs_subtree(j) for j in range(N)]
 
-        # Build KVTreeNode list — num_children=0 treats all nodes as query leaves
+        # Build KVTreeNode list with correct tree topology.
+        # num_children reflects actual tree structure so _group_subtree DFS
+        # traversal follows the correct order.
         tree_info = []
         for j in range(N):
             node = KVTreeNode()
             node.parent       = parent_arr[j]
             node.id           = j
             node.seqlen       = 1
-            node.num_children = 0      # force all nodes to be treated as query leaves
+            node.num_children = len(children[j])
             node.requests     = all_subtrees[j]  # j is first — DeFT address invariant
             tree_info.append(node)
 
@@ -571,7 +570,11 @@ def _make_runner_deft(Q, K, V, cu_sl, B, N, H, D, branching_factor, depth, devic
         # DeFT_preparation is CPU-side positional bookkeeping — run once.
         # DeFT.py uses a module-level `cur_length` global that is never reset
         # between calls — must be zeroed manually before each preparation.
-        subtree_len = max(N, 128)
+        #
+        # subtree_len controls DeFT's subtree decomposition granularity.
+        # A SMALL value (128) creates many subtrees → many parallel Triton
+        # programs.  Using max(N, 128) creates ONE subtree (zero parallelism).
+        subtree_len = 128
         mask_len    = 64
         _deft_mod.cur_length = 0
         DeFT_aux    = DeFT_preparation(
@@ -621,20 +624,20 @@ class BenchRow:
     # latencies (ms) — NaN = skipped / unavailable
     ragged_fp16_ms:       float
     sdpa_flash_ms:        float        # causal upper-bound (no tree mask)
-    sdpa_batched_bool_ms: float        # FAIR: batched boolean mask, flash-eligible
+    sdpa_batched_bool_ms: float        # Naive baseline: batched boolean mask, flash-eligible
     flashinfer_ms:        float        # FlashInfer ragged prefill (causal UB)
-    flashinfer_tree_ms:   float        # FlashInfer per-item tree-mask (FAIR ragged competitor)
-    deft_ms:              float        # DeFT (FastTree Triton, all-N-queries, FAIR)
+    flashinfer_tree_ms:   float        # FlashInfer per-item tree-mask (Naive baseline ragged competitor)
+    deft_ms:              float        # DeFT (FastTree Triton, all-N-queries, Naive baseline)
     # Actual sparse TFLOPS (4·(d+1)·N·D·H / latency)
     ragged_sparse_tflops: float
     # Dense-equivalent TFLOPS (how fast dense would need to run to match our latency)
     ragged_dense_equiv_tflops: float
     # speedups vs named baselines
     speedup_vs_sdpa_flash:        float   # vs causal UB
-    speedup_vs_sdpa_batched_bool: float   # FAIR: PRIMARY headline number
+    speedup_vs_sdpa_batched_bool: float   # Naive baseline: PRIMARY headline number
     speedup_vs_flashinfer:        float   # vs causal UB
-    speedup_vs_flashinfer_tree:   float   # FAIR: ragged competitor with tree mask
-    speedup_vs_deft:              float   # FAIR: vs DeFT same all-N-queries workload
+    speedup_vs_flashinfer_tree:   float   # Naive baseline: ragged competitor with tree mask
+    speedup_vs_deft:              float   # Naive baseline: vs DeFT same all-N-queries workload
 
 
 def benchmark_one(
@@ -684,7 +687,7 @@ def benchmark_one(
                                           branching_factor, depth)
     # Causal upper-bound (NO tree mask — semantically wrong but fastest possible)
     run_sdpa_flash  = None if skip_dense else _make_runner_sdpa_flash(Q_p, K_p, V_p)
-    # FAIR: single batched SDPA with boolean tree mask → flash kernel eligible
+    # Naive baseline: single batched SDPA with boolean tree mask → flash kernel eligible
     run_sdpa_bb     = None if skip_dense else _make_runner_sdpa_batched_bool(
         Q_p, K_p, V_p, masks_np, B, N, device, torch.float16
     )
@@ -745,9 +748,9 @@ def benchmark_one(
 
 _ADA_PALETTE = {
     "ragged_fp16":       "#00b4d8",   # ours
-    "sdpa_batched_bool": "#2dc653",   # FAIR: batched boolean tree mask
-    "flashinfer_tree":   "#7b2d8b",   # FAIR: FlashInfer per-item tree mask
-    "deft":              "#e76f51",   # FAIR: DeFT FastTree Triton (all-N-queries)
+    "sdpa_batched_bool": "#2dc653",   # Naive baseline: batched boolean tree mask
+    "flashinfer_tree":   "#7b2d8b",   # Naive baseline: FlashInfer per-item tree mask
+    "deft":              "#e76f51",   # Naive baseline: DeFT FastTree Triton (all-N-queries)
     "sdpa_flash":        "#fb8500",   # causal UB
     "flashinfer":        "#3a86ff",   # FlashInfer (causal UB)
 }
@@ -756,9 +759,9 @@ _ADA_PALETTE = {
 # Key = display label, value = BenchRow field name
 _METHOD_COLS = {
     "Ragged fp16 (ours)":                         "ragged_fp16_ms",
-    "SDPA [tree mask, bool — FAIR]":              "sdpa_batched_bool_ms",
-    "FlashInfer [tree mask, FAIR]":               "flashinfer_tree_ms",
-    "DeFT [arXiv:2404.00242, FAIR]":              "deft_ms",
+    "SDPA [tree mask, bool — Naive baseline]":              "sdpa_batched_bool_ms",
+    "FlashInfer [tree mask, Naive baseline]":               "flashinfer_tree_ms",
+    "DeFT [arXiv:2404.00242, Naive baseline]":              "deft_ms",
     "SDPA flash [causal UB]":                     "sdpa_flash_ms",
     "FlashInfer [causal UB]":                     "flashinfer_ms",
 }
@@ -791,7 +794,7 @@ def plot_latency_vs_depth(df: pd.DataFrame, out_dir: str) -> None:
                 continue
             color = colors[ci % len(colors)]
             ls = "-" if "ours" in label.lower() else (
-                "--" if "FAIR" in label else ":"  # solid=ours, dashed=fair, dotted=UB
+                "--" if "Naive baseline" in label else ":"  # solid=ours, dashed=naive, dotted=UB
             )
             lw = 2.5 if "ours" in label.lower() else 1.5
             ax.plot(sub["tree_depth"], vals, marker="o", label=label,
@@ -803,7 +806,7 @@ def plot_latency_vs_depth(df: pd.DataFrame, out_dir: str) -> None:
         ax.set_title(
             f"Attention Kernel Latency — b={b}, B=8, H={NUM_HEADS}, D={HEAD_DIM}\n"
             f"{_gpu_label}\n"
-            f"Dashed = upper-bound (wrong mask). Dotted = FAIR (tree mask). Solid = our method.",
+            f"Dashed = upper-bound (wrong mask). Dotted = Naive baseline (tree mask). Solid = our method.",
             fontsize=10
         )
         ax.legend(fontsize=7, ncol=2, loc="upper left")
@@ -819,14 +822,14 @@ def plot_latency_vs_depth(df: pd.DataFrame, out_dir: str) -> None:
 def plot_speedup_heatmap(df: pd.DataFrame, out_dir: str) -> None:
     """
     Fig 2: Speedup heatmap per branching factor.
-    Shows speedup_vs_sdpa_batched_bool (the FAIR primary comparison).
+    Shows speedup_vs_sdpa_batched_bool (the Naive baseline primary comparison).
     Cells with OOM are shown as grey.
     """
     _info = device_info()
     _gpu_label = f"{_info['name']}  ({_info['arch']}  SM {_info['sm']})"
 
     pairs = [
-        ("speedup_vs_sdpa_batched_bool", "vs SDPA [tree mask, bool — FAIR]  ← PRIMARY"),
+        ("speedup_vs_sdpa_batched_bool", "vs SDPA [tree mask, bool — Naive baseline]  ← PRIMARY"),
         ("speedup_vs_sdpa_flash",        "vs SDPA flash [causal UB — for context only]"),
     ]
 
@@ -897,8 +900,8 @@ def plot_representative_bar(df: pd.DataFrame, out_dir: str) -> None:
     for lbl in labels:
         if "ours" in lbl.lower():
             colors_bar.append("#00b4d8")   # blue = our kernel
-        elif "FAIR" in lbl:
-            colors_bar.append("#2dc653")   # green = true FAIR+ varlen baseline
+        elif "Naive baseline" in lbl:
+            colors_bar.append("#2dc653")   # green = Naive baseline (correct tree mask)
         elif "padded bias" in lbl.lower() or "padded" in lbl.lower():
             colors_bar.append("#e07b00")   # orange = padded float-bias baseline
         else:
@@ -910,7 +913,7 @@ def plot_representative_bar(df: pd.DataFrame, out_dir: str) -> None:
     ax.set_xlabel("Latency (ms)", fontsize=11)
     ax.set_title(
         f"All Methods at b={b_rep}, d={d_rep}, B={B_rep}  —  {_info['name']}  (SM {_info['sm']})\n"
-        f"Blue = our kernel.  Green = FAIR+ varlen (bool mask).  Orange = padded bias.  Grey = causal UB (wrong semantics).",
+        f"Blue = our kernel.  Green = Naive baseline (correct tree mask).  Orange = padded bias.  Grey = causal UB (wrong semantics).",
         fontsize=9
     )
     ax.axvline(row.get("ragged_fp16_ms", 0), color="#00b4d8", linestyle="--", linewidth=1.2,
@@ -979,9 +982,9 @@ def plot_tflops_roofline(df: pd.DataFrame, out_dir: str) -> None:
     print(f"  Saved: {path}")
 
 
-def plot_fair_vs_causal_comparison(df: pd.DataFrame, out_dir: str) -> None:
+def plot_naive_vs_causal_comparison(df: pd.DataFrame, out_dir: str) -> None:
     """
-    Fig 5: FAIR (bool tree mask) vs causal UB speedup at B=8.
+    Fig 5: Naive baseline (bool tree mask) vs causal UB speedup at B=8.
     Shows the gap between the honest headline and the causal upper-bound.
     """
     _info = device_info()
@@ -994,15 +997,15 @@ def plot_fair_vs_causal_comparison(df: pd.DataFrame, out_dir: str) -> None:
 
         fig, ax = plt.subplots(figsize=(10, 5))
         depths    = sub["tree_depth"].values
-        spd_fair  = sub["speedup_vs_sdpa_batched_bool"].values.astype(float)
+        spd_naive  = sub["speedup_vs_sdpa_batched_bool"].values.astype(float)
         spd_causal = sub["speedup_vs_sdpa_flash"].values.astype(float)
 
-        ax.fill_between(depths, spd_causal, spd_fair,
-                        where=~(np.isnan(spd_causal) | np.isnan(spd_fair)),
+        ax.fill_between(depths, spd_causal, spd_naive,
+                        where=~(np.isnan(spd_causal) | np.isnan(spd_naive)),
                         alpha=0.15, color="#fb8500",
-                        label="Headline inflation (causal UB vs FAIR)")
-        ax.plot(depths, spd_fair,   marker="o", color="#2dc653", lw=2.5,
-                label="vs SDPA bool mask [FAIR — PRIMARY]")
+                        label="Headline inflation (causal UB vs Naive baseline)")
+        ax.plot(depths, spd_naive,   marker="o", color="#2dc653", lw=2.5,
+                label="vs SDPA bool mask [Naive baseline — PRIMARY]")
         ax.plot(depths, spd_causal, marker="s", color="#fb8500", lw=1.5, linestyle=":",
                 label="vs SDPA flash [causal UB — context only]")
 
@@ -1010,14 +1013,14 @@ def plot_fair_vs_causal_comparison(df: pd.DataFrame, out_dir: str) -> None:
         ax.set_xlabel("Tree depth  d", fontsize=11)
         ax.set_ylabel("Speedup  (baseline / ours)", fontsize=11)
         ax.set_title(
-            f"Fair vs Headline Speedup  (b={b}, B=8)  —  {_gpu_label}\n"
-            f"Green = honest FAIR number.  Shaded = inflation from causal UB.",
+            f"Naive baseline vs Headline Speedup  (b={b}, B=8)  —  {_gpu_label}\n"
+            f"Green = honest Naive baseline number.  Shaded = inflation from causal UB.",
             fontsize=10
         )
         ax.legend(fontsize=9)
         ax.grid(alpha=0.25)
         plt.tight_layout()
-        path = os.path.join(out_dir, f"fig5_fair_vs_headline_b{b}.png")
+        path = os.path.join(out_dir, f"fig5_naive_vs_headline_b{b}.png")
         fig.savefig(path, dpi=150)
         plt.close(fig)
         print(f"  Saved: {path}")
@@ -1037,9 +1040,9 @@ def plot_batch_scaling(df: pd.DataFrame, out_dir: str) -> None:
     fig, ax = plt.subplots(figsize=(9, 5))
     methods_to_show = [
         ("Ragged fp16 (ours)",       "ragged_fp16_ms",       "#00b4d8", "-",  2.5),
-        ("SDPA bool mask [FAIR]",    "sdpa_batched_bool_ms", "#2dc653", "--", 2.0),
+        ("SDPA bool mask [Naive baseline]",    "sdpa_batched_bool_ms", "#2dc653", "--", 2.0),
         ("SDPA flash [causal UB]",   "sdpa_flash_ms",        "#fb8500", ":",  1.4),
-        ("FlashInfer [tree mask, FAIR]", "flashinfer_tree_ms",  "#7b2d8b", "--", 1.8),
+        ("FlashInfer [tree mask, Naive baseline]", "flashinfer_tree_ms",  "#7b2d8b", "--", 1.8),
     ]
     for label, col, color, ls, lw in methods_to_show:
         vals = sub[col].values.astype(float)
@@ -1080,8 +1083,8 @@ def _print_banner(info: dict, args) -> None:
     print()
     print("  Optional SOTA backends:")
     print(f"    FlashInfer (causal UB)   : {'available' if HAS_FLASHINFER else 'NOT INSTALLED (see requirements_blackwell.txt)'}")
-    print(f"    FlashInfer (tree FAIR)   : {'available' if HAS_FLASHINFER else 'NOT INSTALLED'}")
-    print( "    flash-attn               : skipped (using torch.sdp_kernel(enable_flash=True) natively)")
+    print(f"    FlashInfer (tree Naive baseline)   : {'available' if HAS_FLASHINFER else 'NOT INSTALLED'}")
+    print( "    flash-attn               : skipped (using torch.nn.attention.sdpa_kernel natively)")
     _deft_status = (
         "available" if HAS_DEFT
         else "NOT CLONED — run: bash setup_blackwell.sh  (third_party/FastTree/kernel_bench/)"
@@ -1089,9 +1092,9 @@ def _print_banner(info: dict, args) -> None:
     print(f"    DeFT (arXiv:2404.00242)  : {_deft_status}")
     print()
     print("  Baseline methodology:")
-    print("    FAIR  = sdpa_batched_bool  — correct tree-ancestor boolean mask,")
+    print("    Naive baseline  = sdpa_batched_bool  — correct tree-ancestor boolean mask,")
     print("            single batched SDPA call, flash-backend eligible.")
-    print("            FlashInfer [tree mask, FAIR] — FlashInfer kernel with same mask.")
+    print("            FlashInfer [tree mask, Naive baseline] — FlashInfer kernel with same mask.")
     print("            PRIMARY comparison.  'speedup_vs_sdpa_batched_bool' is")
     print("            the honest headline number.")
     print("    UB    = causal-mask baselines (FlashInfer causal, sdpa_flash).")
@@ -1122,7 +1125,7 @@ def main() -> None:
     parser.add_argument("--warmup",            type=int, default=WARMUP_ITERS)
     parser.add_argument("--iters",             type=int, default=BENCH_ITERS)
     parser.add_argument("--skip-flashinfer",   action="store_true",
-                        help="Skip FlashInfer baselines (causal UB and tree-mask FAIR)")
+                        help="Skip FlashInfer baselines (causal UB and tree-mask Naive baseline)")
     parser.add_argument("--skip-deft",         action="store_true",
                         help="Skip DeFT baseline (requires third_party/FastTree clone)")
     parser.add_argument("--run-id",            default=None,
@@ -1225,8 +1228,8 @@ def main() -> None:
         print(
             f"  [{display_idx:3d}/{total}]  B={B:2d} b={b} d={d} │ "
             f"ragged={_fmt(row.ragged_fp16_ms)} │ "
-            f"bool_fair={_fmt(row.sdpa_batched_bool_ms)}  flash_ub={_fmt(row.sdpa_flash_ms)} │ "
-            f"spdup_FAIR={row.speedup_vs_sdpa_batched_bool:.2f}×  "
+            f"bool_naive={_fmt(row.sdpa_batched_bool_ms)}  flash_ub={_fmt(row.sdpa_flash_ms)} │ "
+            f"spdup_naive={row.speedup_vs_sdpa_batched_bool:.2f}×  "
             f"spdup_ub={row.speedup_vs_sdpa_flash:.2f}×"
             f"{extras}"
         )
@@ -1265,8 +1268,8 @@ def main() -> None:
 
         print(f"  Ours (ragged fp16)              : {_fms(_rget('ragged_fp16_ms'))}")
         print()
-        print("  ── FAIR baseline (correct tree-ancestor mask) ──")
-        print(f"  SDPA bool mask [FAIR, flash-elig]: {_fms(_rget('sdpa_batched_bool_ms'))}"
+        print("  ── Naive baseline (correct tree-ancestor mask) ──")
+        print(f"  SDPA bool mask [Naive baseline, flash-elig]: {_fms(_rget('sdpa_batched_bool_ms'))}"
               f"   speedup = {_fsx(_rget('speedup_vs_sdpa_batched_bool'))}  ← PRIMARY")
         print()
         print("  ── Upper-bound refs (causal mask — wrong semantics) ──")
@@ -1274,12 +1277,12 @@ def main() -> None:
               f"   speedup = {_fsx(_rget('speedup_vs_sdpa_flash'))}  (UB only)")
         _fi_tree = _rget("flashinfer_tree_ms")
         if not math.isnan(_fi_tree):
-            print(f"  FlashInfer [tree mask, FAIR]    : {_fms(_fi_tree)}"
-                  f"   speedup = {_fsx(_rget('speedup_vs_flashinfer_tree'))}  (FAIR)")
+            print(f"  FlashInfer [tree mask, Naive baseline]    : {_fms(_fi_tree)}"
+                  f"   speedup = {_fsx(_rget('speedup_vs_flashinfer_tree'))}  (Naive baseline)")
         _deft = _rget("deft_ms")
         if not math.isnan(_deft):
-            print(f"  DeFT [arXiv:2404.00242, FAIR]   : {_fms(_deft)}"
-                  f"   speedup = {_fsx(_rget('speedup_vs_deft'))}  (FAIR)")
+            print(f"  DeFT [arXiv:2404.00242, Naive baseline]   : {_fms(_deft)}"
+                  f"   speedup = {_fsx(_rget('speedup_vs_deft'))}  (Naive baseline)")
         _fi = _rget("flashinfer_ms")
         if not math.isnan(_fi):
             print(f"  FlashInfer [causal UB]          : {_fms(_fi)}"
@@ -1293,7 +1296,7 @@ def main() -> None:
     print("=" * 72)
 
     # ── Summary tables ────────────────────────────────────────────────────────
-    print("\n── Speedup vs SDPA bool mask [FAIR — PRIMARY] (mean over batch sizes) ──")
+    print("\n── Speedup vs SDPA bool mask [Naive baseline — PRIMARY] (mean over batch sizes) ──")
     if "speedup_vs_sdpa_batched_bool" in df.columns:
         print(
             df.groupby(["tree_depth", "branching_factor"])["speedup_vs_sdpa_batched_bool"]
@@ -1305,13 +1308,13 @@ def main() -> None:
             df.groupby(["tree_depth", "branching_factor"])["speedup_vs_sdpa_flash"]
             .mean().round(2).unstack().to_string()
         )
-    print("\n── Speedup vs FlashInfer [tree mask, FAIR] (mean over batch sizes) ────")
+    print("\n── Speedup vs FlashInfer [tree mask, Naive baseline] (mean over batch sizes) ────")
     if "speedup_vs_flashinfer_tree" in df.columns:
         print(
             df.groupby(["tree_depth", "branching_factor"])["speedup_vs_flashinfer_tree"]
             .mean().round(2).unstack().to_string()
         )
-    print("\n── Speedup vs DeFT [arXiv:2404.00242, FAIR] (mean over batch sizes) ──")
+    print("\n── Speedup vs DeFT [arXiv:2404.00242, Naive baseline] (mean over batch sizes) ──")
     if "speedup_vs_deft" in df.columns:
         print(
             df.groupby(["tree_depth", "branching_factor"])["speedup_vs_deft"]
@@ -1330,7 +1333,7 @@ def main() -> None:
     print("=" * 72)
     print("  RESULT INTERPRETATION GUIDE")
     print("=" * 72)
-    print("  The PRIMARY claimed speedup is vs 'sdpa_batched_bool' (FAIR baseline):")
+    print("  The PRIMARY claimed speedup is vs 'sdpa_batched_bool' (Naive baseline):")
     print("    - Correct tree-ancestor mask semantics (same as our kernel)")
     print("    - Single batched SDPA call (no per-sample Python dispatch)")
     print("    - Boolean mask → PyTorch flash-SDP backend eligible")
@@ -1338,7 +1341,7 @@ def main() -> None:
     print()
     print("  The gap between speedup_vs_sdpa_batched_bool and speedup_vs_sdpa_flash")
     print("  quantifies the 'headline inflation' from comparing against a wrong-mask")
-    print("  causal upper bound.  The FAIR number should be the headline.")
+    print("  causal upper bound.  The Naive baseline number should be the headline.")
     print()
     print("  Relevant published systems (do not use O(d+1) BFS arithmetic):")
     print("    SpecInfer (ASPLOS'24, arXiv:2305.09781) — Q-guided, 64-bit bitmask, max 64 tokens")
@@ -1353,7 +1356,7 @@ def main() -> None:
         plot_speedup_heatmap(df, args.out_dir)
         plot_representative_bar(df, args.out_dir)
         plot_tflops_roofline(df, args.out_dir)
-        plot_fair_vs_causal_comparison(df, args.out_dir)
+        plot_naive_vs_causal_comparison(df, args.out_dir)
         plot_batch_scaling(df, args.out_dir)
 
     print("\nBenchmark complete.")

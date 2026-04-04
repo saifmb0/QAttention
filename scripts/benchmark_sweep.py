@@ -205,8 +205,9 @@ def benchmark_one(
         scale = 1.0 / math.sqrt(head_dim)
 
         def sdpa_fn():
-            with torch.backends.cuda.sdp_kernel(
-                enable_flash=False, enable_math=True, enable_mem_efficient=True
+            with torch.nn.attention.sdpa_kernel(
+                [torch.nn.attention.SDPBackend.MATH,
+                 torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION]
             ):
                 F.scaled_dot_product_attention(
                     Q_p, K_p, V_p, attn_mask=attn_bias, scale=scale
