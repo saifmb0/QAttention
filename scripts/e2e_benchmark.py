@@ -106,6 +106,30 @@ def _has(pkg: str) -> bool:
     except Exception:
         return False
 
+def _ensure_curand_headers():
+    """Ensure curand_kernel.h is findable by FlashInfer's JIT (nvcc/ninja).
+
+    FlashInfer 0.6.7+ SM90 kernels include CUTLASS utilities that depend on
+    curand_kernel.h.  Many CUDA Docker images ship only the runtime library,
+    not the dev headers.  This adds the correct directory to CPATH if needed.
+    """
+    import glob
+    cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
+    if os.path.isfile(os.path.join(cuda_home, "include", "curand_kernel.h")):
+        return
+    candidates = glob.glob("/usr/local/cuda/targets/*/include/curand_kernel.h") \
+               + glob.glob("/usr/local/cuda-*/include/curand_kernel.h") \
+               + glob.glob("/usr/include/curand_kernel.h") \
+               + glob.glob("/usr/include/*/curand_kernel.h")
+    if not candidates:
+        return
+    inc_dir = os.path.dirname(candidates[0])
+    cpath = os.environ.get("CPATH", "")
+    if inc_dir not in cpath:
+        os.environ["CPATH"] = f"{inc_dir}:{cpath}" if cpath else inc_dir
+
+_ensure_curand_headers()
+
 HAS_FLASHINFER = _has("flashinfer")
 
 _DEFT_KERNEL_DIR = os.path.join(

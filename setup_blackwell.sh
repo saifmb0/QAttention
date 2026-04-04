@@ -63,6 +63,30 @@ info "Updating system packages …"
 if command -v apt-get &>/dev/null; then
     DEBIAN_FRONTEND=noninteractive apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl wget build-essential python3-pip python3-venv
+
+    # cuRAND development headers — needed by FlashInfer's JIT compilation on SM90.
+    # FlashInfer 0.6.7+ links CUTLASS utilities that #include <curand_kernel.h>;
+    # many CUDA Docker images ship only the runtime lib, not the dev headers.
+    if ! find /usr/local/cuda/include -name 'curand_kernel.h' -print -quit 2>/dev/null | grep -q .; then
+        info "Installing cuRAND dev headers for FlashInfer JIT …"
+        # Try version-agnostic first, then specific CUDA 12.x packages
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            libcurand-dev-12-* 2>/dev/null \
+        || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            cuda-curand-dev-12-1 2>/dev/null \
+        || warn "Could not install cuRAND dev headers — FlashInfer JIT may fail."
+
+        # Symlink fallback: if the headers landed in a non-standard location,
+        # create a link so nvcc -isystem /usr/local/cuda/include picks them up.
+        if [[ ! -f /usr/local/cuda/include/curand_kernel.h ]]; then
+            _CURAND_H=$(find /usr -name 'curand_kernel.h' -print -quit 2>/dev/null || true)
+            if [[ -n "$_CURAND_H" ]]; then
+                ln -sf "$(dirname "$_CURAND_H")/curand_kernel.h" /usr/local/cuda/include/curand_kernel.h
+                ln -sf "$(dirname "$_CURAND_H")/curand.h"        /usr/local/cuda/include/curand.h 2>/dev/null || true
+                info "Symlinked cuRAND headers → /usr/local/cuda/include/"
+            fi
+        fi
+    fi
 fi
 
 # ── 2. Python environment ─────────────────────────────────────────────────────

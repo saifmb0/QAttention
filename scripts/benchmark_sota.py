@@ -156,6 +156,36 @@ def _has(pkg: str) -> bool:
         return False
 
 
+def _ensure_curand_headers():
+    """Ensure curand_kernel.h is findable by FlashInfer's JIT (nvcc/ninja).
+
+    FlashInfer 0.6.7+ SM90 kernels include CUTLASS utilities that depend on
+    curand_kernel.h.  Many CUDA Docker images ship only the runtime library,
+    not the dev headers.  When the header is present but NOT in the standard
+    /usr/local/cuda/include/ path (e.g. /usr/local/cuda/targets/x86_64-linux/
+    include/, or under /usr/include/), we add the correct directory to CPATH
+    so nvcc picks it up during JIT compilation.
+    """
+    import glob, shutil
+    # Fast path: header is already on the standard include path
+    cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
+    standard = os.path.join(cuda_home, "include", "curand_kernel.h")
+    if os.path.isfile(standard):
+        return
+    # Search common locations
+    candidates = glob.glob("/usr/local/cuda/targets/*/include/curand_kernel.h") \
+               + glob.glob("/usr/local/cuda-*/include/curand_kernel.h") \
+               + glob.glob("/usr/include/curand_kernel.h") \
+               + glob.glob("/usr/include/*/curand_kernel.h")
+    if not candidates:
+        return  # nothing to do — setup_blackwell.sh should have installed it
+    inc_dir = os.path.dirname(candidates[0])
+    cpath = os.environ.get("CPATH", "")
+    if inc_dir not in cpath:
+        os.environ["CPATH"] = f"{inc_dir}:{cpath}" if cpath else inc_dir
+
+_ensure_curand_headers()
+
 HAS_FLASHINFER = _has("flashinfer")
 
 # DeFT standalone Triton kernel — PanZaifeng/FastTree-Artifact/kernel_bench/
