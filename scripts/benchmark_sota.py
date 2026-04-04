@@ -364,8 +364,10 @@ def _make_runner_flashinfer(Q, K, V, cu_sl, B, L_max, H, D, device):
         wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
             workspace_buf, kv_layout="NHD"
         )
+        # flashinfer >= 0.2: plan(qo_indptr, kv_indptr, num_qo_heads, num_kv_heads,
+        # head_dim, ...) — third positional is num_qo_heads, NOT a second indptr.
         wrapper.plan(
-            q_indptr, kv_indptr, kv_indptr,
+            q_indptr, kv_indptr,
             num_qo_heads=H, num_kv_heads=H, head_dim=D,
             causal=True
         )
@@ -494,6 +496,7 @@ def _make_runner_deft(Q, K, V, cu_sl, B, N, H, D, branching_factor, depth, devic
             _sys.path.insert(0, _DEFT_KERNEL_DIR)
         from kv_tree_simple import KVTreeNode   # type: ignore
         from DeFT import DeFT_preparation, DeFT_decode  # type: ignore
+        import DeFT as _deft_mod                # type: ignore  (for global reset)
     except Exception as exc:
         warnings.warn(f"[deft] import failed: {exc}")
         return None
@@ -565,9 +568,12 @@ def _make_runner_deft(Q, K, V, cu_sl, B, N, H, D, branching_factor, depth, devic
         K_cache = K_flat_b0[idx.view(-1)].view(N, max_path_len, H, D).contiguous()
         V_cache = V_flat_b0[idx.view(-1)].view(N, max_path_len, H, D).contiguous()
 
-        # DeFT_preparation is CPU-side positional bookkeeping — run once
+        # DeFT_preparation is CPU-side positional bookkeeping — run once.
+        # DeFT.py uses a module-level `cur_length` global that is never reset
+        # between calls — must be zeroed manually before each preparation.
         subtree_len = max(N, 128)
         mask_len    = 64
+        _deft_mod.cur_length = 0
         DeFT_aux    = DeFT_preparation(
             tree_info, K_cache, subtree_len, mask_len, H, D
         )

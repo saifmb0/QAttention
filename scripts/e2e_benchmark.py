@@ -1,34 +1,58 @@
 """
-End-to-end tokens-per-second benchmark for tree-structured speculative decoding.
+e2e_benchmark.py  —  Kernel overhead profiling in a full transformer stack
+===========================================================================
 
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  IMPORTANT SCOPE NOTE                                                        ║
-║  This is a SYNTHETIC benchmark only.  The model weights are random fp16.    ║
-║  There is no draft model, no real token sampling, and no EAGLE-2 pipeline.  ║
-║  Numbers here measure raw kernel + projection throughput on representative   ║
-║  LLM architecture sizes, NOT real end-to-end speculative decoding speedup.  ║
-║  Do not use these tok/s figures as real EAGLE-2 performance claims.         ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+PURPOSE
+-------
+This script answers ONE question:
 
-What it does measure (honestly):
-  - Attention kernel forward pass time as a fraction of total transformer time
-    (attn_frac).  This shows how much headroom kernel improvement creates.
-  - Full-stack throughput on correctly-shaped inputs for LLaMA-2 7B/13B dims
-    with the ragged ancestor-sparse attention path.
-  - Scaling behavior of the ragged kernel across batch sizes and tree shapes.
+    "What fraction of total transformer time is spent in attention,
+     and how does that change with tree depth / branching factor?"
 
-Wraps our ragged attention kernel inside a minimal single-layer transformer
-(Q/K/V projection → ragged_attention → output projection → RMSNorm → FFN)
-and measures full-stack throughput in tokens/sec for several tree shapes.
+This is NOT a comparison benchmark.  Only our ragged ancestor-sparse
+attention kernel is run.  For kernel-vs-kernel latency comparisons
+(ours vs SDPA bool-mask vs FlashInfer vs DeFT) see benchmark_sota.py.
 
-Model presets (hidden, num_heads, head_dim, ffn_hidden, label):
-  synthetic …  1 024-dim, 8 heads,  128 D, 2 816 FFN, 4 layers   (fast smoke test)
-  7b        …  4 096-dim, 32 heads, 128 D, 11 008 FFN, 32 layers  (LLaMA-2 7B dims)
-  13b       …  5 120-dim, 40 heads, 128 D, 13 824 FFN, 40 layers  (LLaMA-2 13B dims)
+WHAT IS MEASURED
+----------------
+Two timings per configuration:
 
-  NOTE: head_dim=128 is used throughout this benchmark.  The standalone kernel
-  sweep in benchmark_sota.py uses head_dim=64.  Verify the kernel supports
-  head_dim=128 before publishing model-shaped numbers: pytest tests/
+  fwd_ms       — full L-layer transformer forward pass:
+                   embed → (QKV proj → ragged_attention → O proj → RMSNorm
+                            → SwiGLU FFN) × L layers
+  attn_only_ms — single attention sublayer (QKV proj + ragged_attention +
+                 O proj + one RMSNorm), timed on a single block as a proxy.
+  attn_frac    ≈ (attn_only_ms × L) / fwd_ms
+               The fraction of total compute that lives in attention.
+               Plug into Amdahl's law to bound the end-to-end speedup a
+               faster attention kernel can deliver.
+  tok_per_sec  — verification tokens processed per second on the ragged path.
+
+WHAT IS NOT MEASURED / NOT CLAIMED
+------------------------------------
+  • No comparison kernel. No speedup ratio.  Use benchmark_sota.py for that.
+  • Random fp16 weights — not real LLaMA-2 parameters.
+  • No draft model, no speculative sampling, no EAGLE-2 pipeline.
+  • tok_per_sec is synthetic ragged-path throughput, not real EAGLE-2 speed.
+
+HOW TO READ THE OUTPUT
+-----------------------
+  attn_frac answers "how much room is there to improve end-to-end speed by
+  improving the attention kernel?"  Example:
+    attn_frac=0.05 at d=3 → a 10× attention speedup gains only ~5% overall.
+    attn_frac=0.45 at d=7 → a 10× attention speedup gains ~29% overall.
+  (Amdahl: 1 / (1 - attn_frac × (1 - 1/kernel_speedup)))
+
+  Use benchmark_sota.py to see what actual attention speedups are achieved.
+
+Model presets (hidden, num_heads, head_dim, ffn_hidden, layers):
+  synthetic …  1 024-dim,  8 heads, 128 D,  2 816 FFN,  4 layers (smoke test)
+  7b        …  4 096-dim, 32 heads, 128 D, 11 008 FFN, 32 layers  (LLaMA-2 7B)
+  13b       …  5 120-dim, 40 heads, 128 D, 13 824 FFN, 40 layers  (LLaMA-2 13B)
+
+  NOTE: head_dim=128 throughout.  benchmark_sota.py uses head_dim=64.
+  Run pytest tests/ to verify the kernel supports head_dim=128 before
+  publishing attn_frac numbers from the 7b/13b presets.
 
 Usage
 -----
@@ -322,14 +346,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cfg    = MODEL_PRESETS[args.model_size]
     print(
-        f"\nE2E benchmark  model={args.model_size}  "
-        f"({cfg['L']} layers, hidden={cfg['hidden']}, H={cfg['H']}, D={cfg['D']})"
-        f"\nDevice: {device}   dtype=fp16"
+        f"\ne2e_benchmark  —  kernel overhead profiling  (our ragged kernel only)"
+        f"\n  model={args.model_size}  ({cfg['L']} layers, hidden={cfg['hidden']}, H={cfg['H']}, D={cfg['D']})"
+        f"\n  device={device}   dtype=fp16   random weights"
     )
     print()
-    print("  *** SYNTHETIC BENCHMARK — random fp16 weights, no real draft model ***")
-    print("  attn_frac shows kernel overhead as share of total transformer time.")
-    print("  tok/s numbers are throughput on the ragged path only (not real EAGLE-2).")
+    print("  This is NOT a comparison benchmark.  For kernel-vs-kernel speedups")
+    print("  (vs SDPA bool-mask, FlashInfer, DeFT) see: benchmark_sota.py")
+    print()
+    print("  Metrics reported:")
+    print("    fwd_ms       — full L-layer forward pass (embed+attn+FFN) × L")
+    print("    attn_only_ms — single attention sublayer alone (proxy for per-layer cost)")
+    print("    attn_frac    — estimated attention share of total compute")
+    print("    tok/s        — verification tokens/sec on ragged path (synthetic)")
     print()
 
     total_runs = len(batch_sizes) * len(depths) * len(branching_factors)
@@ -401,10 +430,14 @@ def main():
 
     print()
     print("─" * 70)
-    print("  REMINDER: the above tok/s and attn_frac numbers are from a")
-    print("  SYNTHETIC model with random weights.  They are useful for")
-    print("  understanding kernel overhead share and scaling trends, but")
-    print("  they do not predict real EAGLE-2 end-to-end speedup.")
+    print("  attn_frac interpretation (Amdahl):")
+    print("    If attn_frac=F, a K× attention speedup gives at most")
+    print("    1 / (1 - F×(1 - 1/K)) end-to-end speedup.")
+    print("    Use benchmark_sota.py to see the K achieved by our kernel.")
+    print()
+    print("  tok/s and attn_frac use random weights and synthetic batch layout.")
+    print("  They show scaling trends and kernel overhead share, not absolute")
+    print("  production throughput.")
     print("─" * 70)
 
 
