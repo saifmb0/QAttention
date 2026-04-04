@@ -16,16 +16,14 @@ ATTENTION METHODS COMPARED
 ---------------------------
   ragged       — our ancestor-sparse Triton kernel  (O(d+1) per query)
   sdpa_flash   — FA2 via torch.nn.attention.sdpa_kernel(FLASH_ATTENTION)
-                 padded to [B, H, N, D] with causal mask (upper bound)
-  flashinfer   — FlashInfer BatchPrefillWithRaggedKVCacheWrapper, causal=True
-                 ragged layout, no padding (upper bound)
+                 padded to [B, H, N, D] with tree-ancestor boolean mask
+  flashinfer   — FlashInfer single_prefill_with_kv_cache with tree mask
+                 ragged layout, per-item dispatch, correct semantics
   deft         — DeFT (arXiv:2404.00242) standalone Triton kernel
                  PanZaifeng/FastTree-Artifact/kernel_bench/
                  tree-structured KV cache, all N nodes as queries
 
-  The SDPA flash and FlashInfer baselines use CAUSAL masking (not tree
-  masking) — they are upper-bound references only.  DeFT uses correct
-  tree structure.
+  All methods use correct tree-ancestor masking.
 
 WHAT IS MEASURED
 ----------------
@@ -93,7 +91,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.ragged_attn import ragged_attention
-from src.tree_mask import num_tree_nodes
+from src.tree_mask import num_tree_nodes, tree_attention_mask
 
 # ── Optional library probes ───────────────────────────────────────────────────
 
@@ -216,13 +214,15 @@ class RaggedAttnLayer(nn.Module):
 
 class SdpaFlashAttnLayer(nn.Module):
     """
-    FA2 baseline via torch.nn.attention.sdpa_kernel(FLASH_ATTENTION).
+    SDPA baseline via torch.nn.attention.sdpa_kernel(FLASH_ATTENTION).
 
     Reshapes ragged [T, H, D] → padded [B, H, N, D], runs SDPA flash with
-    causal mask, reshapes back.  All batch items have equal length N in
-    this benchmark, so reshape is zero-copy.
+    the correct tree-ancestor boolean mask, reshapes back.  All batch items
+    have equal length N in this benchmark, so reshape is zero-copy.
 
-    Uses causal masking (NOT tree masking) — this is an UPPER BOUND reference.
+    Uses the exact tree-ancestor mask (same semantics as the ragged kernel).
+    Boolean attn_mask is flash-backend eligible (PyTorch converts to additive
+    -inf internally).
     """
 
     def __init__(self, hidden: int, H: int, D: int):
@@ -232,9 +232,13 @@ class SdpaFlashAttnLayer(nn.Module):
         self.o_proj   = nn.Linear(H * D, hidden, bias=False)
         self.norm     = RMSNorm(hidden)
         self._scale   = 1.0 / math.sqrt(D)
+        self._tree_mask = None  # [B, 1, N, N] bool, set by prepare()
 
     def prepare(self, cu_seqlens, B, N, branching_factor, depth, device):
-        pass
+        mask_np = tree_attention_mask(branching_factor, depth)  # [N, N] bool
+        mask_t  = torch.from_numpy(mask_np.astype(bool)).to(device)   # [N, N]
+        # Expand to [B, 1, N, N] — same tree for every batch item
+        self._tree_mask = mask_t.unsqueeze(0).unsqueeze(0).expand(B, 1, N, N)
 
     def forward(self, x, cu_seqlens, branching_factor, depth):
         residual = x
@@ -252,7 +256,7 @@ class SdpaFlashAttnLayer(nn.Module):
 
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
             out = F.scaled_dot_product_attention(
-                Q, K, V, is_causal=True, scale=self._scale,
+                Q, K, V, attn_mask=self._tree_mask, scale=self._scale,
             )
         out = out.transpose(1, 2).reshape(T, self.H * self.D)
         out = self.o_proj(out)
@@ -261,12 +265,13 @@ class SdpaFlashAttnLayer(nn.Module):
 
 class FlashInferAttnLayer(nn.Module):
     """
-    FlashInfer baseline — BatchPrefillWithRaggedKVCacheWrapper, causal=True.
+    FlashInfer baseline — per-item single_prefill_with_kv_cache, tree mask.
 
-    Uses ragged (packed) layout — no padding waste.  plan() is called once
-    in prepare(), run() is called each forward.
+    Uses the exact tree-ancestor boolean mask via flashinfer's custom_mask
+    parameter.  Dispatches per batch item (serial) — measures FlashInfer's
+    kernel efficiency on the correct problem.
 
-    Uses causal masking (NOT tree masking) — this is an UPPER BOUND reference.
+    This uses CORRECT tree masking — directly comparable to our ragged kernel.
     """
 
     def __init__(self, hidden: int, H: int, D: int):
@@ -275,33 +280,30 @@ class FlashInferAttnLayer(nn.Module):
         self.qkv_proj = nn.Linear(hidden, 3 * H * D, bias=False)
         self.o_proj   = nn.Linear(H * D, hidden, bias=False)
         self.norm     = RMSNorm(hidden)
-        self._wrapper = None
+        self._tree_mask = None  # [N, N] bool tensor on device
+        self._N = 0
+        self._B = 0
 
     def prepare(self, cu_seqlens, B, N, branching_factor, depth, device):
         import flashinfer  # type: ignore
-        workspace_buf = torch.empty(
-            32 * 1024 * 1024, dtype=torch.uint8, device=device,
-        )
-        self._wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
-            workspace_buf, kv_layout="NHD",
-        )
-        self._wrapper.plan(
-            cu_seqlens.to(device), cu_seqlens.to(device),
-            num_qo_heads=self.H, num_kv_heads=self.H, head_dim_qk=self.D,
-            causal=True,
-        )
-        # Warmup JIT
-        T = B * N
-        _Q = torch.randn(T, self.H, self.D, device=device, dtype=torch.float16)
-        _K = torch.randn(T, self.H, self.D, device=device, dtype=torch.float16)
-        _V = torch.randn(T, self.H, self.D, device=device, dtype=torch.float16)
+        mask_np = tree_attention_mask(branching_factor, depth)  # [N, N] bool
+        self._tree_mask = torch.from_numpy(mask_np.astype(bool)).to(device)
+        self._N = N
+        self._B = B
+        # Warmup JIT with a single-item prefill
+        _q = torch.randn(N, self.H, self.D, device=device, dtype=torch.float16)
+        _k = torch.randn(N, self.H, self.D, device=device, dtype=torch.float16)
+        _v = torch.randn(N, self.H, self.D, device=device, dtype=torch.float16)
         try:
-            self._wrapper.run(_Q, _K, _V)
+            flashinfer.single_prefill_with_kv_cache(
+                _q, _k, _v, custom_mask=self._tree_mask, causal=False,
+            )
             torch.cuda.synchronize()
         except Exception:
             pass
 
     def forward(self, x, cu_seqlens, branching_factor, depth):
+        import flashinfer  # type: ignore
         residual = x
         x = self.norm(x)
         T = x.shape[0]
@@ -312,8 +314,17 @@ class FlashInferAttnLayer(nn.Module):
         K = K.view(T, self.H, self.D).to(torch.float16)
         V = V.view(T, self.H, self.D).to(torch.float16)
 
-        out = self._wrapper.run(Q, K, V)
-        out = out.view(T, self.H * self.D)
+        Out = torch.empty(T, self.H, self.D, device=x.device, dtype=torch.float16)
+        for b_idx in range(self._B):
+            s = b_idx * self._N
+            e = s + self._N
+            Out[s:e] = flashinfer.single_prefill_with_kv_cache(
+                Q[s:e], K[s:e], V[s:e],
+                custom_mask=self._tree_mask,
+                causal=False,
+            )
+
+        out = Out.view(T, self.H * self.D)
         out = self.o_proj(out)
         return residual + out
 
@@ -846,8 +857,7 @@ def main():
     print()
     print("─" * 70)
     print("  Notes:")
-    print("  • sdpa_flash / flashinfer use CAUSAL masking (upper bound refs)")
-    print("  • deft uses CORRECT tree masking (directly comparable)")
+    print("  • All baselines use correct tree-ancestor masking")
     print("  • speedup > 1.0 means BASELINE is slower than ragged")
     print("  • Random fp16 weights — scaling trends, not absolute throughput")
     print("─" * 70)
