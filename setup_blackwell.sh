@@ -111,56 +111,59 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
     info "  flash-attn: skipped (using torch.nn.functional.scaled_dot_product_attention)"
 
     # ── FlashInfer ────────────────────────────────────────────────────────────
-    # Pre-built wheels for PyTorch 2.8.0 + CUDA 12.1 are published at the
-    # official index.  This combination is tested and reliable.
-    # FlashInfer is used as a competitor baseline supporting ragged tree attention.
+    # Pre-built compiled wheels (.so) are only published up to cu126/torch2.6.
+    # cu128 and cu129 directories on flashinfer.ai contain ONLY flashinfer-jit-cache/
+    # (no torch-versioned wheel subdirs) — any compiled-wheel URL for cu128+ is 404.
+    #
+    # Solution: flashinfer-python  — pure-Python JIT package (py3-none-any).
+    #   pip name : flashinfer-python
+    #   import   : import flashinfer          (same namespace as compiled wheel)
+    #   mechanism: JIT-compiles CUDA kernels at first use against installed torch/CUDA
+    #   index    : https://flashinfer.ai/whl/flashinfer-python/
+    #   latest   : flashinfer_python-0.5.0-py3-none-any.whl
     if $PYTHON -c "import flashinfer" 2>/dev/null; then
         info "  flashinfer: already installed — skipping."
     else
-        # Detect what CUDA runtime torch actually embedded (e.g. cu129, cu128, cu121)
-        _TORCH_CU=$($PYTHON -c "
-import torch; v = torch.__version__
-tag = v.split('+')[1] if '+' in v else 'cu121'
-# normalise: cu129 -> cu128 (FlashInfer bins are published per-major.minor pair)
-if tag == 'cu129': tag = 'cu128'
-print(tag)
-" 2>/dev/null || echo "cu121")
-        _TORCH_VER=$($PYTHON -c "
-import torch; v = torch.__version__.split('+')[0].split('.')
-print('torch' + v[0] + '.' + v[1])
-" 2>/dev/null || echo "torch2.8")
-        info "  Installing FlashInfer (torch=${_TORCH_VER}, cuda=${_TORCH_CU}) …"
-        FI_INSTALLED=0
-        for _url in \
-            "https://flashinfer.ai/whl/${_TORCH_CU}/${_TORCH_VER}/" \
-            "https://flashinfer.ai/whl/cu128/torch2.8/" \
-            "https://flashinfer.ai/whl/cu124/torch2.8/" \
-            "https://flashinfer.ai/whl/cu121/torch2.8/" \
-            "https://flashinfer.ai/whl/cu128/torch2.7/" \
-            "https://flashinfer.ai/whl/cu124/torch2.7/"; do
-            if $PIP install --quiet flashinfer -i "$_url" 2>/dev/null; then
-                if $PYTHON -c "import flashinfer; print('flashinfer', flashinfer.__version__)" 2>/dev/null; then
-                    FI_INSTALLED=1
-                    info "  FlashInfer installed from $_url"
-                    break
-                else
-                    $PIP uninstall -y flashinfer 2>/dev/null || true
-                fi
-            fi
-        done
-        if [[ $FI_INSTALLED -eq 0 ]]; then
-            warn "  FlashInfer install failed — tree-mask competitor baseline will be n/a."
-            warn "  Tried: cu=${_TORCH_CU}/cu128/cu124/cu121 x torch=${_TORCH_VER}/torch2.7"
-            warn "  If a new wheel ships: pip install flashinfer -i https://flashinfer.ai/whl/cu128/torch2.8/"
+        info "  Installing FlashInfer JIT (flashinfer-python, any torch/CUDA) …"
+        if $PIP install --quiet "flashinfer-python" \
+               --extra-index-url "https://flashinfer.ai/whl/flashinfer-python/" \
+               2>/dev/null \
+           && $PYTHON -c "import flashinfer; print('flashinfer', getattr(flashinfer, '__version__', '?'))" 2>/dev/null; then
+            info "  flashinfer-python (JIT) installed successfully."
+        else
+            warn "  flashinfer-python install failed — FlashInfer baselines will be n/a."
+            warn "  Manual: pip install flashinfer-python --extra-index-url https://flashinfer.ai/whl/flashinfer-python/"
         fi
     fi
 
-    # NOTE: DeFT (arXiv:2404.00242, ICLR'25) does not have a public pip release.
-    # Its core algorithm (KV-guided grouping + DeFT-Flatten + LSE merge pass) is
-    # documented in the paper and compared algorithmically in our paper.tex.
-    # We benchmark against FlashInfer (which supports block-sparse tree attention)
-    # and SDPA with a boolean tree mask as the two independently-verifiable baselines.
-    info "  DeFT: no public library release (arXiv:2404.00242) — comparison is algorithmic only."
+    # ── DeFT (arXiv:2404.00242, ICLR'25) ─────────────────────────────────────
+    # LINs-lab/DeFT is public but requires torch==2.5.1 + SGLang — incompatible
+    # with our torch 2.8.0 environment.
+    #
+    # PanZaifeng/FastTree-Artifact/kernel_bench/ contains a standalone Triton
+    # implementation (DeFT.py + kv_tree_simple.py) with only triton+numpy deps.
+    # We sparse-clone just that subdirectory.
+    REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    DEFT_KERNEL_DIR="${REPO_ROOT}/third_party/FastTree/kernel_bench"
+    if [[ -f "${DEFT_KERNEL_DIR}/DeFT.py" ]]; then
+        info "  DeFT (FastTree Triton kernel): already present — skipping clone."
+    else
+        info "  Cloning FastTree-Artifact/kernel_bench for DeFT Triton kernel …"
+        _FT_PARENT="${REPO_ROOT}/third_party/FastTree"
+        mkdir -p "${_FT_PARENT}"
+        if git clone --depth=1 --filter=blob:none --sparse \
+               https://github.com/PanZaifeng/FastTree-Artifact.git \
+               "${_FT_PARENT}" 2>/dev/null \
+           && (cd "${_FT_PARENT}" && git sparse-checkout set kernel_bench 2>/dev/null) \
+           && [[ -f "${DEFT_KERNEL_DIR}/DeFT.py" ]]; then
+            info "  DeFT kernel available: ${DEFT_KERNEL_DIR}/DeFT.py"
+        else
+            warn "  FastTree clone failed — DeFT baseline will be n/a."
+            warn "  Manual: git clone --depth=1 --filter=blob:none --sparse \\"
+            warn "    https://github.com/PanZaifeng/FastTree-Artifact.git third_party/FastTree"
+            warn "  Then: cd third_party/FastTree && git sparse-checkout set kernel_bench"
+        fi
+    fi
 
 else
     info "Skipping optional SOTA libraries (--no-sota)."

@@ -50,6 +50,8 @@ Notes on research context
     DeFT's Table 2 taxonomises Q-guided vs KV-guided grouping but does NOT
     enumerate arithmetic-walk O(d+1) access as a Q-guided variant — our kernel
     occupies this empty cell.
+    Standalone Triton kernel available at PanZaifeng/FastTree-Artifact/kernel_bench/
+    and cloned by setup_blackwell.sh into third_party/FastTree/kernel_bench/.
 
   • FlashInfer (Ye et al. 2025, arXiv:2501.01005, MLSys'25): Block-sparse-row
     (BSR) unified KV-cache abstraction, JIT-compiled CUDA/CUTLASS kernels.
@@ -70,7 +72,10 @@ Prerequisites (auto-checked at startup)
   Optional : flashinfer  (see requirements_blackwell.txt for cu121/torch2.8 URLs)
   Note     : flash-attn is intentionally NOT installed.  torch.sdp_kernel(enable_flash=True)
              provides the same FA-2 kernel natively with no .so ABI dependency.
-  Note     : DeFT (arXiv:2404.00242, ICLR'25) has no public code release.
+  Note     : DeFT (arXiv:2404.00242, ICLR'25) standalone Triton kernel cloned
+             from PanZaifeng/FastTree-Artifact into third_party/FastTree/ by
+             setup_blackwell.sh.  All-N-nodes-as-queries for a FAIR comparison.
+             Use --skip-deft to bypass if not cloned.
 
 Usage
 ------
@@ -82,6 +87,9 @@ Usage
 
   # Skip FlashInfer (if not installed), only compare SDPA baselines
   python scripts/benchmark_sota.py --skip-flashinfer
+
+  # Skip DeFT (if third_party/FastTree not cloned)
+  python scripts/benchmark_sota.py --skip-deft
 
   # Disable plots (CI / headless mode)
   python scripts/benchmark_sota.py --no-plot
@@ -148,6 +156,14 @@ def _has(pkg: str) -> bool:
 
 
 HAS_FLASHINFER = _has("flashinfer")
+
+# DeFT standalone Triton kernel — PanZaifeng/FastTree-Artifact/kernel_bench/
+# Cloned by setup_blackwell.sh into third_party/FastTree/kernel_bench/
+_DEFT_KERNEL_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "third_party", "FastTree", "kernel_bench",
+)
+HAS_DEFT = os.path.isfile(os.path.join(_DEFT_KERNEL_DIR, "DeFT.py"))
 
 # flash-attn is intentionally not installed on this branch.
 # torch.sdp_kernel(enable_flash=True) provides the same FA-2 kernel via
@@ -452,6 +468,138 @@ def _make_runner_flashinfer_tree(Q, K, V, cu_sl, B, N, H, D, masks_np, device):
         return None
 
 
+def _make_runner_deft(Q, K, V, cu_sl, B, N, H, D, branching_factor, depth, device):
+    """
+    DeFT (arXiv:2404.00242, ICLR'25) standalone Triton kernel — all-N-queries (FAIR).
+
+    Uses PanZaifeng/FastTree-Artifact/kernel_bench/{DeFT.py,kv_tree_simple.py}.
+    Treats ALL N nodes as query nodes (same workload as our ragged kernel — FAIR).
+
+    K_cache setup:
+      K_cache[i, pos, :, :] = KV of the ancestor of node i at BFS depth pos.
+    tree_info[j].requests invariant:
+      requests[0] == j  (DeFT uses requests[0] * max_seqlen + depth_j as address).
+      requests = [j, ...BFS_descendants(j)]
+    num_children=0 to force all N nodes treated as query leaves by DeFT.
+
+    Runs DeFT_decode B times serially (once per identical tree replica) to match
+    the total work of our ragged kernel over B batched trees.
+    """
+    if not HAS_DEFT:
+        return None
+    try:
+        import sys as _sys
+        if _DEFT_KERNEL_DIR not in _sys.path:
+            _sys.path.insert(0, _DEFT_KERNEL_DIR)
+        from kv_tree_simple import KVTreeNode   # type: ignore
+        from DeFT import DeFT_preparation, DeFT_decode  # type: ignore
+    except Exception as exc:
+        warnings.warn(f"[deft] import failed: {exc}")
+        return None
+
+    try:
+        # Build parent array for BFS-numbered b-ary tree
+        parent_arr = [-1] * N
+        for i in range(1, N):
+            parent_arr[i] = (i - 1) // branching_factor
+
+        # Ancestor chains: ancestor_chains[i] = [root, ..., parent_i, i]
+        ancestor_chains: list[list[int]] = []
+        for i in range(N):
+            chain: list[int] = []
+            cur = i
+            while cur != -1:
+                chain.append(cur)
+                cur = parent_arr[cur]
+            chain.reverse()
+            ancestor_chains.append(chain)
+
+        max_path_len = depth + 1  # d+1
+
+        # Build BFS subtree lists for all nodes (requests[0] = j invariant)
+        children: list[list[int]] = [[] for _ in range(N)]
+        for i in range(1, N):
+            children[parent_arr[i]].append(i)
+
+        def _bfs_subtree(root: int) -> list[int]:
+            result = [root]
+            q: list[int] = [root]
+            qi = 0
+            while qi < len(q):
+                node = q[qi]; qi += 1
+                for child in children[node]:
+                    result.append(child)
+                    q.append(child)
+            return result
+
+        all_subtrees = [_bfs_subtree(j) for j in range(N)]
+
+        # Build KVTreeNode list — num_children=0 treats all nodes as query leaves
+        tree_info = []
+        for j in range(N):
+            node = KVTreeNode()
+            node.parent       = parent_arr[j]
+            node.id           = j
+            node.seqlen       = 1
+            node.num_children = 0      # force all nodes to be treated as query leaves
+            node.requests     = all_subtrees[j]  # j is first — DeFT address invariant
+            tree_info.append(node)
+
+        # Build K_cache for batch item 0: [N, d+1, H, D]
+        #   K_cache[i, pos] = K_flat[ancestor_chains[i][pos]]
+        # All B trees are identical, so we time DeFT B times on the same tensors.
+        K_flat_b0 = K[0:N].contiguous()    # [N, H, D]
+        V_flat_b0 = V[0:N].contiguous()
+
+        # Scatter index: idx[i, pos] = ancestor of node i at depth pos
+        idx = torch.zeros(N, max_path_len, dtype=torch.long, device=device)
+        for i in range(N):
+            chain = ancestor_chains[i]
+            for pos, anc in enumerate(chain):
+                idx[i, pos] = anc
+            # pad remaining slots with last ancestor (unused by DeFT)
+            for pos in range(len(chain), max_path_len):
+                idx[i, pos] = chain[-1]
+
+        K_cache = K_flat_b0[idx.view(-1)].view(N, max_path_len, H, D).contiguous()
+        V_cache = V_flat_b0[idx.view(-1)].view(N, max_path_len, H, D).contiguous()
+
+        # DeFT_preparation is CPU-side positional bookkeeping — run once
+        subtree_len = max(N, 128)
+        mask_len    = 64
+        DeFT_aux    = DeFT_preparation(
+            tree_info, K_cache, subtree_len, mask_len, H, D
+        )
+
+        Q_b0  = Q[0:N].contiguous()  # [N, H, D]
+        Out   = torch.empty(N, H, D, device=device, dtype=torch.float16)
+        sm_scale = 1.0 / math.sqrt(D)
+        K_flat = K_cache.view(-1, H, D)
+        V_flat = V_cache.view(-1, H, D)
+
+        def fn():
+            for _b in range(B):
+                DeFT_decode(
+                    Q_b0, K_flat, V_flat, Out,
+                    *DeFT_aux,
+                    Q_TILE_SIZE=16, KV_TILE_SIZE=32,
+                    sm_scale=sm_scale,
+                    mask_len=mask_len,
+                )
+
+        # Warmup — also validates triton kernel compilation
+        try:
+            fn()
+            torch.cuda.synchronize()
+        except Exception:
+            return None
+        return fn
+
+    except Exception as exc:
+        warnings.warn(f"[deft] setup failed: {exc}")
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Single benchmark point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -469,6 +617,7 @@ class BenchRow:
     sdpa_batched_bool_ms: float        # FAIR: batched boolean mask, flash-eligible
     flashinfer_ms:        float        # FlashInfer ragged prefill (causal UB)
     flashinfer_tree_ms:   float        # FlashInfer per-item tree-mask (FAIR ragged competitor)
+    deft_ms:              float        # DeFT (FastTree Triton, all-N-queries, FAIR)
     # Actual sparse TFLOPS (4·(d+1)·N·D·H / latency)
     ragged_sparse_tflops: float
     # Dense-equivalent TFLOPS (how fast dense would need to run to match our latency)
@@ -478,6 +627,7 @@ class BenchRow:
     speedup_vs_sdpa_batched_bool: float   # FAIR: PRIMARY headline number
     speedup_vs_flashinfer:        float   # vs causal UB
     speedup_vs_flashinfer_tree:   float   # FAIR: ragged competitor with tree mask
+    speedup_vs_deft:              float   # FAIR: vs DeFT same all-N-queries workload
 
 
 def benchmark_one(
@@ -492,6 +642,7 @@ def benchmark_one(
     iters:             int  = BENCH_ITERS,
     device:            torch.device | None = None,
     skip_flashinfer:   bool = False,
+    skip_deft:         bool = False,
 ) -> BenchRow:
     if device is None:
         device = torch.device("cuda")
@@ -537,6 +688,9 @@ def benchmark_one(
     run_fi_tree = None if skip_flashinfer else _make_runner_flashinfer_tree(
         Q_r16, K_r16, V_r16, cu_sl, B, N, H, D, masks_np, device
     )
+    run_deft    = None if skip_deft else _make_runner_deft(
+        Q_r16, K_r16, V_r16, cu_sl, B, N, H, D, branching_factor, depth, device
+    )
 
     # ── Time everything ──────────────────────────────────────────────────────
     t_r16  = _try_time(run_ragged_fp16, warmup, iters, "ragged_fp16")
@@ -544,6 +698,7 @@ def benchmark_one(
     t_sbb     = _try_time(run_sdpa_bb,     warmup, iters, "sdpa_batched_bool") if run_sdpa_bb    else float("nan")
     t_fi      = _try_time(run_fi,          warmup, iters, "flashinfer")        if run_fi         else float("nan")
     t_fi_tree = _try_time(run_fi_tree,     warmup, iters, "flashinfer_tree")   if run_fi_tree    else float("nan")
+    t_deft    = _try_time(run_deft,        warmup, iters, "deft")              if run_deft       else float("nan")
 
     # ── Metrics ──────────────────────────────────────────────────────────────
     sparse_flops = _ragged_flops(seq_lens, H, D, depth)
@@ -566,12 +721,14 @@ def benchmark_one(
         sdpa_batched_bool_ms        =round(t_sbb,        4),
         flashinfer_ms               =round(t_fi,         4),
         flashinfer_tree_ms          =round(t_fi_tree,    4),
+        deft_ms                     =round(t_deft,       4),
         ragged_sparse_tflops        =round(_to_tflops(sparse_flops, t_r16), 5),
         ragged_dense_equiv_tflops   =round(_to_tflops(dense_flops,  t_r16), 3),
         speedup_vs_sdpa_flash       =_spdup(t_sf,        t_r16),
         speedup_vs_sdpa_batched_bool=_spdup(t_sbb,       t_r16),
         speedup_vs_flashinfer       =_spdup(t_fi,        t_r16),
         speedup_vs_flashinfer_tree  =_spdup(t_fi_tree,   t_r16),
+        speedup_vs_deft             =_spdup(t_deft,      t_r16),
     )
 
 
@@ -583,6 +740,7 @@ _ADA_PALETTE = {
     "ragged_fp16":       "#00b4d8",   # ours
     "sdpa_batched_bool": "#2dc653",   # FAIR: batched boolean tree mask
     "flashinfer_tree":   "#7b2d8b",   # FAIR: FlashInfer per-item tree mask
+    "deft":              "#e76f51",   # FAIR: DeFT FastTree Triton (all-N-queries)
     "sdpa_flash":        "#fb8500",   # causal UB
     "flashinfer":        "#3a86ff",   # FlashInfer (causal UB)
 }
@@ -591,8 +749,9 @@ _ADA_PALETTE = {
 # Key = display label, value = BenchRow field name
 _METHOD_COLS = {
     "Ragged fp16 (ours)":                         "ragged_fp16_ms",
-    "SDPA [tree mask, bool — FAIR]": "sdpa_batched_bool_ms",
-    "FlashInfer [tree mask, FAIR]": "flashinfer_tree_ms",
+    "SDPA [tree mask, bool — FAIR]":              "sdpa_batched_bool_ms",
+    "FlashInfer [tree mask, FAIR]":               "flashinfer_tree_ms",
+    "DeFT [arXiv:2404.00242, FAIR]":              "deft_ms",
     "SDPA flash [causal UB]":                     "sdpa_flash_ms",
     "FlashInfer [causal UB]":                     "flashinfer_ms",
 }
@@ -915,7 +1074,11 @@ def _print_banner(info: dict, args) -> None:
     print(f"    FlashInfer (causal UB)   : {'available' if HAS_FLASHINFER else 'NOT INSTALLED (see requirements_blackwell.txt)'}")
     print(f"    FlashInfer (tree FAIR)   : {'available' if HAS_FLASHINFER else 'NOT INSTALLED'}")
     print( "    flash-attn               : skipped (using torch.sdp_kernel(enable_flash=True) natively)")
-    print( "    DeFT (arXiv:2404.00242)  : no public library release — comparison is algorithmic only")
+    _deft_status = (
+        "available" if HAS_DEFT
+        else "NOT CLONED — run: bash setup_blackwell.sh  (third_party/FastTree/kernel_bench/)"
+    )
+    print(f"    DeFT (arXiv:2404.00242)  : {_deft_status}")
     print()
     print("  Baseline methodology:")
     print("    FAIR  = sdpa_batched_bool  — correct tree-ancestor boolean mask,")
@@ -952,6 +1115,8 @@ def main() -> None:
     parser.add_argument("--iters",             type=int, default=BENCH_ITERS)
     parser.add_argument("--skip-flashinfer",   action="store_true",
                         help="Skip FlashInfer baselines (causal UB and tree-mask FAIR)")
+    parser.add_argument("--skip-deft",         action="store_true",
+                        help="Skip DeFT baseline (requires third_party/FastTree clone)")
     parser.add_argument("--no-plot",           action="store_true")
     args = parser.parse_args()
 
@@ -1015,6 +1180,7 @@ def main() -> None:
                 iters=args.iters,
                 device=device,
                 skip_flashinfer=args.skip_flashinfer,
+                skip_deft=args.skip_deft,
             )
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
@@ -1038,6 +1204,8 @@ def main() -> None:
         extras = ""
         if not math.isnan(row.flashinfer_tree_ms):
             extras += f"  fi_tree={_fmt(row.flashinfer_tree_ms)}"
+        if not math.isnan(row.deft_ms):
+            extras += f"  deft={_fmt(row.deft_ms)}"
         print(
             f"  [{display_idx:3d}/{total}]  B={B:2d} b={b} d={d} │ "
             f"ragged={_fmt(row.ragged_fp16_ms)} │ "
@@ -1080,6 +1248,9 @@ def main() -> None:
         if not math.isnan(_r.flashinfer_tree_ms):
             print(f"  FlashInfer [tree mask, FAIR]    : {_fms(_r.flashinfer_tree_ms)}"
                   f"   speedup = {_fsx(_r.speedup_vs_flashinfer_tree)}  (FAIR)")
+        if not math.isnan(_r.deft_ms):
+            print(f"  DeFT [arXiv:2404.00242, FAIR]   : {_fms(_r.deft_ms)}"
+                  f"   speedup = {_fsx(_r.speedup_vs_deft)}  (FAIR)")
         if not math.isnan(_r.flashinfer_ms):
             print(f"  FlashInfer [causal UB]          : {_fms(_r.flashinfer_ms)}"
                   f"   speedup = {_fsx(_r.speedup_vs_flashinfer)}  (UB only)")
@@ -1107,6 +1278,12 @@ def main() -> None:
     if "speedup_vs_flashinfer_tree" in df.columns:
         print(
             df.groupby(["tree_depth", "branching_factor"])["speedup_vs_flashinfer_tree"]
+            .mean().round(2).unstack().to_string()
+        )
+    print("\n── Speedup vs DeFT [arXiv:2404.00242, FAIR] (mean over batch sizes) ──")
+    if "speedup_vs_deft" in df.columns:
+        print(
+            df.groupby(["tree_depth", "branching_factor"])["speedup_vs_deft"]
             .mean().round(2).unstack().to_string()
         )
     print("\n── Actual sparse TFLOPS (B=8, all branching) ────────────────────────")

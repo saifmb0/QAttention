@@ -1,2 +1,4 @@
 *.pyc
 __pycache__
+# Third-party repos cloned by setup_blackwell.sh
+third_party/

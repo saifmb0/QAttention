@@ -115,6 +115,7 @@ fi
 
 if [[ $SKIP_SOTA_LIBS -eq 1 ]]; then
     SOTA_ARGS+=("--skip-flashinfer")
+    SOTA_ARGS+=("--skip-deft")
 fi
 
 $PYTHON scripts/benchmark_sota.py "${SOTA_ARGS[@]}" && ok "SOTA benchmark complete"
