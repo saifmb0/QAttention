@@ -140,6 +140,12 @@ BENCH_ITERS               = 50
 # Skip them when the batch-level token count would exceed this threshold
 # to avoid ~60 GB allocations on deep trees.
 MAX_DENSE_TOKENS          = 8_000        # N per sequence; ~6 GB attn matrix at B=32
+# Hard cap on total ragged tokens per batch (B × N).  Beyond this the Q/K/V
+# allocations alone exceed available VRAM on an 80 GB H100 (e.g. B=128×N=21845
+# → 2.87 GB just for Q in fp16 with H=8, D=64; after 190 prior configs the
+# reserved pool is nearly full).  Configs that exceed this are recorded as NaN
+# immediately without any CUDA allocation, so the benchmark never hangs.
+MAX_BATCH_TOKENS          = 1_500_000   # B × N; skip ragged allocation above this
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Optional library probes
@@ -664,6 +670,22 @@ def benchmark_one(
     # Ragged kernel results are always collected.
     skip_dense = N > MAX_DENSE_TOKENS
 
+    # Hard early exit: if B×N exceeds MAX_BATCH_TOKENS the tensor allocations
+    # themselves would OOM.  Return a row of NaN immediately so the benchmark
+    # loop never stalls on a multi-minute failed allocation.
+    if B * N > MAX_BATCH_TOKENS:
+        nan = float("nan")
+        return BenchRow(
+            batch_size=B, branching_factor=branching_factor, tree_depth=depth,
+            num_tree_nodes=N, attn_padding_ratio=nan,
+            ragged_fp16_ms=nan, sdpa_flash_tree_ms=nan,
+            flashinfer_tree_ms=nan, deft_ms=nan,
+            ragged_sparse_tflops=nan, ragged_dense_equiv_tflops=nan,
+            speedup_vs_sdpa_flash_tree=nan,
+            speedup_vs_flashinfer_tree=nan,
+            speedup_vs_deft=nan,
+        )
+
     masks_np = [tree_attention_mask(branching_factor, depth) for _ in range(B)]
     seq_lens = [N] * B
 
@@ -1145,6 +1167,9 @@ def main() -> None:
             pd.DataFrame(rows).to_csv(csv_path, index=False)
         except Exception as _ce:
             print(f"  [checkpoint] save failed: {_ce}")
+
+        # ── Free cached CUDA memory between configs to prevent pool exhaustion ─
+        torch.cuda.empty_cache()
 
         # ── Per-row progress ─────────────────────────────────────────────────
         def _fmt(ms):

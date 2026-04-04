@@ -147,9 +147,9 @@ MODEL_PRESETS = {
 
 # ── Benchmark defaults ────────────────────────────────────────────────────────
 
-DEFAULT_BATCH_SIZES       = [1, 2, 4, 8]
+DEFAULT_BATCH_SIZES       = [8, 16]
 DEFAULT_DEPTHS            = [3, 5, 7]
-DEFAULT_BRANCHING_FACTORS = [2, 3]
+DEFAULT_BRANCHING_FACTORS = [2, 3, 4]
 WARMUP_ITERS              = 3
 BENCH_ITERS               = 10
 
@@ -214,15 +214,12 @@ class RaggedAttnLayer(nn.Module):
 
 class SdpaFlashAttnLayer(nn.Module):
     """
-    SDPA baseline via torch.nn.attention.sdpa_kernel(FLASH_ATTENTION).
+    SDPA baseline via SDPBackend.EFFICIENT_ATTENTION (CUTLASS mem-efficient).
 
-    Reshapes ragged [T, H, D] → padded [B, H, N, D], runs SDPA flash with
-    the correct tree-ancestor boolean mask, reshapes back.  All batch items
-    have equal length N in this benchmark, so reshape is zero-copy.
-
-    Uses the exact tree-ancestor mask (same semantics as the ragged kernel).
-    Boolean attn_mask is flash-backend eligible (PyTorch converts to additive
-    -inf internally).
+    FLASH_ATTENTION unconditionally rejects non-null attn_mask on PyTorch/H100;
+    EFFICIENT_ATTENTION is the correct, explicitly-forced backend for custom
+    float masks.  Uses a float additive bias [B, 1, N, N] (0 / finfo.min/2)
+    which reliably targets EFFICIENT_ATTENTION without silent fallback to MATH.
     """
 
     def __init__(self, hidden: int, H: int, D: int):
@@ -232,13 +229,20 @@ class SdpaFlashAttnLayer(nn.Module):
         self.o_proj   = nn.Linear(H * D, hidden, bias=False)
         self.norm     = RMSNorm(hidden)
         self._scale   = 1.0 / math.sqrt(D)
-        self._tree_mask = None  # [B, 1, N, N] bool, set by prepare()
+        self._float_bias = None  # [B, 1, N, N] fp16, set by prepare()
 
     def prepare(self, cu_seqlens, B, N, branching_factor, depth, device):
         mask_np = tree_attention_mask(branching_factor, depth)  # [N, N] bool
         mask_t  = torch.from_numpy(mask_np.astype(bool)).to(device)   # [N, N]
-        # Expand to [B, 1, N, N] — same tree for every batch item
-        self._tree_mask = mask_t.unsqueeze(0).unsqueeze(0).expand(B, 1, N, N)
+        NEG_INF = torch.finfo(torch.float16).min / 2
+        float_bias = torch.full((B, 1, N, N), NEG_INF, device=device,
+                                dtype=torch.float16)
+        float_bias[:, 0, :N, :N] = torch.where(
+            mask_t,
+            torch.zeros(N, N, device=device, dtype=torch.float16),
+            torch.full((N, N), NEG_INF, device=device, dtype=torch.float16),
+        )
+        self._float_bias = float_bias
 
     def forward(self, x, cu_seqlens, branching_factor, depth):
         residual = x
@@ -249,14 +253,15 @@ class SdpaFlashAttnLayer(nn.Module):
 
         qkv = self.qkv_proj(x)
         Q, K, V = qkv.chunk(3, dim=-1)
-        # [T, H·D] → [B, N, H, D] → [B, H, N, D]
         Q = Q.view(B, N, self.H, self.D).transpose(1, 2)
         K = K.view(B, N, self.H, self.D).transpose(1, 2)
         V = V.view(B, N, self.H, self.D).transpose(1, 2)
 
-        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
+        with torch.nn.attention.sdpa_kernel(
+            torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION
+        ):
             out = F.scaled_dot_product_attention(
-                Q, K, V, attn_mask=self._tree_mask, scale=self._scale,
+                Q, K, V, attn_mask=self._float_bias, scale=self._scale,
             )
         out = out.transpose(1, 2).reshape(T, self.H * self.D)
         out = self.o_proj(out)
