@@ -157,16 +157,10 @@ def _has(pkg: str) -> bool:
 
 
 def _ensure_curand_headers():
-    """Ensure curand_kernel.h is findable by FlashInfer's JIT (nvcc/ninja).
-
-    FlashInfer 0.6.7+ SM90 kernels include CUTLASS utilities that depend on
-    curand_kernel.h.  Many CUDA Docker images ship only the runtime library,
-    not the dev headers.  When the header is present but NOT in the standard
-    /usr/local/cuda/include/ path (e.g. /usr/local/cuda/targets/x86_64-linux/
-    include/, or under /usr/include/), we add the correct directory to CPATH
-    so nvcc picks it up during JIT compilation.
+    """Fallback: ensure curand_kernel.h is findable if FlashInfer falls through
+    to JIT compilation (should not happen when flashinfer-cubin is installed).
     """
-    import glob, shutil
+    import glob
     # Fast path: header is already on the standard include path
     cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
     standard = os.path.join(cuda_home, "include", "curand_kernel.h")

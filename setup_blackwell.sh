@@ -11,7 +11,9 @@
 #      Reason: every torch/CUDA minor-version bump breaks the .so ABI, and
 #      torch.nn.attention.sdpa_kernel(SDPBackend.FLASH_ATTENTION) uses the same
 #      FlashAttention-2 kernel natively without the separate package.
-#   3. Installs FlashInfer from its official pre-built index for torch2.8/cu121.
+#   3. Installs FlashInfer (flashinfer-python + flashinfer-cubin +
+#      flashinfer-jit-cache) from the cu129 index.  The cubin package ships
+#      pre-compiled SM90 Hopper kernels — no JIT / nvcc build at runtime.
 #      FlashInfer is used as the Naive baseline ragged-tree-attention competitor.
 #
 # Usage:
@@ -63,30 +65,6 @@ info "Updating system packages …"
 if command -v apt-get &>/dev/null; then
     DEBIAN_FRONTEND=noninteractive apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl wget build-essential python3-pip python3-venv
-
-    # cuRAND development headers — needed by FlashInfer's JIT compilation on SM90.
-    # FlashInfer 0.6.7+ links CUTLASS utilities that #include <curand_kernel.h>;
-    # many CUDA Docker images ship only the runtime lib, not the dev headers.
-    if ! find /usr/local/cuda/include -name 'curand_kernel.h' -print -quit 2>/dev/null | grep -q .; then
-        info "Installing cuRAND dev headers for FlashInfer JIT …"
-        # Try version-agnostic first, then specific CUDA 12.x packages
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            libcurand-dev-12-* 2>/dev/null \
-        || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            cuda-curand-dev-12-1 2>/dev/null \
-        || warn "Could not install cuRAND dev headers — FlashInfer JIT may fail."
-
-        # Symlink fallback: if the headers landed in a non-standard location,
-        # create a link so nvcc -isystem /usr/local/cuda/include picks them up.
-        if [[ ! -f /usr/local/cuda/include/curand_kernel.h ]]; then
-            _CURAND_H=$(find /usr -name 'curand_kernel.h' -print -quit 2>/dev/null || true)
-            if [[ -n "$_CURAND_H" ]]; then
-                ln -sf "$(dirname "$_CURAND_H")/curand_kernel.h" /usr/local/cuda/include/curand_kernel.h
-                ln -sf "$(dirname "$_CURAND_H")/curand.h"        /usr/local/cuda/include/curand.h 2>/dev/null || true
-                info "Symlinked cuRAND headers → /usr/local/cuda/include/"
-            fi
-        fi
-    fi
 fi
 
 # ── 2. Python environment ─────────────────────────────────────────────────────
@@ -135,28 +113,29 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
     info "  flash-attn: skipped (using torch.nn.functional.scaled_dot_product_attention)"
 
     # ── FlashInfer ────────────────────────────────────────────────────────────
-    # Pre-built compiled wheels (.so) are only published up to cu126/torch2.6.
-    # cu128 and cu129 directories on flashinfer.ai contain ONLY flashinfer-jit-cache/
-    # (no torch-versioned wheel subdirs) — any compiled-wheel URL for cu128+ is 404.
+    # Three packages for full Hopper support (pre-compiled cubins, no JIT build):
+    #   flashinfer-python      — core Python API + JIT fallback
+    #   flashinfer-cubin        — pre-compiled .cubin files (SM90 Hopper)
+    #   flashinfer-jit-cache    — cached JIT artefacts for common configs
+    # Index: https://flashinfer.ai/whl/cu129
     #
-    # Solution: flashinfer-python  — pure-Python JIT package (py3-none-any).
-    #   pip name : flashinfer-python
-    #   import   : import flashinfer          (same namespace as compiled wheel)
-    #   mechanism: JIT-compiles CUDA kernels at first use against installed torch/CUDA
-    #   index    : https://flashinfer.ai/whl/flashinfer-python/
-    #   latest   : flashinfer_python-0.5.0-py3-none-any.whl
+    # With cubins installed the SM90 kernels load directly — no ninja/nvcc
+    # build at first import, and no curand_kernel.h dependency.
+    FLASHINFER_INDEX="https://flashinfer.ai/whl/cu129"
     if $PYTHON -c "import flashinfer" 2>/dev/null; then
         info "  flashinfer: already installed — skipping."
     else
-        info "  Installing FlashInfer JIT (flashinfer-python, any torch/CUDA) …"
-        if $PIP install --quiet "flashinfer-python" \
-               --extra-index-url "https://flashinfer.ai/whl/flashinfer-python/" \
+        info "  Installing FlashInfer (cubins + JIT cache, cu129) …"
+        if $PIP install --quiet \
+               "flashinfer-python" "flashinfer-cubin" "flashinfer-jit-cache" \
+               --extra-index-url "$FLASHINFER_INDEX" \
                2>/dev/null \
            && $PYTHON -c "import flashinfer; print('flashinfer', getattr(flashinfer, '__version__', '?'))" 2>/dev/null; then
-            info "  flashinfer-python (JIT) installed successfully."
+            info "  flashinfer (cubins) installed successfully."
         else
-            warn "  flashinfer-python install failed — FlashInfer baselines will be n/a."
-            warn "  Manual: pip install flashinfer-python --extra-index-url https://flashinfer.ai/whl/flashinfer-python/"
+            warn "  flashinfer install failed — FlashInfer baselines will be n/a."
+            warn "  Manual: pip install flashinfer-python flashinfer-cubin flashinfer-jit-cache \\"
+            warn "    --extra-index-url https://flashinfer.ai/whl/cu129"
         fi
     fi
 
