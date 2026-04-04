@@ -258,7 +258,7 @@ class SdpaFlashAttnLayer(nn.Module):
         V = V.view(B, N, self.H, self.D).transpose(1, 2)
 
         with torch.nn.attention.sdpa_kernel(
-            torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION
+            torch.nn.attention.SDPBackend.MATH
         ):
             out = F.scaled_dot_product_attention(
                 Q, K, V, attn_mask=self._float_bias, scale=self._scale,
