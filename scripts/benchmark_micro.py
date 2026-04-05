@@ -3,8 +3,8 @@
 benchmark_micro.py — Focused Kernel Micro-benchmark for Paper Figures
 ======================================================================
 
-Compares the ragged ancestor-sparse attention kernel against PyTorch SDPA
-with correct tree-ancestor masking across a targeted grid designed for the
+Compares the ragged ancestor-sparse attention kernel against Eagle-3's
+actual tree-attention implementation across a targeted grid designed for the
 paper's main result figure:
 
     BS ∈ {8, 16}      batch sizes (typical serving / continuous-batching)
@@ -13,15 +13,17 @@ paper's main result figure:
 
 Grid matches the E2E benchmark sweep.  The ragged kernel is designed for high
 branching factors and deep trees; b=2-4 / d<=4 is too sparse to show a
-benefit over SDPA MATH (Triton kernel launch overhead dominates).
+benefit (Triton kernel launch overhead dominates).
 
 Both kernels compute IDENTICAL attention over the same b-ary tree topology:
-  • sdpa_tree:  PyTorch SDPA + float additive bias [B, 1, N, N] from
-                tree_attention_mask(), forced to SDPBackend.MATH (the only
-                backend accepting non-null additive masks — same kernel path
-                as EAGLE-3's modeling_llama_kv.py).
-  • ragged:     Our Triton kernel with O(d+1) ancestor-walk per query,
-                ragged packed layout, no mask tensor.
+  • eagle_tree:  manual matmul + additive bias mask + softmax + matmul,
+                 exactly matching modeling_llama_kv.py line-by-line:
+                   attn_weights = matmul(Q,[B,H,N,D], K^T,[B,H,D,N]) / sqrt(D)
+                   attn_weights = attn_weights + bias_mask   # -inf for non-ancestors
+                   attn_weights = softmax(attn_weights, dim=-1).to(fp16)
+                   attn_output  = matmul(attn_weights, V,[B,H,N,D])
+  • ragged:      Our Triton kernel with O(d+1) ancestor-walk per query,
+                 ragged packed layout, no mask tensor.
 
 Model dimensions match LLaMA-3.1-8B: H=32, D=128  (configurable via CLI).
 
@@ -54,7 +56,6 @@ from typing import List
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ragged_attn import ragged_attention
@@ -123,9 +124,9 @@ class MicroRow:
     num_tree_nodes:   int
     num_heads:        int
     head_dim:         int
-    sdpa_tree_ms:     float     # SDPA MATH backend + correct tree mask
+    eagle_tree_ms:    float     # Eagle manual matmul+mask+softmax (modeling_llama_kv.py)
     ragged_ms:        float     # our ragged kernel
-    speedup:          float     # sdpa_tree_ms / ragged_ms  (>1 → ragged wins)
+    speedup:          float     # eagle_tree_ms / ragged_ms  (>1 → ragged wins)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,45 +161,46 @@ def benchmark_one(
     V_r = torch.randn(tot, H, D, device=device, dtype=torch.float16)
     cu  = torch.arange(0, (B + 1) * N, N, dtype=torch.int32, device=device)
 
-    t_sdpa   = nan
+    t_eagle  = nan
     t_ragged = nan
 
-    # ── SDPA MATH + bias [B, 1, N, N] — O(N²) allocation, may OOM ──────────
-    # All SDPA-related tensors are allocated and timed inside this block so
-    # that a large-N OOM falls through gracefully.  The ragged kernel still
-    # runs independently even if SDPA is skipped.
+    # ── Eagle manual matmul attention (the actual baseline) ──────────────────
+    # Replicates modeling_llama_kv.py exactly:
+    #   attn_weights = matmul(Q, K^T) / sqrt(D) + bias_mask
+    #   attn_weights = softmax(attn_weights, dim=-1, dtype=float32).to(fp16)
+    #   attn_output  = matmul(attn_weights, V)
+    # This is what we replace with the ragged kernel at tree_decoding time.
     try:
-        # SDPA: [B, H, N, D]
+        # [B, H, N, D] layout expected by modeling_llama_kv.py
         Q_s = Q_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
         K_s = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
         V_s = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
 
-        # Tree-ancestor additive bias mask [B, 1, N, N].
-        # tree_attention_mask_n(b, N) builds the mask for exactly the first N
-        # BFS nodes — matching Eagle-3's actual token budget (34–93 tokens).
+        # Build additive bias mask [1, 1, N, N]: 0 for ancestors, -inf otherwise
         mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
         mask_t  = torch.from_numpy(mask_np).to(device)
-        bias    = torch.where(
+        bias4d  = torch.where(
             mask_t,
             torch.zeros(1, device=device, dtype=torch.float16),
             torch.full((1,), float("-inf"), device=device, dtype=torch.float16),
-        )
-        bias4d = bias.unsqueeze(0).unsqueeze(0).expand(B, 1, N, N).contiguous()
-        del mask_t, bias
+        ).unsqueeze(0).unsqueeze(0)   # [1, 1, N, N] — broadcast over B and H
+        del mask_t
 
-        def sdpa_fn():
-            with torch.nn.attention.sdpa_kernel(
-                torch.nn.attention.SDPBackend.MATH
-            ):
-                return F.scaled_dot_product_attention(Q_s, K_s, V_s, attn_mask=bias4d)
+        scale = 1.0 / math.sqrt(D)
 
-        t_sdpa = _cuda_median_ms(sdpa_fn, warmup, iters)
+        def eagle_fn():
+            # Exact replica of EAGLE's LlamaAttention.forward() tree-verify path
+            w = torch.matmul(Q_s, K_s.transpose(-2, -1)) * scale  # [B,H,N,N]
+            w = w + bias4d
+            w = torch.softmax(w, dim=-1, dtype=torch.float32).to(Q_s.dtype)
+            return torch.matmul(w, V_s)                            # [B,H,N,D]
+
+        t_eagle = _cuda_median_ms(eagle_fn, warmup, iters)
         del Q_s, K_s, V_s, bias4d
     except (RuntimeError, torch.OutOfMemoryError) as exc:
         if "out of memory" not in str(exc).lower():
             raise
-        print(f"    [OOM] SDPA skipped for B={B} b={b} d={d} N={N} "
-              f"(bias4d would be {B * N * N * 2 / 1e9:.2f} GB)")
+        print(f"    [OOM] Eagle matmul skipped for B={B} b={b} d={d} N={N}")
     finally:
         torch.cuda.empty_cache()
 
@@ -214,17 +216,17 @@ def benchmark_one(
         torch.cuda.empty_cache()
 
     speedup = nan
-    if not (math.isnan(t_sdpa) or math.isnan(t_ragged) or t_ragged <= 0):
-        speedup = t_sdpa / t_ragged
+    if not (math.isnan(t_eagle) or math.isnan(t_ragged) or t_ragged <= 0):
+        speedup = t_eagle / t_ragged
 
     # Cleanup
     del Q_r, K_r, V_r, cu
     torch.cuda.empty_cache()
 
     return MicroRow(B, b, d, N, H, D,
-                    round(t_sdpa, 4)   if not math.isnan(t_sdpa)   else nan,
+                    round(t_eagle,  4) if not math.isnan(t_eagle)  else nan,
                     round(t_ragged, 4) if not math.isnan(t_ragged) else nan,
-                    round(speedup, 4)  if not math.isnan(speedup)  else nan)
+                    round(speedup,  4) if not math.isnan(speedup)  else nan)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,7 +235,7 @@ def benchmark_one(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Micro-benchmark: SDPA tree-mask vs ragged kernel",
+        description="Micro-benchmark: Eagle manual-matmul tree-attn vs ragged kernel",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--batch-sizes",       default=",".join(map(str, DEFAULT_BATCH_SIZES)))
@@ -259,7 +261,7 @@ def main() -> None:
 
     p = torch.cuda.get_device_properties(0)
     print("=" * 72)
-    print("  sd-ragged  ·  Micro Benchmark  ·  SDPA tree-mask vs Ragged")
+    print("  sd-ragged  ·  Micro Benchmark  ·  Eagle tree-attn vs Ragged")
     print("=" * 72)
     print(f"  GPU:      {p.name}  SM {p.major}.{p.minor}  "
           f"{p.total_memory // 1024**3} GB")
@@ -272,7 +274,7 @@ def main() -> None:
     rows: List[MicroRow] = []
 
     for ci, (B, b, d) in enumerate(configs):
-        N = num_tree_nodes(b, d)
+        N = _eagle_token_budget(b, d)
         row = benchmark_one(B, b, d, H, D, args.warmup, args.iters, device)
         rows.append(row)
 
@@ -281,8 +283,8 @@ def main() -> None:
 
         spd_s = f"{row.speedup:.2f}×" if not math.isnan(row.speedup) else "  n/a"
         print(f"  [{ci+1:3d}/{len(configs)}]  "
-              f"B={B:3d} b={b} d={d} N={N:6d}  "
-              f"sdpa={_f(row.sdpa_tree_ms):>8s} ms  "
+              f"B={B:3d} b={b} d={d} N={N:3d}  "
+              f"eagle={_f(row.eagle_tree_ms):>8s} ms  "
               f"ragged={_f(row.ragged_ms):>8s} ms  "
               f"speedup={spd_s:>7s}")
 
@@ -300,7 +302,7 @@ def main() -> None:
     # ── Pivot: speedup table ─────────────────────────────────────────────────
     # Group by (B, b) and show speedup at each depth.
     print()
-    print("  Speedup table  (sdpa_tree / ragged — >1 means ragged is faster)")
+    print("  Speedup table  (eagle_tree / ragged — >1 means ragged is faster)")
     print("  " + "─" * 68)
 
     for B in batch_sizes:
