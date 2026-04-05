@@ -130,53 +130,59 @@ def benchmark_one(
 
     torch.manual_seed(B * 10000 + b * 100 + d)
 
-    # ── Allocate tensors ────────────────────────────────────────────────────
-    # Ragged packed: [B*N, H, D]
+    # ── Ragged tensors: [B*N, H, D] — always allocated ──────────────────────
     Q_r = torch.randn(tot, H, D, device=device, dtype=torch.float16)
     K_r = torch.randn(tot, H, D, device=device, dtype=torch.float16)
     V_r = torch.randn(tot, H, D, device=device, dtype=torch.float16)
     cu  = torch.arange(0, (B + 1) * N, N, dtype=torch.int32, device=device)
 
-    # SDPA: [B, H, N, D]
-    Q_s = Q_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-    K_s = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-    V_s = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-
-    # Tree-ancestor additive bias mask [B, 1, N, N]
-    mask_np = tree_attention_mask(b, d)   # [N, N] bool
-    mask_t  = torch.from_numpy(mask_np).to(device)
-    bias    = torch.where(
-        mask_t,
-        torch.zeros(1, device=device, dtype=torch.float16),
-        torch.full((1,), float("-inf"), device=device, dtype=torch.float16),
-    )
-    bias4d = bias.unsqueeze(0).unsqueeze(0).expand(B, 1, N, N).contiguous()
-
-    # ── SDPA MATH (correct for tree masks) ─────────────────────────────────
-    def sdpa_fn():
-        with torch.nn.attention.sdpa_kernel(
-            torch.nn.attention.SDPBackend.MATH
-        ):
-            return F.scaled_dot_product_attention(Q_s, K_s, V_s, attn_mask=bias4d)
-
-    # ── Ragged kernel ──────────────────────────────────────────────────────
-    def ragged_fn():
-        return ragged_attention(Q_r, K_r, V_r, cu, b, d)
-
-    # ── Time ───────────────────────────────────────────────────────────────
     t_sdpa   = nan
     t_ragged = nan
 
+    # ── SDPA MATH + bias [B, 1, N, N] — O(N²) allocation, may OOM ──────────
+    # All SDPA-related tensors are allocated and timed inside this block so
+    # that a large-N OOM falls through gracefully.  The ragged kernel still
+    # runs independently even if SDPA is skipped.
     try:
+        # SDPA: [B, H, N, D]
+        Q_s = Q_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+        K_s = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+        V_s = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+
+        # Tree-ancestor additive bias mask [B, 1, N, N]  (O(N²) — the bottleneck)
+        mask_np = tree_attention_mask(b, d)   # [N, N] bool
+        mask_t  = torch.from_numpy(mask_np).to(device)
+        bias    = torch.where(
+            mask_t,
+            torch.zeros(1, device=device, dtype=torch.float16),
+            torch.full((1,), float("-inf"), device=device, dtype=torch.float16),
+        )
+        bias4d = bias.unsqueeze(0).unsqueeze(0).expand(B, 1, N, N).contiguous()
+        del mask_t, bias
+
+        def sdpa_fn():
+            with torch.nn.attention.sdpa_kernel(
+                torch.nn.attention.SDPBackend.MATH
+            ):
+                return F.scaled_dot_product_attention(Q_s, K_s, V_s, attn_mask=bias4d)
+
         t_sdpa = _cuda_median_ms(sdpa_fn, warmup, iters)
-    except RuntimeError as exc:
+        del Q_s, K_s, V_s, bias4d
+    except (RuntimeError, torch.OutOfMemoryError) as exc:
         if "out of memory" not in str(exc).lower():
             raise
+        print(f"    [OOM] SDPA skipped for B={B} b={b} d={d} N={N} "
+              f"(bias4d would be {B * N * N * 2 / 1e9:.2f} GB)")
+    finally:
         torch.cuda.empty_cache()
+
+    # ── Ragged kernel ─────────────────────────────────────────────────────────
+    def ragged_fn():
+        return ragged_attention(Q_r, K_r, V_r, cu, b, d)
 
     try:
         t_ragged = _cuda_median_ms(ragged_fn, warmup, iters)
-    except RuntimeError as exc:
+    except (RuntimeError, torch.OutOfMemoryError) as exc:
         if "out of memory" not in str(exc).lower():
             raise
         torch.cuda.empty_cache()
@@ -186,7 +192,7 @@ def benchmark_one(
         speedup = t_sdpa / t_ragged
 
     # Cleanup
-    del Q_r, K_r, V_r, Q_s, K_s, V_s, cu, bias4d, mask_t
+    del Q_r, K_r, V_r, cu
     torch.cuda.empty_cache()
 
     return MicroRow(B, b, d, N, H, D,

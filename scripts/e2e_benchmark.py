@@ -747,24 +747,74 @@ def ragged_eagle_context(branching_factor: int, max_depth: int):
     Eagle-3's tree-verification forward pass through the ragged Triton kernel
     + prefix flash attention + online-LSE merge.
 
+    Patches BOTH the torch.nn.functional module attribute AND every already-
+    loaded module that captured the function via::
+
+        from torch.nn.functional import scaled_dot_product_attention
+
+    That ``from``-import style binds the original function object as a local
+    name in the importing module's namespace, bypassing any subsequent
+    module-attribute patch.  We scan sys.modules and overwrite every such
+    binding so that EAGLE / transformers attention layers see our hook
+    regardless of which import style they used.
+
     All non-tree SDPA calls (draft network, prefill) pass through unchanged.
     The patch is applied only within the with-block and restored on exit.
     """
+    import sys as _sys
     import torch.nn.functional as _F_mod
     _orig = _F_mod.scaled_dot_product_attention
+    _hook_calls = [0]    # mutable counter for diagnostics
 
     def _hook(query, key, value, attn_mask=None, dropout_p=0.0,
               is_causal=False, scale=None):
+        _hook_calls[0] += 1
         return _ragged_attn_sdpa_hook(
             query, key, value, attn_mask, dropout_p, is_causal, scale,
             _b=branching_factor, _d=max_depth, _orig_sdpa=_orig,
         )
 
+    # ── Patch torch.nn.functional module attribute ────────────────────────
     _F_mod.scaled_dot_product_attention = _hook
+
+    # ── Also patch every module that imported the function directly ───────
+    # `from torch.nn.functional import scaled_dot_product_attention` creates
+    # a local name binding that points at the *function object*, not at the
+    # module attribute.  Changing the module attribute won't affect those
+    # bindings.  So we walk sys.modules and replace every attribute whose
+    # value is exactly _orig with _hook, then undo on exit.
+    _extra: list = []   # [(mod, attr_name, orig_fn)]
+    for _m in list(_sys.modules.values()):
+        if _m is None or _m is _F_mod:
+            continue
+        try:
+            _mvars = vars(_m)
+        except TypeError:
+            continue
+        for _attr in list(_mvars.keys()):
+            try:
+                if getattr(_m, _attr) is _orig:
+                    setattr(_m, _attr, _hook)
+                    _extra.append((_m, _attr, _orig))
+            except Exception:
+                pass
+
+    if _extra:
+        print(f"  [ragged] patched {len(_extra)} extra module binding(s): "
+              + ", ".join(f"{getattr(m, '__name__', '?')}.{a}" for m, a, _ in _extra[:5])
+              + (" ..." if len(_extra) > 5 else ""))
+
     try:
         yield
     finally:
         _F_mod.scaled_dot_product_attention = _orig
+        for _m, _attr, _fn in _extra:
+            try:
+                setattr(_m, _attr, _fn)
+            except Exception:
+                pass
+        print(f"  [ragged] SDPA hook fired {_hook_calls[0]} times "
+              f"({len(_extra)} extra binding(s) restored)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -898,7 +948,7 @@ def main() -> None:
         use_eagle3=is_eagle3,
         total_token=max_cfg.total_token,
         depth=max_cfg.depth,
-        top_k=args.top_k,
+        top_k=max_cfg.top_k,
     )
 
     # ── Sweep ────────────────────────────────────────────────────────────────
