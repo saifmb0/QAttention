@@ -299,16 +299,31 @@ def _llama3_input_ids(tokenizer, message: str, device) -> torch.Tensor:
     """Tokenize a user message for LLaMA-3/3.1 Instruct via the tokenizer's
     built-in Jinja chat template.
 
-    apply_chat_template(tokenize=True) encodes <|begin_of_text|> etc. as
-    proper special-token IDs.  The alternative — apply_chat_template(
-    tokenize=False) followed by tokenizer(text) — treats those markers as
-    ordinary sub-word text and produces garbage input_ids.
+    Handles two transformers-version behaviours of apply_chat_template:
+      - Returns list[int]  (transformers <5): wrap directly.
+      - Returns str        (some v5 builds):  encode with add_special_tokens=False.
+        The LLaMA-3 tokenizer registers <|begin_of_text|> etc. as special
+        tokens, so tokenizer.encode() maps them to their correct token IDs
+        rather than splitting them into sub-word pieces.
+
+    Never go through tokenizer(text_with_markers) via __call__ — that path
+    can treat the marker strings as ordinary sub-words, producing garbage.
     """
-    ids = tokenizer.apply_chat_template(
+    result = tokenizer.apply_chat_template(
         [{"role": "user", "content": message}],
         tokenize=True,
         add_generation_prompt=True,
-    )  # returns a plain Python list[int]
+    )
+    if isinstance(result, str):
+        # Some transformers versions return the rendered string even with
+        # tokenize=True.  Encode it directly; registered special tokens are
+        # handled correctly by the fast tokenizer.
+        ids: List[int] = tokenizer.encode(result, add_special_tokens=False)
+    elif isinstance(result, (list, tuple)) and result and isinstance(result[0], int):
+        ids = list(result)
+    else:
+        # BatchEncoding or other wrapper — extract the first sequence.
+        ids = list(result[0]) if hasattr(result, "__getitem__") else list(result)
     return torch.tensor([ids], dtype=torch.long, device=device)
 
 
