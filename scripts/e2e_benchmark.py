@@ -1,76 +1,56 @@
 #!/usr/bin/env python3
 """
-e2e_benchmark.py — Eagle-3 E2E Benchmark: Ragged Kernel vs. Vanilla Eagle-3
+e2e_benchmark.py — Eagle-3 E2E Benchmark: Tree Depth Sweep
 =============================================================================
 
-Compares two perspectives on the same Eagle-3 speculative decoding system:
+Compares vanilla Eagle-3 vs. our ragged-kernel Eagle-3 across a GRID of
+tree-depth configurations to establish the paper's core claim:
 
-  Mode A — Vanilla Eagle-3
-    Uses Eagle-3's default attention implementation (PyTorch SDPA + tree mask).
-    Measures wall-clock tok/s, acceptance rate, and verification step latency.
+    *Deeper draft trees → more E2E speedup from the ragged attention kernel.*
 
-  Mode B — Ragged-kernel projection
-    Benchmarks the intra-tree attention block with our ragged Triton kernel at
-    the exact model dimensions (H, D) and tree shapes used in Mode A, using the
-    same sdpa_tree baseline that Eagle-3 uses internally.
-    Projects end-to-end speedup via Amdahl's law using the measured verification
-    time fraction from Mode A.
-
-The comparison is DIRECT: same model, same prompts, same tree configuration.
-We do NOT hot-swap FA-2, FlashInfer, or DeFT into Eagle-3 — those comparisons
-belong in benchmark_sota.py, which benchmarks the attention kernel in isolation.
-
-WHY AMDAHL PROJECTION (not a literal drop-in)
-----------------------------------------------
-Our kernel handles the *intra-tree* Q × K block only.  During verification, each
-query token also attends to the preceding KV cache (context prefix).  A correct
-in-place swap requires an online-softmax merge of the tree block and prefix block,
-which in turn requires the kernel to return log-sum-exp values.  The Amdahl
-projection uses measured wall-clock numbers and a conservative estimate of the
-intra-tree fraction, giving a rigorous lower bound on the achievable speedup.
-
-WHAT IS MEASURED
------------------
-Step 1 — E2E Generation (vanilla Eagle-3):
-  • eagenerate() wall time, tok/s, acceptance rate, mean accepted/step
-  • Per-step verification latency via CUDA events (measures tree_decoding only)
-  • Verification time fraction of total wall clock
-
-Step 2 — Tree Attention Kernel Comparison:
-  • At model-matched dimensions (H, D from the loaded LLaMA config)
-  • sdpa_tree  — PyTorch SDPA with explicit tree-ancestor bool mask
-                 (this is exactly what Eagle-3's verification pass uses)
-  • ragged     — our ancestor-sparse Triton kernel
-  • Speedup = sdpa_tree_ms / ragged_ms  (>1 means ragged is faster)
-  • Swept over batch_size × branching_factor × depth
-
-Step 3 — E2E Amdahl Projection:
-  • f = verify_fraction × attn_fraction × intra_tree_fraction
-  • k = kernel speedup from step 2 (median, B=1 matching Eagle-3 usage)
-  • Projected E2E speedup = 1 / ((1 − f) + f/k)
-  • intra_tree_fraction = N_tree / (N_prefix + N_tree)  (conservative)
-
-OUTPUT
+Design
 ------
-  results/e2e_benchmark.csv
+For each tree config (depth d, total_token tt, top_k):
+  1. Set EAGLE model tree parameters in-place (no reload).
+  2. Run vanilla Eagle-3 (default SDPA attention) on N shared prompts.
+  3. Run ragged-kernel Eagle-3 (patched SDPA → ragged + flash + LSE merge)
+     on the same prompts.
+  4. Record wall-clock tok/s, acceptance rate, verify latency for both.
+  5. Report actual E2E speedup  = ragged_tok_s / vanilla_tok_s.
 
-MODELS
+The model is loaded ONCE at the maximum-depth config to allocate a
+sufficiently large KV cache.  Between configs, only ``ea_layer.total_tokens``,
+``ea_layer.depth``, and ``ea_layer.top_k`` are updated — these are read
+dynamically during ``eagenerate()`` (EAGLE-3 builds its tree at runtime).
+
+Kernel-level microbenchmarks (SDPA vs FlashInfer vs DeFT) are NOT duplicated
+here — they belong in ``scripts/benchmark_sota.py``.  A focused paper-figure
+micro-bench is in ``scripts/benchmark_micro.py``.
+
+Output
 ------
-  Default: meta-llama/Llama-3.1-8B-Instruct  +  yuhuili/EAGLE3-LLaMA3.1-Instruct-8B
-  Alt:     lmsys/vicuna-7b-v1.3  +  yuhuili/EAGLE-Vicuna-7B-v1.3  (--no-eagle3)
+  results/e2e_benchmark.csv   — per-prompt records (all configs × all prompts)
+  results/e2e_summary.csv     — one row per config with aggregated metrics
 
-Prerequisites:
-  pip install git+https://github.com/SafeAILab/EAGLE.git fschat transformers accelerate
-  For LLaMA: huggingface-cli login
+Usage
+-----
+  # Default depth sweep [3,4,5,6,7,8], 10 prompts each
+  python scripts/e2e_benchmark.py
 
-Usage:
-  python scripts/e2e_benchmark.py                          # default LLaMA-3.1-8B
-  python scripts/e2e_benchmark.py --skip-generation        # kernel benchmark only
-  python scripts/e2e_benchmark.py --skip-kernel            # generation timing only
-  python scripts/e2e_benchmark.py \\
-      --base-model lmsys/vicuna-7b-v1.3 \\
-      --eagle-model yuhuili/EAGLE-Vicuna-7B-v1.3 \\
-      --model-type vicuna --no-eagle3
+  # Custom depths
+  python scripts/e2e_benchmark.py --depths 3,5,7,10
+
+  # Override token budget per depth
+  python scripts/e2e_benchmark.py --total-tokens-map '3:30,7:80,10:150'
+
+  # Only vanilla (skip ragged)
+  python scripts/e2e_benchmark.py --skip-ragged
+
+Prerequisites
+-------------
+  pip install git+https://github.com/SafeAILab/EAGLE.git fschat
+  pip install 'transformers==4.53.1' 'accelerate>=0.26.0,<1.0'
+  huggingface-cli login   # for LLaMA gated models
 """
 
 from __future__ import annotations
@@ -307,21 +287,49 @@ class GenerationRecord:
 
 
 @dataclass
-class KernelRecord:
-    """One kernel timing row."""
-    method:           str   # "sdpa_tree" or "ragged"
-    batch_size:       int
-    branching_factor: int
-    depth:            int
-    num_tree_nodes:   int
-    num_heads:        int
-    head_dim:         int
-    latency_ms:       float
-    speedup:          float  # sdpa_tree_ms / ragged_ms  (>1 → ragged faster)
+class TreeConfig:
+    """One tree configuration to benchmark."""
+    depth:        int
+    total_token:  int
+    top_k:        int
+    label:        str
+
+
+# Default sweep: increasing depth with proportional token budget.
+# This directly tests the paper's claim: deeper trees → more speedup.
+# top_k is set per-run from CLI (default 10, matching EAGLE-3).
+DEFAULT_DEPTH_SWEEP = [3, 4, 5, 6, 7, 8]
+DEFAULT_TOTAL_TOKENS_FOR_DEPTH = {
+    # Budget scaled so the tree can meaningfully reach the target depth.
+    # With top_k=10, full b-ary trees grow exponentially — budget is the
+    # ceiling the draft model allocates per step.
+    3:  30,
+    4:  40,
+    5:  50,
+    6:  60,    # EAGLE-3 default is (60, 7) but depth 7 with 60 tokens
+    7:  60,    # is already budget-limited → good test of deep+sparse
+    8:  80,
+}
+
+
+def set_tree_config(model, cfg: TreeConfig) -> None:
+    """Modify EAGLE tree parameters in-place between generation runs.
+
+    EAGLE-3's cnets.Model stores total_tokens (= total_token − 1), depth,
+    and top_k as plain attributes read at each eagenerate() call.  The tree
+    is built dynamically — no stale pre-computed indices.
+    init_tree() re-creates the [top_k, top_k] initial mask buffer.
+    """
+    ea = model.ea_layer
+    ea.total_tokens = cfg.total_token - 1   # cnets convention
+    ea.depth        = cfg.depth
+    if ea.top_k != cfg.top_k:
+        ea.top_k = cfg.top_k
+        ea.init_tree()  # re-create mask buffer sized to new top_k
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 1  —  Vanilla Eagle-3 generation
+# Generation
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _get_prompt(model_type: str, message: str) -> str:
@@ -758,263 +766,16 @@ def ragged_eagle_context(branching_factor: int, max_depth: int):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 2  —  Tree attention kernel comparison
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _cuda_time(fn, warmup: int, iters: int) -> float:
-    """Return mean CUDA-elapsed time in ms over `iters` measured calls."""
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    pairs = [(torch.cuda.Event(enable_timing=True),
-              torch.cuda.Event(enable_timing=True)) for _ in range(iters)]
-    for s, e in pairs:
-        s.record()
-        fn()
-        e.record()
-    torch.cuda.synchronize()
-    return sum(s.elapsed_time(e) for s, e in pairs) / iters
-
-
-def _time_sdpa_tree(
-    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-    b: int, d: int,
-    warmup: int, iters: int,
-) -> float:
-    """
-    Time PyTorch SDPA with explicit tree-ancestor additive bias mask.
-
-    This is the same attention path EAGLE-3's modeling_llama_kv.py uses:
-    the tree_mask is converted to a float additive bias applied inside
-    _prepare_decoder_attention_mask and then passed to the attention layer
-    as a [B, 1, N, N] float bias.
-
-    Flash Attention and Memory-Efficient Attention both reject non-null
-    additive masks, so we explicitly select SDPBackend.MATH — the only
-    backend that handles them — to avoid noisy "kernel not used" warnings
-    and to correctly represent the kernel path Eagle-3 actually exercises.
-
-    Q / K / V shape: [B, H, N, D]  (SDPA convention, fp16)
-    """
-    B, H, N, D = Q.shape
-    mask_np = tree_attention_mask(b, d)   # [N, N] bool numpy
-    mask_t  = torch.from_numpy(mask_np).to(Q.device)
-    bias    = torch.where(
-        mask_t,
-        torch.zeros(1, device=Q.device, dtype=Q.dtype),
-        torch.full( (1,), float("-inf"), device=Q.device, dtype=Q.dtype),
-    )                                     # [N, N]
-    bias4d = bias.unsqueeze(0).unsqueeze(0).expand(B, 1, N, N).contiguous()
-
-    # Flash / MEff / CuDNN all reject non-null additive masks.
-    # Use MATH explicitly — it is the only backend that supports them,
-    # and it matches what EAGLE's modeling_llama_kv.py actually executes.
-    def fn():
-        with torch.nn.attention.sdpa_kernel(
-            torch.nn.attention.SDPBackend.MATH
-        ):
-            return F.scaled_dot_product_attention(Q, K, V, attn_mask=bias4d)
-
-    return _cuda_time(fn, warmup, iters)
-
-
-def _time_ragged(
-    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-    cu: torch.Tensor,
-    b: int, d: int,
-    warmup: int, iters: int,
-) -> float:
-    """Time our ragged kernel. Q/K/V: [B*N, H, D] packed layout, fp16."""
-    def fn():
-        return ragged_attention(Q, K, V, cu, b, d)
-    return _cuda_time(fn, warmup, iters)
-
-
-def run_kernel_comparison(
-    num_heads: int,
-    head_dim: int,
-    batch_sizes: List[int],
-    branching_factors: List[int],
-    depths: List[int],
-    warmup: int,
-    iters: int,
-) -> List[KernelRecord]:
-    """
-    For each (B, b, d): benchmark sdpa_tree then ragged on matching fp16 tensors.
-    Returns two KernelRecords per config — one per method.
-    """
-    device = torch.device("cuda")
-    H, D   = num_heads, head_dim
-    records: List[KernelRecord] = []
-    configs = [
-        (B, b, d)
-        for B in batch_sizes
-        for b in branching_factors
-        for d in depths
-    ]
-
-    for ci, (B, b, d) in enumerate(configs):
-        N    = num_tree_nodes(b, d)
-        tot  = B * N
-
-        torch.manual_seed(B * 1000 + b * 100 + d)
-        try:
-            # packed ragged layout [B*N, H, D]
-            Q_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
-            K_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
-            V_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
-            cu   = torch.arange(0, (B + 1) * N, N, dtype=torch.int32, device=device)
-            # SDPA layout [B, H, N, D]
-            Q_s  = Q_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-            K_s  = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-            V_s  = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-        except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
-                torch.cuda.empty_cache()
-                print(
-                    f"  [{ci+1:3d}/{len(configs)}]  "
-                    f"B={B:3d} b={b} d={d} N={N:5d}  "
-                    f"OOM during tensor alloc — skipped"
-                )
-                continue
-            raise
-
-        t_sdpa   = float("nan")
-        t_ragged = float("nan")
-
-        try:
-            t_sdpa = _time_sdpa_tree(Q_s, K_s, V_s, b, d, warmup, iters)
-        except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
-                torch.cuda.empty_cache()
-                print(
-                    f"  [{ci+1:3d}/{len(configs)}]  "
-                    f"B={B:3d} b={b} d={d} N={N:5d}  sdpa_tree OOM — t_sdpa=NaN"
-                )
-            else:
-                print(f"  [{ci+1}/{len(configs)}] sdpa_tree B={B} b={b} d={d}  ERROR: {exc}")
-        except Exception as exc:
-            print(f"  [{ci+1}/{len(configs)}] sdpa_tree B={B} b={b} d={d}  ERROR: {exc}")
-
-        try:
-            t_ragged = _time_ragged(Q_r, K_r, V_r, cu, b, d, warmup, iters)
-        except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
-                torch.cuda.empty_cache()
-                print(
-                    f"  [{ci+1:3d}/{len(configs)}]  "
-                    f"B={B:3d} b={b} d={d} N={N:5d}  ragged OOM — t_ragged=NaN"
-                )
-            else:
-                print(f"  [{ci+1}/{len(configs)}] ragged B={B} b={b} d={d}  ERROR: {exc}")
-        except Exception as exc:
-            print(f"  [{ci+1}/{len(configs)}] ragged B={B} b={b} d={d}  ERROR: {exc}")
-
-        speedup = (t_sdpa / t_ragged
-                   if (not math.isnan(t_sdpa) and not math.isnan(t_ragged)
-                       and t_ragged > 0)
-                   else float("nan"))
-        spd_str = f"{speedup:.2f}×" if not math.isnan(speedup) else " n/a "
-
-        print(
-            f"  [{ci+1:3d}/{len(configs)}]  "
-            f"B={B:3d} b={b} d={d} N={N:5d}  "
-            f"sdpa_tree={t_sdpa:8.3f} ms  "
-            f"ragged={t_ragged:8.3f} ms  "
-            f"speedup={spd_str}"
-        )
-
-        for method, ms in [("sdpa_tree", t_sdpa), ("ragged", t_ragged)]:
-            records.append(KernelRecord(
-                method=method,
-                batch_size=B,
-                branching_factor=b,
-                depth=d,
-                num_tree_nodes=N,
-                num_heads=H,
-                head_dim=D,
-                latency_ms=round(ms, 4) if not math.isnan(ms) else float("nan"),
-                speedup=round(speedup, 4) if not math.isnan(speedup) else float("nan"),
-            ))
-
-        del Q_r, K_r, V_r, Q_s, K_s, V_s, cu
-        torch.cuda.empty_cache()
-
-    return records
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 3  —  Amdahl projection
-# ─────────────────────────────────────────────────────────────────────────────
-
-def amdahl_projection(
-    gen_records:    List[GenerationRecord],
-    kernel_records: List[KernelRecord],
-    prompt_len:     int,
-    tree_size:      int,
-) -> Dict:
-    """
-    Project E2E speedup from replacing intra-tree attention with our kernel.
-
-    Amdahl formula:
-        S = 1 / ( (1 - f) + f/k )
-    where:
-        f = verify_fraction × attn_fraction × intra_tree_fraction
-        k = kernel speedup  (sdpa_tree_ms / ragged_ms, median at B=1)
-        attn_fraction       ≈ 0.35  (conservative: ~35% of model forward is attn)
-        intra_tree_fraction = N_tree / (N_prefix + N_tree)
-    """
-    if not gen_records or not kernel_records:
-        return {}
-
-    mean_vfrac  = float(np.mean([r.verify_fraction for r in gen_records]))
-    mean_tok_s  = float(np.mean([r.tok_per_sec for r in gen_records]))
-    mean_acc    = float(np.mean([r.mean_accepted_per_step for r in gen_records]))
-
-    # Kernel speedup: use B=1 rows (Eagle-3 runs batch=1)
-    speedups_b1 = [
-        r.speedup for r in kernel_records
-        if r.method == "ragged" and r.batch_size == 1
-        and not math.isnan(r.speedup)
-    ]
-    if not speedups_b1:
-        return {
-            "eagle3_tok_per_sec":     round(mean_tok_s, 1),
-            "mean_accepted_per_step": round(mean_acc, 3),
-            "verify_fraction":        round(mean_vfrac, 4),
-            "note": "no B=1 kernel results for projection",
-        }
-
-    k       = float(np.median(speedups_b1))
-    f_intra = tree_size / max(prompt_len + tree_size, 1)
-    F_ATTN  = 0.35   # conservative fraction of model forward in attention
-
-    f       = mean_vfrac * F_ATTN * f_intra
-    amdahl  = 1.0 / ((1.0 - f) + f / k) if k > 0 else 1.0
-    proj_t  = mean_tok_s * amdahl
-
-    return {
-        "eagle3_tok_per_sec":         round(mean_tok_s, 1),
-        "mean_accepted_per_step":     round(mean_acc, 3),
-        "verify_fraction":            round(mean_vfrac, 4),
-        "intra_tree_fraction":        round(f_intra, 4),
-        "attn_fraction_assumed":      F_ATTN,
-        "kernel_speedup_b1_median":   round(k, 3),
-        "amdahl_f":                   round(f, 5),
-        "amdahl_e2e_speedup":         round(amdahl, 3),
-        "projected_tok_per_sec":      round(proj_t, 1),
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Eagle-3 E2E benchmark: ragged kernel vs. vanilla Eagle-3",
+        description="Eagle-3 E2E benchmark: ragged kernel vs. vanilla Eagle-3\n"
+                    "Sweeps over tree-depth configs to show where our ragged\n"
+                    "kernel wins and where it doesn't.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
     )
     # Model
     parser.add_argument("--base-model",  default="meta-llama/Llama-3.1-8B-Instruct")
@@ -1023,37 +784,32 @@ def main() -> None:
                         choices=["llama-3-instruct", "llama3", "llama2", "vicuna"])
     parser.add_argument("--no-eagle3",   action="store_true",
                         help="Use EAGLE-2 (not EAGLE-3)")
-    # Tree config
-    parser.add_argument("--total-tokens", type=int, default=60)
-    parser.add_argument("--depth",        type=int, default=7)
-    parser.add_argument("--top-k",        type=int, default=10)
+    # Tree sweep
+    parser.add_argument("--depths", default=",".join(map(str, DEFAULT_DEPTH_SWEEP)),
+                        help="Comma-separated tree depths to sweep "
+                             f"(default: {','.join(map(str, DEFAULT_DEPTH_SWEEP))})")
+    parser.add_argument("--top-k", type=int, default=10,
+                        help="EAGLE top-k (branching factor) for all configs (default: 10)")
+    parser.add_argument("--total-tokens-map", default=None,
+                        help="Override total_token per depth, e.g. '3:30,5:50,7:60'. "
+                             "Unspecified depths use the built-in default map.")
     # Generation
-    parser.add_argument("--num-prompts",    type=int, default=5)
+    parser.add_argument("--num-prompts",    type=int, default=10,
+                        help="Number of ShareGPT prompts per config (default: 10)")
     parser.add_argument("--max-new-tokens", type=int, default=256)
-    # Kernel benchmark
-    parser.add_argument("--kernel-batch-sizes", default="1,8,32,128")
-    parser.add_argument("--kernel-branching",   default="3,4")
-    parser.add_argument("--kernel-depths",      default="3,5,7")
-    parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--iters",  type=int, default=20)
-    parser.add_argument("--prompt-len", type=int, default=128,
-                        help="Estimated prompt length for Amdahl intra-tree fraction")
     # Control
-    parser.add_argument("--skip-generation", action="store_true")
-    parser.add_argument("--skip-ragged",     action="store_true",
-                        help="Skip Step 1b (ragged-kernel E2E generation)")
-    parser.add_argument("--skip-kernel",     action="store_true")
+    parser.add_argument("--skip-vanilla",  action="store_true",
+                        help="Skip vanilla Eagle-3 runs (only run ragged)")
+    parser.add_argument("--skip-ragged",   action="store_true",
+                        help="Skip ragged-kernel runs (only run vanilla)")
     parser.add_argument("--out-dir",  default="results")
     parser.add_argument("--csv-name", default="e2e_benchmark.csv")
-    parser.add_argument("--prompt-seed", type=int, default=42,
-                        help="Random seed for ShareGPT prompt sampling (default: 42)")
+    parser.add_argument("--prompt-seed", type=int, default=42)
     parser.add_argument("--hf-token", default=None,
-                        help="HuggingFace API token for gated models "
-                             "(overrides $HF_TOKEN / $HUGGING_FACE_HUB_TOKEN)")
+                        help="HuggingFace API token (overrides $HF_TOKEN)")
     args = parser.parse_args()
 
-    # Propagate HF token so every huggingface_hub call (including EAGLE internals)
-    # authenticates automatically.  CLI flag takes priority over env vars.
+    # ── HF token propagation ─────────────────────────────────────────────────
     _hf_token = (args.hf_token
                  or os.environ.get("HF_TOKEN")
                  or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
@@ -1064,262 +820,237 @@ def main() -> None:
     if not torch.cuda.is_available():
         print("ERROR: CUDA required.")
         sys.exit(1)
+    if not HAS_EAGLE:
+        print("ERROR: EAGLE not installed.")
+        print("  pip install git+https://github.com/SafeAILab/EAGLE.git fschat")
+        sys.exit(1)
 
     is_eagle3 = not args.no_eagle3
     is_llama3 = args.model_type in ("llama3", "llama-3-instruct")
-    prompts   = _load_sharegpt_prompts(
+
+    # ── Build tree-config sweep ──────────────────────────────────────────────
+    depths = [int(x) for x in args.depths.split(",")]
+    tt_map = dict(DEFAULT_TOTAL_TOKENS_FOR_DEPTH)
+    if args.total_tokens_map:
+        for pair in args.total_tokens_map.split(","):
+            d_str, t_str = pair.split(":")
+            tt_map[int(d_str)] = int(t_str)
+
+    configs: List[TreeConfig] = []
+    for d in depths:
+        tt = tt_map.get(d, 10 * d)  # fallback: 10 × depth
+        label = f"d={d} tt={tt}"
+        if d == 7 and tt == 60:
+            label += " [Eagle default]"
+        configs.append(TreeConfig(depth=d, total_token=tt, top_k=args.top_k, label=label))
+
+    prompts = _load_sharegpt_prompts(
         args.num_prompts, seed=args.prompt_seed, hf_token=_hf_token
     )
-    kb_sizes  = [int(x) for x in args.kernel_batch_sizes.split(",")]
-    kb_bf     = [int(x) for x in args.kernel_branching.split(",")]
-    kb_d      = [int(x) for x in args.kernel_depths.split(",")]
 
-    print("\n" + "=" * 70)
-    print("  Eagle-3 E2E Benchmark  ·  ragged kernel vs. vanilla Eagle-3")
-    print("=" * 70)
-    print(f"  Base:          {args.base_model}")
-    print(f"  Eagle:         {args.eagle_model}  "
+    # ── Banner ───────────────────────────────────────────────────────────────
+    print("\n" + "=" * 72)
+    print("  Eagle-3 E2E Benchmark  ·  Tree Depth Sweep")
+    print("  Narrative: deeper trees → more ragged-kernel speedup")
+    print("=" * 72)
+    print(f"  Base:     {args.base_model}")
+    print(f"  Eagle:    {args.eagle_model}  "
           f"({'EAGLE-3' if is_eagle3 else 'EAGLE-2'})")
-    print(f"  Tree:          total={args.total_tokens}, "
-          f"depth={args.depth}, top_k={args.top_k}")
-    print(f"  Kernel grid:   B∈{kb_sizes}, b∈{kb_bf}, d∈{kb_d}")
+    print(f"  Prompts:  {args.num_prompts} (seed={args.prompt_seed})")
+    print(f"  Configs:  {len(configs)} depth points")
+    for c in configs:
+        print(f"            {c.label}")
     if _hf_token:
-        print(f"  HF token:      {_hf_token[:8]}…")
-    else:
-        print("  HF token:      (none — public/local models only)")
+        print(f"  HF token: {_hf_token[:8]}…")
+    p = torch.cuda.get_device_properties(0)
+    print(f"  GPU:      {p.name}  SM {p.major}.{p.minor}  "
+          f"{p.total_memory // 1024**3} GB")
+    print("=" * 72)
 
-    # Model dimensions — will be updated from actual model if generation runs
-    n_heads, head_dim = 32, 128  # LLaMA-3.1-8B defaults
+    # ── Load model once at the deepest config ────────────────────────────────
+    max_cfg = max(configs, key=lambda c: c.total_token)
+    model = load_eagle_model(
+        base_model=args.base_model,
+        eagle_model=args.eagle_model,
+        use_eagle3=is_eagle3,
+        total_token=max_cfg.total_token,
+        depth=max_cfg.depth,
+        top_k=args.top_k,
+    )
 
-    # ── Step 1: Vanilla Eagle-3 generation ──────────────────────────────────
-    gen_records:    List[GenerationRecord] = []
-    ragged_records: List[GenerationRecord] = []
+    # ── Sweep ────────────────────────────────────────────────────────────────
+    # Per-config aggregated results:
+    #   config_results[i] = { "vanilla": List[GenRecord], "ragged": List[GenRecord] }
+    all_rows: List[dict] = []
+    summary_rows: List[dict] = []   # one row per config for the final table
 
-    if not args.skip_generation:
-        if not HAS_EAGLE:
-            print("\nERROR: EAGLE not installed.")
-            print("  pip install git+https://github.com/SafeAILab/EAGLE.git fschat")
-            sys.exit(1)
+    for ci, cfg in enumerate(configs):
+        print(f"\n{'━' * 72}")
+        print(f"  CONFIG {ci+1}/{len(configs)}  —  {cfg.label}")
+        print(f"    depth={cfg.depth}  total_token={cfg.total_token}  top_k={cfg.top_k}")
+        print(f"{'━' * 72}")
 
-        model = load_eagle_model(
-            base_model=args.base_model,
-            eagle_model=args.eagle_model,
-            use_eagle3=is_eagle3,
-            total_token=args.total_tokens,
-            depth=args.depth,
-            top_k=args.top_k,
-        )
-        cfg       = model.base_model.config
-        n_heads   = cfg.num_attention_heads
-        head_dim  = cfg.hidden_size // n_heads
+        set_tree_config(model, cfg)
 
-        print(f"\n{'─' * 70}")
-        print("  STEP 1  —  Vanilla Eagle-3 generation  (default attention)")
-        print(f"{'─' * 70}")
+        v_records: List[GenerationRecord] = []
+        r_records: List[GenerationRecord] = []
 
-        gen_records = run_generation(
-            model, prompts, args.model_type,
-            max_new_tokens=args.max_new_tokens,
-            is_llama3=is_llama3,
-        )
+        # ── Vanilla Eagle-3 ──────────────────────────────────────────────────
+        if not args.skip_vanilla:
+            print(f"\n  [vanilla]  depth={cfg.depth}  total_token={cfg.total_token}")
+            v_records = run_generation(
+                model, prompts, args.model_type,
+                max_new_tokens=args.max_new_tokens,
+                is_llama3=is_llama3,
+                use_ragged=False,
+            )
+            if v_records:
+                v_tok = np.mean([r.tok_per_sec for r in v_records])
+                v_acc = np.mean([r.mean_accepted_per_step for r in v_records])
+                v_vms = np.mean([r.mean_verify_ms for r in v_records])
+                v_vfr = np.mean([r.verify_fraction for r in v_records])
+                print(f"    → {v_tok:.1f} tok/s   {v_acc:.2f} acc/step   "
+                      f"verify={v_vms:.1f} ms ({v_vfr:.0%})")
 
-        if gen_records:
-            tok_s  = np.mean([r.tok_per_sec for r in gen_records])
-            acc    = np.mean([r.mean_accepted_per_step for r in gen_records])
-            acc_r  = np.mean([r.acceptance_rate for r in gen_records])
-            vms    = np.mean([r.mean_verify_ms for r in gen_records])
-            vfrac  = np.mean([r.verify_fraction for r in gen_records])
-            print()
-            print(f"  Summary ({len(gen_records)} prompts):")
-            print(f"    tok/s                : {tok_s:.1f}")
-            print(f"    accepted/step (mean) : {acc:.2f}")
-            print(f"    acceptance rate      : {acc_r:.1%}")
-            print(f"    verify latency       : {vms:.1f} ms/step")
-            print(f"    verify time fraction : {vfrac:.0%}")
-
-        # ── Step 1b: Ragged-kernel Eagle-3 generation ───────────────────────
+        # ── Ragged-kernel Eagle-3 ────────────────────────────────────────────
         if not args.skip_ragged:
-            print(f"\n{'─' * 70}")
-            print("  STEP 1b —  Ragged-kernel Eagle-3 generation  (patched SDPA)")
-            print(f"{'─' * 70}")
-            print(f"  Branching factor b={args.top_k}, depth d={args.depth}")
-            print("  (intra-tree Q×K → ragged Triton; prefix Q×K → flash; outputs merged via LSE)")
-
-            ragged_records = run_generation(
+            print(f"\n  [ragged]   depth={cfg.depth}  total_token={cfg.total_token}")
+            r_records = run_generation(
                 model, prompts, args.model_type,
                 max_new_tokens=args.max_new_tokens,
                 is_llama3=is_llama3,
                 use_ragged=True,
-                branching_factor=args.top_k,
-                max_depth=args.depth,
+                branching_factor=cfg.top_k,
+                max_depth=cfg.depth,
             )
+            if r_records:
+                r_tok = np.mean([r.tok_per_sec for r in r_records])
+                r_acc = np.mean([r.mean_accepted_per_step for r in r_records])
+                r_vms = np.mean([r.mean_verify_ms for r in r_records])
+                r_vfr = np.mean([r.verify_fraction for r in r_records])
+                print(f"    → {r_tok:.1f} tok/s   {r_acc:.2f} acc/step   "
+                      f"verify={r_vms:.1f} ms ({r_vfr:.0%})")
 
-            if ragged_records:
-                r_tok_s = np.mean([r.tok_per_sec for r in ragged_records])
-                r_vms   = np.mean([r.mean_verify_ms for r in ragged_records])
-                r_vfrac = np.mean([r.verify_fraction for r in ragged_records])
-                v_tok_s = np.mean([r.tok_per_sec for r in gen_records]) if gen_records else 0
-                print()
-                print(f"  Summary ({len(ragged_records)} prompts, ragged kernel):")
-                print(f"    tok/s                : {r_tok_s:.1f}")
-                print(f"    verify latency       : {r_vms:.1f} ms/step")
-                print(f"    verify time fraction : {r_vfrac:.0%}")
-                if gen_records:
-                    print(f"    speedup vs vanilla   : {r_tok_s / v_tok_s:.3f}×")
+        # ── Per-config speedup ───────────────────────────────────────────────
+        if v_records and r_records:
+            v_mean = np.mean([r.tok_per_sec for r in v_records])
+            r_mean = np.mean([r.tok_per_sec for r in r_records])
+            speedup = r_mean / v_mean if v_mean > 0 else float("nan")
+            print(f"\n  ▸ E2E speedup at d={cfg.depth}:  {speedup:.3f}×  "
+                  f"({v_mean:.1f} → {r_mean:.1f} tok/s)")
 
-        del model
-        torch.cuda.empty_cache()
-    else:
-        try:
-            from transformers import AutoConfig
-            cfg      = AutoConfig.from_pretrained(args.base_model)
-            n_heads  = cfg.num_attention_heads
-            head_dim = cfg.hidden_size // n_heads
-        except Exception:
-            pass  # keep LLaMA defaults
+        # ── Collect CSV rows ─────────────────────────────────────────────────
+        for mode_label, recs in [("vanilla", v_records), ("ragged", r_records)]:
+            for r in recs:
+                all_rows.append({
+                    "depth":                    cfg.depth,
+                    "total_token":              cfg.total_token,
+                    "top_k":                    cfg.top_k,
+                    "config_label":             cfg.label,
+                    "mode":                     mode_label,
+                    "model":                    args.base_model,
+                    "eagle_model":              args.eagle_model,
+                    "prompt":                   r.prompt,
+                    "num_tokens":               r.num_tokens,
+                    "num_steps":                r.num_steps,
+                    "wall_ms":                  round(r.wall_ms, 1),
+                    "tok_per_sec":              round(r.tok_per_sec, 1),
+                    "mean_accepted_per_step":   round(r.mean_accepted_per_step, 3),
+                    "acceptance_rate":          round(r.acceptance_rate, 4),
+                    "mean_verify_ms":           round(r.mean_verify_ms, 3),
+                    "verify_fraction":          round(r.verify_fraction, 4),
+                })
 
-    # ── Step 2: Kernel comparison ─────────────────────────────────────────────
-    kernel_records: List[KernelRecord] = []
+        # ── Summary row ──────────────────────────────────────────────────────
+        s = {"depth": cfg.depth, "total_token": cfg.total_token, "top_k": cfg.top_k,
+             "label": cfg.label}
+        if v_records:
+            s["vanilla_tok_s"]   = round(float(np.mean([r.tok_per_sec for r in v_records])), 1)
+            s["vanilla_acc"]     = round(float(np.mean([r.mean_accepted_per_step for r in v_records])), 3)
+            s["vanilla_verify"]  = round(float(np.mean([r.verify_fraction for r in v_records])), 4)
+        if r_records:
+            s["ragged_tok_s"]    = round(float(np.mean([r.tok_per_sec for r in r_records])), 1)
+            s["ragged_acc"]      = round(float(np.mean([r.mean_accepted_per_step for r in r_records])), 3)
+            s["ragged_verify"]   = round(float(np.mean([r.verify_fraction for r in r_records])), 4)
+        if v_records and r_records:
+            s["e2e_speedup"] = round(s["ragged_tok_s"] / s["vanilla_tok_s"], 4) \
+                if s.get("vanilla_tok_s", 0) > 0 else float("nan")
+        summary_rows.append(s)
 
-    if not args.skip_kernel:
-        print(f"\n{'─' * 70}")
-        print("  STEP 2  —  Tree attention kernel comparison")
-        print(f"             sdpa_tree  (Eagle-3 native)  vs  ragged  (ours)")
-        print(f"{'─' * 70}")
-        print(f"  Model dims: H={n_heads}, D={head_dim}")
-        print()
+    # ── Cleanup ──────────────────────────────────────────────────────────────
+    del model
+    torch.cuda.empty_cache()
 
-        kernel_records = run_kernel_comparison(
-            num_heads=n_heads,
-            head_dim=head_dim,
-            batch_sizes=kb_sizes,
-            branching_factors=kb_bf,
-            depths=kb_d,
-            warmup=args.warmup,
-            iters=args.iters,
-        )
-
-        # per-config speedup table
-        print()
-        print("  Speedup table  (sdpa_tree_ms / ragged_ms — >1 means ragged is faster):")
-        print(f"  {'B':>4s} {'b':>2s} {'d':>2s} {'N':>6s}  {'speedup':>10s}")
-        for r in kernel_records:
-            if r.method == "ragged":
-                s = f"{r.speedup:.2f}×" if not math.isnan(r.speedup) else "    n/a"
-                print(f"  {r.batch_size:4d} {r.branching_factor:2d} "
-                      f"{r.depth:2d} {r.num_tree_nodes:6d}  {s:>10s}")
-
-    # ── Step 3: Amdahl projection ─────────────────────────────────────────────
-    proj: Dict = {}
-    if gen_records and kernel_records:
-        # Typical tree size for Eagle-3 with the configured b/d midpoint
-        typical_n = num_tree_nodes(
-            kb_bf[0] if kb_bf else 3,
-            kb_d[len(kb_d) // 2] if kb_d else 5,
-        )
-        proj = amdahl_projection(
-            gen_records, kernel_records,
-            prompt_len=args.prompt_len,
-            tree_size=typical_n,
-        )
-
-        print(f"\n{'─' * 70}")
-        print("  STEP 3  —  Amdahl E2E projection")
-        print(f"{'─' * 70}")
-        for k, v in proj.items():
-            print(f"  {k:<35s}: {v}")
-
-    # ── Write CSV ─────────────────────────────────────────────────────────────
+    # ── Write CSV ────────────────────────────────────────────────────────────
     os.makedirs(args.out_dir, exist_ok=True)
     csv_path = os.path.join(args.out_dir, args.csv_name)
-    rows: List[dict] = []
-
-    for r in gen_records:
-        rows.append({
-            "phase":                    "generation",
-            "mode":                     "vanilla",
-            "kernel":                   "sdpa_tree",
-            "model":                    args.base_model,
-            "eagle_model":              args.eagle_model,
-            "prompt":                   r.prompt,
-            "num_tokens":               r.num_tokens,
-            "num_steps":                r.num_steps,
-            "wall_ms":                  round(r.wall_ms, 1),
-            "tok_per_sec":              round(r.tok_per_sec, 1),
-            "mean_accepted_per_step":   round(r.mean_accepted_per_step, 3),
-            "acceptance_rate":          round(r.acceptance_rate, 4),
-            "mean_verify_ms":           round(r.mean_verify_ms, 3),
-            "verify_fraction":          round(r.verify_fraction, 4),
-        })
-
-    for r in ragged_records:
-        rows.append({
-            "phase":                    "generation",
-            "mode":                     "ragged",
-            "kernel":                   "ragged_triton",
-            "model":                    args.base_model,
-            "eagle_model":              args.eagle_model,
-            "prompt":                   r.prompt,
-            "num_tokens":               r.num_tokens,
-            "num_steps":                r.num_steps,
-            "wall_ms":                  round(r.wall_ms, 1),
-            "tok_per_sec":              round(r.tok_per_sec, 1),
-            "mean_accepted_per_step":   round(r.mean_accepted_per_step, 3),
-            "acceptance_rate":          round(r.acceptance_rate, 4),
-            "mean_verify_ms":           round(r.mean_verify_ms, 3),
-            "verify_fraction":          round(r.verify_fraction, 4),
-        })
-
-    for r in kernel_records:
-        rows.append({
-            "phase":                           "kernel",
-            "method":                          r.method,
-            "batch_size":                      r.batch_size,
-            "branching_factor":                r.branching_factor,
-            "depth":                           r.depth,
-            "num_tree_nodes":                  r.num_tree_nodes,
-            "num_heads":                       r.num_heads,
-            "head_dim":                        r.head_dim,
-            "latency_ms":                      r.latency_ms,
-            "speedup_sdpa_tree_over_ragged":   r.speedup,
-        })
-
-    if proj:
-        rows.append({"phase": "amdahl_projection", **proj})
-
-    if rows:
-        fieldnames = sorted(set().union(*(row.keys() for row in rows)))
+    if all_rows:
+        fieldnames = list(all_rows[0].keys())
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            for row in rows:
-                writer.writerow(row)
+            writer.writerows(all_rows)
         print(f"\n  Saved: {csv_path}")
 
-    # ── Summary ───────────────────────────────────────────────────────────────
-    print(f"\n{'=' * 70}")
-    print("  BENCHMARK COMPLETE")
-    print(f"{'=' * 70}")
-    if gen_records:
-        v_tok_s = np.mean([r.tok_per_sec for r in gen_records])
-        print(f"  Vanilla Eagle-3 tok/s :   {v_tok_s:.1f}")
-    if ragged_records:
-        r_tok_s = np.mean([r.tok_per_sec for r in ragged_records])
-        print(f"  Ragged-kernel tok/s   :   {r_tok_s:.1f}")
-        if gen_records:
-            print(f"  Actual E2E speedup    :   {r_tok_s / v_tok_s:.3f}×")
-    if kernel_records:
-        spd = [r.speedup for r in kernel_records
-               if r.method == "ragged" and not math.isnan(r.speedup)]
-        if spd:
-            print(f"  Kernel speedup range  :   "
-                  f"{min(spd):.2f}× – {max(spd):.2f}×  "
-                  f"(median {float(np.median(spd)):.2f}×)")
-    if proj:
-        print(f"  Amdahl projected speedup: "
-              f"{proj.get('amdahl_e2e_speedup', 'n/a')}")
-        print(f"  Projected tok/s       :   "
-              f"{proj.get('projected_tok_per_sec', 'n/a')}")
+    # Also write the summary table as a separate CSV for easy plotting.
+    summary_csv = os.path.join(args.out_dir, "e2e_summary.csv")
+    if summary_rows:
+        s_fields = list(summary_rows[0].keys())
+        # ensure all rows have all fields
+        for row in summary_rows:
+            for k in s_fields:
+                row.setdefault(k, "")
+        with open(summary_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=s_fields)
+            writer.writeheader()
+            writer.writerows(summary_rows)
+        print(f"  Saved: {summary_csv}")
+
+    # ── Final summary ────────────────────────────────────────────────────────
+    print(f"\n{'=' * 72}")
+    print("  E2E BENCHMARK COMPLETE — DEPTH SWEEP RESULTS")
+    print(f"{'=' * 72}")
+    print()
+    hdr = f"  {'depth':>5s}  {'tt':>4s}  {'vanilla tok/s':>14s}  {'ragged tok/s':>13s}  {'E2E speedup':>12s}  {'vanilla acc/step':>17s}  {'ragged acc/step':>16s}"
+    print(hdr)
+    print("  " + "─" * (len(hdr) - 2))
+    for s in summary_rows:
+        v_tok = s.get("vanilla_tok_s", "")
+        r_tok = s.get("ragged_tok_s", "")
+        spd   = s.get("e2e_speedup", "")
+        v_acc = s.get("vanilla_acc", "")
+        r_acc = s.get("ragged_acc", "")
+        v_str = f"{v_tok:>14.1f}" if isinstance(v_tok, (int, float)) else f"{'—':>14s}"
+        r_str = f"{r_tok:>13.1f}" if isinstance(r_tok, (int, float)) else f"{'—':>13s}"
+        s_str = f"{spd:>11.3f}×" if isinstance(spd, (int, float)) else f"{'—':>12s}"
+        va_s  = f"{v_acc:>17.3f}" if isinstance(v_acc, (int, float)) else f"{'—':>17s}"
+        ra_s  = f"{r_acc:>16.3f}" if isinstance(r_acc, (int, float)) else f"{'—':>16s}"
+        print(f"  {s['depth']:>5d}  {s['total_token']:>4d}  {v_str}  {r_str}  {s_str}  {va_s}  {ra_s}")
+    print()
+
+    # ── Identify crossover ───────────────────────────────────────────────────
+    speedups = [(s["depth"], s["e2e_speedup"])
+                for s in summary_rows
+                if isinstance(s.get("e2e_speedup"), (int, float))
+                and not math.isnan(s["e2e_speedup"])]
+    if speedups:
+        wins  = [(d, sp) for d, sp in speedups if sp > 1.0]
+        loses = [(d, sp) for d, sp in speedups if sp <= 1.0]
+        best  = max(speedups, key=lambda x: x[1])
+        print(f"  Best speedup: {best[1]:.3f}× at depth={best[0]}")
+        if wins and loses:
+            threshold = min(d for d, _ in wins)
+            print(f"  Crossover threshold: ragged wins at depth ≥ {threshold}")
+        elif wins:
+            print(f"  Ragged kernel wins at ALL tested depths ({min(d for d,_ in wins)}–{max(d for d,_ in wins)})")
+        else:
+            print("  Ragged kernel does not win at any tested depth "
+                  "(tree too small / overhead dominates)")
+    print()
+    print("  NOTE: Kernel-level microbenchmarks (sdpa_tree vs ragged vs FlashInfer")
+    print("  vs DeFT) are in scripts/benchmark_sota.py — not duplicated here.")
+    print("  A focused micro-bench for paper figures is in scripts/benchmark_micro.py.")
+    print(f"{'=' * 72}")
     print()
 
 
