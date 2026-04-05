@@ -84,7 +84,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 import random
 
@@ -275,40 +275,14 @@ class KernelRecord:
 # Step 1  —  Vanilla Eagle-3 generation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_prompt(
-    model_type: str, message: str, tokenizer=None,
-) -> Union[str, torch.Tensor]:
-    """Format a raw user message for the model.
+def _get_prompt(model_type: str, message: str) -> str:
+    """Format a raw user message as a prompt string for non-LLaMA-3 models.
 
-    Returns
-    -------
-    torch.Tensor  — input_ids [1, L] for LLaMA-3 family (tokenized via the
-                    tokenizer's built-in Jinja chat template so that special
-                    tokens like <|begin_of_text|> are encoded correctly).
-    str           — formatted prompt string for other model families.
-
-    Why not always return a string?
-      ``apply_chat_template(tokenize=False)`` emits literal text like
-      ``<|begin_of_text|>``; a subsequent ``tokenizer(text)`` call treats
-      those as regular sub-word tokens, producing garbage input_ids which
-      cause degenerate output ("recib recib…", "attr attr…").
-      Returning already-tokenized ids avoids the round-trip entirely.
+    For LLaMA-3 / LLaMA-3.1 Instruct, use ``_llama3_input_ids`` instead —
+    the tokenizer's Jinja chat template must be applied *with tokenization*
+    so that special tokens like <|begin_of_text|> are encoded as their token
+    IDs, not as literal sub-word text.
     """
-    # ── LLaMA-3 family: tokenize directly via chat template ────────────────
-    if model_type in ("llama-3-instruct", "llama3") and tokenizer is not None:
-        if hasattr(tokenizer, "apply_chat_template"):
-            try:
-                ids = tokenizer.apply_chat_template(
-                    [{"role": "user", "content": message}],
-                    tokenize=True,
-                    add_generation_prompt=True,
-                    return_tensors="pt",       # → [1, L]
-                )
-                return ids
-            except Exception:
-                pass  # fall through to fastchat / manual fallback
-
-    # ── Other models: try fastchat conversation template ───────────────────
     try:
         from fastchat.model import get_conversation_template
         conv = get_conversation_template(model_type)
@@ -319,6 +293,23 @@ def _get_prompt(
         pass
 
     return f"User: {message}\nAssistant:"
+
+
+def _llama3_input_ids(tokenizer, message: str, device) -> torch.Tensor:
+    """Tokenize a user message for LLaMA-3/3.1 Instruct via the tokenizer's
+    built-in Jinja chat template.
+
+    apply_chat_template(tokenize=True) encodes <|begin_of_text|> etc. as
+    proper special-token IDs.  The alternative — apply_chat_template(
+    tokenize=False) followed by tokenizer(text) — treats those markers as
+    ordinary sub-word text and produces garbage input_ids.
+    """
+    ids = tokenizer.apply_chat_template(
+        [{"role": "user", "content": message}],
+        tokenize=True,
+        add_generation_prompt=True,
+    )  # returns a plain Python list[int]
+    return torch.tensor([ids], dtype=torch.long, device=device)
 
 
 def load_eagle_model(
@@ -417,11 +408,15 @@ def run_generation(
     records: List[GenerationRecord] = []
 
     for pi, raw in enumerate(prompts):
-        prompt_or_ids = _get_prompt(model_type, raw, tokenizer=model.tokenizer)
-        if isinstance(prompt_or_ids, torch.Tensor):
-            input_ids = prompt_or_ids.to(device)
+        # LLaMA-3 Instruct: must tokenize via apply_chat_template directly so
+        # that <|begin_of_text|> and friends are encoded as special-token IDs.
+        # Any text-roundtrip (tokenize=False → tokenizer(str)) maps them to
+        # ordinary sub-word tokens and produces degenerate output.
+        if is_llama3 and hasattr(model.tokenizer, "apply_chat_template"):
+            input_ids = _llama3_input_ids(model.tokenizer, raw, device)
         else:
-            input_ids = model.tokenizer([prompt_or_ids], return_tensors="pt").input_ids.to(device)
+            prompt    = _get_prompt(model_type, raw)
+            input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(device)
         input_len = input_ids.shape[1]
         max_len   = input_len + max_new_tokens + total_token + 10
 
