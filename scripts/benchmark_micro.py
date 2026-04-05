@@ -7,13 +7,14 @@ Compares the ragged ancestor-sparse attention kernel against Eagle-3's
 actual tree-attention implementation across a targeted grid designed for the
 paper's main result figure:
 
-    BS ∈ {8, 16}      batch sizes (typical serving / continuous-batching)
-    b  ∈ {8, 10, 12}  branching factors  (bracket Eagle-3 default top_k=10)
-    d  ∈ {5 … 9}      tree depths        (centred on Eagle-3 default depth=7)
+    BS ∈ {8, 16, 32, 64}   batch sizes (typical serving up to continuous-batching)
+    b  ∈ {8, 10, 12}       branching factors  (bracket Eagle-3 default top_k=10)
+    d  ∈ {5 … 20}          tree depths — pushed far past the E2E sweep to locate
+                           the kernel crossover and show the scaling trend clearly
 
-Grid matches the E2E benchmark sweep.  The ragged kernel is designed for high
-branching factors and deep trees; b=2-4 / d<=4 is too sparse to show a
-benefit (Triton kernel launch overhead dominates).
+Eagle-3's default is (b=10, d=7, N≈60).  The kernel dispatch overhead dominates
+at small N; this sweep intentionally goes beyond realistic EAGLE configs to
+establish the crossover point and the asymptotic speedup ceiling.
 
 Both kernels compute IDENTICAL attention over the same b-ary tree topology:
   • eagle_tree:  manual matmul + additive bias mask + softmax + matmul,
@@ -62,27 +63,29 @@ from src.ragged_attn import ragged_attention
 from src.tree_mask import tree_attention_mask_n
 
 
-def _eagle_token_budget(b: int, d: int) -> int:
-    """Token budget matching the E2E benchmark formula: round(6*b*d/7), clamped [30, 120].
+def _tree_n(b: int, d: int, token_cap: int = 0) -> int:
+    """N for a given (b, d) point in the sweep.
 
-    Eagle-3 prunes the b-ary tree to exactly this many tokens at runtime
-    (top_k selection at each depth level).  The micro-benchmark must test
-    the kernel at these sizes — NOT at the complete-tree size num_tree_nodes(b,d)
-    which is astronomically larger (e.g. 37K for b=8, d=5).
+    Formula:  round(6 * b * d / 7), minimum 30.
+    ``token_cap`` clamps the result from above when > 0; set to 0 for no cap.
+    The E2E benchmark uses cap=120 (Eagle-3 runtime max).  The micro-benchmark
+    uses cap=0 so we can probe kernel scaling at larger N.
     """
-    return max(30, min(120, round(6 * b * d / 7)))
+    n = max(30, round(6 * b * d / 7))
+    return min(n, token_cap) if token_cap > 0 else n
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Defaults
 # ─────────────────────────────────────────────────────────────────────────────
-DEFAULT_BATCH_SIZES       = [8, 16]
-# Branching factors and depths match the E2E sweep grid (Eagle-3 default is
-# top_k=10, depth=7).  The ragged kernel is designed for high b and deep d;
-# b=2-4 with d<=4 is too sparse to show a benefit over SDPA MATH.
+# Defaults designed to show the kernel crossover clearly.
+# Eagle-3 operates at b∈{8-12}, d=7 (N~48-72).  We push d up to 20 so N
+# reaches 200+ at b=12, revealing the asymptotic speedup ceiling.
+DEFAULT_BATCH_SIZES       = [8, 16, 32, 64]
 DEFAULT_BRANCHING_FACTORS = [8, 10, 12]
-DEFAULT_DEPTHS            = [5, 6, 7, 8, 9]
-DEFAULT_NUM_HEADS         = 32     # LLaMA-3.1-8B
-DEFAULT_HEAD_DIM          = 128    # LLaMA-3.1-8B
+DEFAULT_DEPTHS            = [5, 7, 9, 12, 14, 16, 20]
+DEFAULT_TOKEN_CAP         = 0     # 0 = no cap; E2E benchmark uses 120
+DEFAULT_NUM_HEADS         = 32    # LLaMA-3.1-8B
+DEFAULT_HEAD_DIM          = 128   # LLaMA-3.1-8B
 WARMUP_ITERS              = 10
 BENCH_ITERS               = 50
 
@@ -138,15 +141,15 @@ def benchmark_one(
     H: int, D: int,
     warmup: int, iters: int,
     device: torch.device,
+    token_cap: int = 0,
 ) -> MicroRow:
     """Benchmark one (B, b, d) configuration.  Returns a MicroRow.
 
-    N = _eagle_token_budget(b, d)  matches the actual token count that Eagle-3
-    drafts at runtime (48–93 for our grid).  Using num_tree_nodes(b, d) — a
-    complete b-ary tree — would give 37K–quadrillions of nodes, which doesn't
-    reflect real usage.
+    N = _tree_n(b, d, token_cap) — uncapped by default in the micro-bench so
+    we can probe larger trees than Eagle-3 uses at runtime, locating the exact
+    crossover depth where the ragged kernel overtakes manual matmul.
     """
-    N   = _eagle_token_budget(b, d)   # actual EAGLE tree size: 34–93 tokens
+    N   = _tree_n(b, d, token_cap)
     tot = B * N
     nan = float("nan")
 
@@ -241,6 +244,9 @@ def main() -> None:
     parser.add_argument("--batch-sizes",       default=",".join(map(str, DEFAULT_BATCH_SIZES)))
     parser.add_argument("--branching-factors", default=",".join(map(str, DEFAULT_BRANCHING_FACTORS)))
     parser.add_argument("--depths",            default=",".join(map(str, DEFAULT_DEPTHS)))
+    parser.add_argument("--token-cap",  type=int, default=DEFAULT_TOKEN_CAP,
+                        help="Cap N from above (0 = no cap, default). "
+                             "Set to 120 to match Eagle-3 E2E configs.")
     parser.add_argument("--num-heads",  type=int, default=DEFAULT_NUM_HEADS)
     parser.add_argument("--head-dim",   type=int, default=DEFAULT_HEAD_DIM)
     parser.add_argument("--warmup",     type=int, default=WARMUP_ITERS)
@@ -258,6 +264,7 @@ def main() -> None:
     depths      = [int(x) for x in args.depths.split(",")]
     H, D        = args.num_heads, args.head_dim
     device      = torch.device("cuda:0")
+    token_cap   = args.token_cap
 
     p = torch.cuda.get_device_properties(0)
     print("=" * 72)
@@ -266,7 +273,12 @@ def main() -> None:
     print(f"  GPU:      {p.name}  SM {p.major}.{p.minor}  "
           f"{p.total_memory // 1024**3} GB")
     print(f"  Dims:     H={H}, D={D}  (fp16)")
-    print(f"  Grid:     BS∈{batch_sizes}  b∈{bfs}  d∈{depths}")
+    print(f"  Grid:     BS∈{batch_sizes}  b∈{bfs}  d∈{depths}"
+          + (f"  N_cap={token_cap}" if token_cap else "  N_cap=none"))
+    print(f"  N range:  "
+          + "  ".join(f"b={b},d={depths[0]}→{_tree_n(b,depths[0],token_cap)}"
+                       f"/d={depths[-1]}→{_tree_n(b,depths[-1],token_cap)}"
+                       for b in bfs))
     print(f"  Timing:   {args.warmup} warmup + {args.iters} iters (median)")
     print("=" * 72)
 
@@ -274,8 +286,8 @@ def main() -> None:
     rows: List[MicroRow] = []
 
     for ci, (B, b, d) in enumerate(configs):
-        N = _eagle_token_budget(b, d)
-        row = benchmark_one(B, b, d, H, D, args.warmup, args.iters, device)
+        N = _tree_n(b, d, token_cap)
+        row = benchmark_one(B, b, d, H, D, args.warmup, args.iters, device, token_cap)
         rows.append(row)
 
         def _f(v):
