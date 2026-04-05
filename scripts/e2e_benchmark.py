@@ -84,7 +84,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import random
 
@@ -275,24 +275,36 @@ class KernelRecord:
 # Step 1  —  Vanilla Eagle-3 generation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_prompt(model_type: str, message: str, tokenizer=None) -> str:
-    """Format a raw user message into the chat template expected by the model.
+def _get_prompt(
+    model_type: str, message: str, tokenizer=None,
+) -> Union[str, torch.Tensor]:
+    """Format a raw user message for the model.
 
-    For LLaMA-3 / LLaMA-3.1 Instruct models, the tokenizer ships with the
-    official Jinja chat template  — use that directly so we get the correct
-    <|begin_of_text|>/<|start_header_id|>/... framing.  Fastchat's template
-    registry does NOT cover LLaMA-3 and silently returns a wrong format,
-    which causes degenerate output ("recib recib…").
+    Returns
+    -------
+    torch.Tensor  — input_ids [1, L] for LLaMA-3 family (tokenized via the
+                    tokenizer's built-in Jinja chat template so that special
+                    tokens like <|begin_of_text|> are encoded correctly).
+    str           — formatted prompt string for other model families.
+
+    Why not always return a string?
+      ``apply_chat_template(tokenize=False)`` emits literal text like
+      ``<|begin_of_text|>``; a subsequent ``tokenizer(text)`` call treats
+      those as regular sub-word tokens, producing garbage input_ids which
+      cause degenerate output ("recib recib…", "attr attr…").
+      Returning already-tokenized ids avoids the round-trip entirely.
     """
-    # ── LLaMA-3 family: use tokenizer.apply_chat_template ──────────────────
+    # ── LLaMA-3 family: tokenize directly via chat template ────────────────
     if model_type in ("llama-3-instruct", "llama3") and tokenizer is not None:
         if hasattr(tokenizer, "apply_chat_template"):
             try:
-                return tokenizer.apply_chat_template(
+                ids = tokenizer.apply_chat_template(
                     [{"role": "user", "content": message}],
-                    tokenize=False,
+                    tokenize=True,
                     add_generation_prompt=True,
+                    return_tensors="pt",       # → [1, L]
                 )
+                return ids
             except Exception:
                 pass  # fall through to fastchat / manual fallback
 
@@ -405,8 +417,11 @@ def run_generation(
     records: List[GenerationRecord] = []
 
     for pi, raw in enumerate(prompts):
-        prompt    = _get_prompt(model_type, raw, tokenizer=model.tokenizer)
-        input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(device)
+        prompt_or_ids = _get_prompt(model_type, raw, tokenizer=model.tokenizer)
+        if isinstance(prompt_or_ids, torch.Tensor):
+            input_ids = prompt_or_ids.to(device)
+        else:
+            input_ids = model.tokenizer([prompt_or_ids], return_tensors="pt").input_ids.to(device)
         input_len = input_ids.shape[1]
         max_len   = input_len + max_new_tokens + total_token + 10
 
