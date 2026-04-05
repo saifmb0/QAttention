@@ -405,7 +405,7 @@ def load_eagle_model(
         total_token=total_token,
         depth=depth,
         top_k=top_k,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         device_map="auto",
     )
