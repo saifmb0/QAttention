@@ -73,8 +73,7 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.ragged_attn import ragged_attention, ragged_attention_with_lse
-from src.tree_mask import num_tree_nodes, tree_attention_mask
+from src.ragged_attn import ragged_attention_with_lse
 
 
 # ── Version gate ─────────────────────────────────────────────────────────────
