@@ -314,16 +314,29 @@ def _llama3_input_ids(tokenizer, message: str, device) -> torch.Tensor:
         tokenize=True,
         add_generation_prompt=True,
     )
+    # Normalise every return type across transformers versions:
+    #   list[int]          — transformers <5, most common
+    #   str                — some v5 builds return rendered text even with tokenize=True
+    #   tokenizers.Encoding — HF fast tokenizer backend; has .ids: list[int]
+    #   BatchEncoding      — has .input_ids: list[int] or tensor
     if isinstance(result, str):
-        # Some transformers versions return the rendered string even with
-        # tokenize=True.  Encode it directly; registered special tokens are
-        # handled correctly by the fast tokenizer.
+        # Rendered text: encode via the fast tokenizer so that special tokens
+        # (e.g. <|begin_of_text|>) are mapped to their correct token IDs.
         ids: List[int] = tokenizer.encode(result, add_special_tokens=False)
     elif isinstance(result, (list, tuple)) and result and isinstance(result[0], int):
         ids = list(result)
+    elif hasattr(result, "ids"):
+        # tokenizers.Encoding (HF tokenizers backend)
+        ids = list(result.ids)
+    elif hasattr(result, "input_ids"):
+        # BatchEncoding
+        raw_ids = result.input_ids
+        ids = raw_ids[0].tolist() if hasattr(raw_ids[0], "tolist") else list(raw_ids[0])
     else:
-        # BatchEncoding or other wrapper — extract the first sequence.
-        ids = list(result[0]) if hasattr(result, "__getitem__") else list(result)
+        raise TypeError(
+            f"_llama3_input_ids: unrecognised apply_chat_template return type "
+            f"{type(result).__name__!r}  (value={repr(result)[:120]})"
+        )
     return torch.tensor([ids], dtype=torch.long, device=device)
 
 
