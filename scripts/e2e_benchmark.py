@@ -539,11 +539,15 @@ def run_generation(
             torch.cuda.synchronize()
             verify_ms_list.append(e0.elapsed_time(e1))
 
-            # acceptance — temperature=0 → greedy (safest default for EAGLE)
+            # acceptance
             draft_long = torch.cat((draft_tokens, padding), dim=1)
             candidates = draft_long[0, retrieve_idx]
+            # Use EAGLE's default temperature handling (pass None).
+            # Some Eagle versions expect a callable/logits_processor when a
+            # non-None numeric temperature is passed; preserve original API
+            # behaviour by passing None here.
             best_cand, accept_len, sample_p = evaluate_posterior(
-                logits, candidates, 0
+                logits, candidates, None
             )
             (input_ids, draft_tokens, retrieve_idx, tree_mask, tree_pos_ids,
              new_token, hidden_state, sample_token) = update_inference_inputs(
