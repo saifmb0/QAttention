@@ -178,11 +178,12 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
     # We install transformers, accelerate, fschat, and sentencepiece separately
     # so EAGLE's actual runtime imports are satisfied.
     #
-    # transformers>=4.46.0 required: LossKwargs added in 4.46 (used by
-    # eagle/model/modeling_qwen3_kv.py).  We always upgrade transformers first,
-    # even if EAGLE is already installed, to fix older installs.
-    info "  Ensuring transformers>=4.46.0 (required by EAGLE modeling_qwen3_kv) …"
-    $PIP install --quiet --upgrade "transformers>=4.46.0" 2>/dev/null || \
+    # transformers must be up-to-date: EAGLE's modeling_qwen3_kv.py uses
+    # LossKwargs, auto_docstring, can_return_tuple which were added in recent
+    # releases (4.47+ / 4.50+).  We unconditionally upgrade to latest to avoid
+    # a stale install blocking the import — even if EAGLE is already present.
+    info "  Upgrading transformers to latest (required by EAGLE modeling_qwen3_kv) …"
+    $PIP install --quiet --upgrade "transformers" 2>/dev/null || \
         warn "  transformers upgrade failed — EAGLE may not import correctly."
 
     if $PYTHON -c "from eagle.model.ea_model import EaModel" 2>/dev/null; then
@@ -204,7 +205,7 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
         else
             warn "  EAGLE install failed — E2E benchmark will require --skip-generation."
             warn "  Manual: pip install --no-deps git+https://github.com/SafeAILab/EAGLE.git"
-            warn "          pip install transformers>=4.46.0 accelerate sentencepiece fschat"
+            warn "          pip install --upgrade transformers accelerate sentencepiece fschat"
         fi
     fi
 
