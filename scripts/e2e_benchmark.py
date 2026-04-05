@@ -220,6 +220,22 @@ def load_eagle_model(
 ) -> "eagle.model.ea_model.EaModel":
     _patch_transformers_for_eagle()
     from eagle.model.ea_model import EaModel
+
+    # Llama-3.1 uses rope_scaling["rope_type"] but EAGLE's cnets.py expects ["type"].
+    # Monkey-patch _init_rope to normalise the key before it is read.
+    try:
+        from eagle.model import cnets as _cnets
+        _orig_init_rope = _cnets.LlamaAttention._init_rope
+        def _patched_init_rope(self):
+            rs = getattr(self.config, "rope_scaling", None)
+            if isinstance(rs, dict) and "type" not in rs and "rope_type" in rs:
+                import copy
+                self.config.rope_scaling = {**rs, "type": rs["rope_type"]}
+            _orig_init_rope(self)
+        _cnets.LlamaAttention._init_rope = _patched_init_rope
+    except Exception:
+        pass
+
     print(f"\n  Loading Eagle model:")
     print(f"    Base:  {base_model}")
     print(f"    Eagle: {eagle_model}")
