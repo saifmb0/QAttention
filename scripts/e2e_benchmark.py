@@ -329,9 +329,26 @@ def _llama3_input_ids(tokenizer, message: str, device) -> torch.Tensor:
         # tokenizers.Encoding (HF tokenizers backend)
         ids = list(result.ids)
     elif hasattr(result, "input_ids"):
-        # BatchEncoding
+        # BatchEncoding or similar wrapper. `result.input_ids` can be:
+        #  - a Tensor of shape [1, L]
+        #  - a list[list[int]] (batch of sequences)
+        #  - a list[int] (single sequence)
         raw_ids = result.input_ids
-        ids = raw_ids[0].tolist() if hasattr(raw_ids[0], "tolist") else list(raw_ids[0])
+        if hasattr(raw_ids, "tolist"):
+            arr = raw_ids.tolist()
+            if arr and isinstance(arr[0], list):
+                ids = arr[0]
+            else:
+                ids = arr
+        elif isinstance(raw_ids, list):
+            if raw_ids and isinstance(raw_ids[0], list):
+                ids = raw_ids[0]
+            else:
+                ids = raw_ids
+        else:
+            raise TypeError(
+                f"_llama3_input_ids: unrecognised input_ids type {type(raw_ids).__name__!r}"
+            )
     else:
         raise TypeError(
             f"_llama3_input_ids: unrecognised apply_chat_template return type "
