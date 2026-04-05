@@ -85,6 +85,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+import random
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -149,18 +151,91 @@ def _has(pkg: str) -> bool:
 
 HAS_EAGLE = _has("eagle")
 
-DEFAULT_PROMPTS = [
-    "The theory of general relativity, proposed by Albert Einstein in 1915,",
-    "In machine learning, the attention mechanism was introduced to",
-    "The Python programming language was created by Guido van Rossum and",
-    "Large language models have transformed natural language processing by",
-    "Speculative decoding accelerates autoregressive generation by",
-    "The transformer architecture consists of an encoder and a decoder, where",
-    "CUDA programming enables massively parallel computation on",
-    "Flash attention optimizes the attention computation by reducing",
-    "Tree-structured speculative decoding extends chain-based methods by",
-    "The key insight of our approach is that each query token only attends to",
+# ── ShareGPT prompt loader ──────────────────────────────────────────────────
+# anon8231489123/ShareGPT_Vicuna_unfiltered  (53 k conversations, Apache-2.0)
+# Schema: {"id": "...", "conversations": [{"from": "human"|"gpt", "value": "..."}]}
+_SHAREGPT_REPO   = "anon8231489123/ShareGPT_Vicuna_unfiltered"
+_SHAREGPT_FILE   = "ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json"
+
+# Small fallback used only when huggingface_hub is unavailable.
+_FALLBACK_PROMPTS: List[str] = [
+    "Can you explain how transformers work in natural language processing?",
+    "Write a Python function to merge two sorted lists.",
+    "What are the main differences between supervised and unsupervised learning?",
+    "Explain the concept of attention mechanism in deep learning.",
+    "How does speculative decoding improve autoregressive generation speed?",
+    "What is the difference between CUDA cores and Tensor Cores on an NVIDIA GPU?",
+    "Can you help me debug this JavaScript code that handles API requests?",
+    "Describe the key challenges in deploying large language models at scale.",
+    "How does FlashAttention reduce memory usage for the attention computation?",
+    "Write a SQL query to find the top 5 customers by total order value.",
 ]
+
+
+def _load_sharegpt_prompts(
+    n: int,
+    seed: int = 42,
+    hf_token: Optional[str] = None,
+    min_len: int = 40,
+    max_len: int = 512,
+) -> List[str]:
+    """Return `n` first-human-turn prompts from ShareGPT_Vicuna_unfiltered.
+
+    Downloads ``ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json`` from
+    ``anon8231489123/ShareGPT_Vicuna_unfiltered`` via huggingface_hub (cached
+    after first download).  Falls back to _FALLBACK_PROMPTS if the hub is
+    unreachable.
+    """
+    import json as _json
+
+    try:
+        from huggingface_hub import hf_hub_download  # type: ignore
+    except ImportError:
+        print("  [prompts] huggingface_hub not installed — using fallback prompts.")
+        rng = random.Random(seed)
+        return (rng.sample(_FALLBACK_PROMPTS, min(n, len(_FALLBACK_PROMPTS))) * math.ceil(n / len(_FALLBACK_PROMPTS)))[:n]
+
+    print(f"  [prompts] loading {_SHAREGPT_FILE} from {_SHAREGPT_REPO} …")
+    try:
+        local_path = hf_hub_download(
+            repo_id=_SHAREGPT_REPO,
+            filename=_SHAREGPT_FILE,
+            repo_type="dataset",
+            token=hf_token,
+        )
+    except Exception as e:
+        print(f"  [prompts] download failed ({e}) — using fallback prompts.")
+        rng = random.Random(seed)
+        return (rng.sample(_FALLBACK_PROMPTS, min(n, len(_FALLBACK_PROMPTS))) * math.ceil(n / len(_FALLBACK_PROMPTS)))[:n]
+
+    with open(local_path, "r", encoding="utf-8") as fh:
+        data = _json.load(fh)
+
+    # Extract first human turn from each conversation.
+    candidates: List[str] = []
+    for row in data:
+        convs = row.get("conversations") or []
+        for turn in convs:
+            # Schema: {"from": "human"|"gpt", "value": "..."}
+            if turn.get("from") == "human":
+                text = (turn.get("value") or "").strip()
+                if min_len <= len(text) <= max_len:
+                    candidates.append(text)
+                break  # one prompt per conversation
+
+    if not candidates:
+        print("  [prompts] no usable prompts found — using fallback.")
+        candidates = _FALLBACK_PROMPTS
+
+    rng = random.Random(seed)
+    rng.shuffle(candidates)
+
+    if len(candidates) < n:
+        print(f"  [prompts] only {len(candidates)} candidates, need {n} — repeating.")
+        candidates = (candidates * math.ceil(n / len(candidates)))[:n]
+
+    print(f"  [prompts] loaded {n} prompts from ShareGPT_Vicuna_unfiltered (seed={seed})")
+    return candidates[:n]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -699,6 +774,8 @@ def main() -> None:
     parser.add_argument("--skip-kernel",     action="store_true")
     parser.add_argument("--out-dir",  default="results")
     parser.add_argument("--csv-name", default="e2e_benchmark.csv")
+    parser.add_argument("--prompt-seed", type=int, default=42,
+                        help="Random seed for ShareGPT prompt sampling (default: 42)")
     parser.add_argument("--hf-token", default=None,
                         help="HuggingFace API token for gated models "
                              "(overrides $HF_TOKEN / $HUGGING_FACE_HUB_TOKEN)")
@@ -719,7 +796,9 @@ def main() -> None:
 
     is_eagle3 = not args.no_eagle3
     is_llama3 = args.model_type in ("llama3", "llama-3-instruct")
-    prompts   = DEFAULT_PROMPTS[:args.num_prompts]
+    prompts   = _load_sharegpt_prompts(
+        args.num_prompts, seed=args.prompt_seed, hf_token=_hf_token
+    )
     kb_sizes  = [int(x) for x in args.kernel_batch_sizes.split(",")]
     kb_bf     = [int(x) for x in args.kernel_branching.split(",")]
     kb_d      = [int(x) for x in args.kernel_depths.split(",")]
