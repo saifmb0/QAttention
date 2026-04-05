@@ -6,10 +6,11 @@
 #
 # Stages (all on by default):
 #   1 — smoke   : Python smoke test (kernel launches, shapes correct)
-#   2 — test    : full pytest correctness suite (~2 min)
+#   2 — test    : pytest correctness suite + numeric CSV (~2 min)
 #   3 — bench   : SOTA benchmark sweep (all methods, ~15 min full / ~3 min fast)
 #   4 — profile : roofline profiler for the ragged kernel
-#   5 — e2e     : end-to-end tok/s benchmark (synthetic model)
+#   5 — e2e     : Eagle-3 E2E benchmark (ragged kernel vs vanilla Eagle-3)
+#   6 — (e2e stage number is now 5 with new count; see below)
 #
 # Usage:
 #   bash run_blackwell.sh                     # full run (all stages)
@@ -87,15 +88,18 @@ else:
 PYEOF
 
 # ─── Stage 1 — Smoke test ────────────────────────────────────────────────────
-section "Stage 1 / 5 — Smoke test"
+section "Stage 1 / 6 — Smoke test"
 $PYTHON -m src.ragged_attn && ok "Smoke test passed"
 
-# ─── Stage 2 — Correctness (pytest) ─────────────────────────────────────────
-section "Stage 2 / 5 — Correctness tests (pytest)"
+# ─── Stage 2 — Correctness (pytest + numeric CSV) ───────────────────────────
+section "Stage 2 / 6 — Correctness tests (pytest + numeric CSV)"
 pytest tests/ -v --timeout=120 && ok "All correctness tests passed"
+$PYTHON scripts/correctness_benchmark.py --out-dir "$OUT_DIR" \
+    && ok "Correctness benchmark CSV saved" \
+    || warn "Correctness benchmark failed"
 
 # ─── Stage 3 — SOTA benchmark ────────────────────────────────────────────────
-section "Stage 3 / 5 — SOTA benchmark"
+section "Stage 3 / 6 — SOTA benchmark"
 
 SOTA_ARGS=(
     "--out-dir" "$OUT_DIR"
@@ -122,36 +126,34 @@ $PYTHON scripts/benchmark_sota.py "${SOTA_ARGS[@]}" && ok "SOTA benchmark comple
 
 # ─── Stage 4 — Roofline profiler ─────────────────────────────────────────────
 if [[ $SKIP_PROFILE -eq 0 ]]; then
-    section "Stage 4 / 5 — Roofline profiler"
+    section "Stage 4 / 6 — Roofline profiler"
     $PYTHON scripts/profile_kernel.py --csv "$OUT_DIR/profile.csv" \
         && ok "Profiler complete" \
         || warn "Profiler failed or not available — skipping (use --skip-profile to suppress)"
 else
-    section "Stage 4 / 5 — Roofline profiler (SKIPPED)"
+    section "Stage 4 / 6 — Roofline profiler (SKIPPED)"
     warn "Passed --skip-profile; skipping roofline profiler."
 fi
 
 # ─── Stage 5 — End-to-end tok/s benchmark ────────────────────────────────────
 if [[ $SKIP_E2E -eq 0 ]]; then
-    section "Stage 5 / 5 — End-to-end tok/s benchmark"
+    section "Stage 5 / 6 — End-to-end tok/s benchmark"
     E2E_ARGS=("--out-dir" "$OUT_DIR")
     if [[ $FAST -eq 1 ]]; then
         E2E_ARGS+=(
-            "--model-size"        "synthetic"
-            "--batch-sizes"       "1,4"
-            "--depths"            "3,5"
-            "--branching-factors" "2"
-            "--warmup"            "2"
-            "--iters"             "5"
+            "--skip-generation"
+            "--kernel-batch-sizes" "1,4"
+            "--kernel-depths"      "3,5"
+            "--kernel-branching"   "2"
+            "--warmup"             "2"
+            "--iters"              "5"
         )
-    else
-        E2E_ARGS+=("--model-size" "7b")
     fi
     $PYTHON scripts/e2e_benchmark.py "${E2E_ARGS[@]}" \
         && ok "E2E benchmark complete" \
         || warn "E2E benchmark failed (use --skip-e2e to suppress)"
 else
-    section "Stage 5 / 5 — End-to-end tok/s benchmark (SKIPPED)"
+    section "Stage 5 / 6 — End-to-end tok/s benchmark (SKIPPED)"
     warn "Passed --skip-e2e; skipping end-to-end benchmark."
 fi
 

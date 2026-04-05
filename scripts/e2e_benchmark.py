@@ -1,73 +1,76 @@
+#!/usr/bin/env python3
 """
-e2e_benchmark.py  —  End-to-end transformer comparison benchmark
-=================================================================
+e2e_benchmark.py — Eagle-3 E2E Benchmark: Ragged Kernel vs. Vanilla Eagle-3
+=============================================================================
 
-PURPOSE
--------
-This script answers TWO questions:
+Compares two perspectives on the same Eagle-3 speculative decoding system:
 
-    1. "How fast is our ragged kernel in a full L-layer transformer stack
-       versus FA2, FlashInfer, and DeFT baselines?"
+  Mode A — Vanilla Eagle-3
+    Uses Eagle-3's default attention implementation (PyTorch SDPA + tree mask).
+    Measures wall-clock tok/s, acceptance rate, and verification step latency.
 
-    2. "What fraction of total transformer time is spent in attention,
-       and how does that change with tree depth / branching factor?"
+  Mode B — Ragged-kernel projection
+    Benchmarks the intra-tree attention block with our ragged Triton kernel at
+    the exact model dimensions (H, D) and tree shapes used in Mode A, using the
+    same sdpa_tree baseline that Eagle-3 uses internally.
+    Projects end-to-end speedup via Amdahl's law using the measured verification
+    time fraction from Mode A.
 
-ATTENTION METHODS COMPARED
----------------------------
-  ragged       — our ancestor-sparse Triton kernel  (O(d+1) per query)
-  sdpa_flash   — FA2 via torch.nn.attention.sdpa_kernel(FLASH_ATTENTION)
-                 padded to [B, H, N, D] with tree-ancestor boolean mask
-  flashinfer   — FlashInfer single_prefill_with_kv_cache with tree mask
-                 ragged layout, per-item dispatch, correct semantics
-  deft         — DeFT (arXiv:2404.00242) standalone Triton kernel
-                 PanZaifeng/FastTree-Artifact/kernel_bench/
-                 tree-structured KV cache, all N nodes as queries
+The comparison is DIRECT: same model, same prompts, same tree configuration.
+We do NOT hot-swap FA-2, FlashInfer, or DeFT into Eagle-3 — those comparisons
+belong in benchmark_sota.py, which benchmarks the attention kernel in isolation.
 
-  All methods use correct tree-ancestor masking.
+WHY AMDAHL PROJECTION (not a literal drop-in)
+----------------------------------------------
+Our kernel handles the *intra-tree* Q × K block only.  During verification, each
+query token also attends to the preceding KV cache (context prefix).  A correct
+in-place swap requires an online-softmax merge of the tree block and prefix block,
+which in turn requires the kernel to return log-sum-exp values.  The Amdahl
+projection uses measured wall-clock numbers and a conservative estimate of the
+intra-tree fraction, giving a rigorous lower bound on the achievable speedup.
 
 WHAT IS MEASURED
-----------------
-Per (method, B, b, d) configuration:
+-----------------
+Step 1 — E2E Generation (vanilla Eagle-3):
+  • eagenerate() wall time, tok/s, acceptance rate, mean accepted/step
+  • Per-step verification latency via CUDA events (measures tree_decoding only)
+  • Verification time fraction of total wall clock
 
-  fwd_ms       — full L-layer transformer forward pass:
-                   embed → (QKV proj → attention → O proj → RMSNorm
-                            → SwiGLU FFN) × L layers
-  attn_only_ms — single attention sublayer (QKV proj + attention + O proj
-                 + RMSNorm), timed on one block as a proxy.
-  attn_frac    ≈ (attn_only_ms × L) / fwd_ms
-  tok_per_sec  — verification tokens per second (full model)
-  speedup      — fwd_ms(baseline) / fwd_ms(ragged)  per config
+Step 2 — Tree Attention Kernel Comparison:
+  • At model-matched dimensions (H, D from the loaded LLaMA config)
+  • sdpa_tree  — PyTorch SDPA with explicit tree-ancestor bool mask
+                 (this is exactly what Eagle-3's verification pass uses)
+  • ragged     — our ancestor-sparse Triton kernel
+  • Speedup = sdpa_tree_ms / ragged_ms  (>1 means ragged is faster)
+  • Swept over batch_size × branching_factor × depth
 
-CAVEATS
---------
-  • Random fp16 weights — not real LLaMA-2 parameters.
-  • No draft model, no speculative sampling, no EAGLE-2 pipeline.
-  • tok_per_sec is synthetic ragged-path throughput, not real EAGLE-2 speed.
-  • FlashInfer plan() and DeFT preparation called once, not timed.
+Step 3 — E2E Amdahl Projection:
+  • f = verify_fraction × attn_fraction × intra_tree_fraction
+  • k = kernel speedup from step 2 (median, B=1 matching Eagle-3 usage)
+  • Projected E2E speedup = 1 / ((1 − f) + f/k)
+  • intra_tree_fraction = N_tree / (N_prefix + N_tree)  (conservative)
 
-Model presets (hidden, num_heads, head_dim, ffn_hidden, layers):
-  synthetic …  1 024-dim,  8 heads, 128 D,  2 816 FFN,  4 layers (smoke test)
-  7b        …  4 096-dim, 32 heads, 128 D, 11 008 FFN, 32 layers  (LLaMA-2 7B)
-  13b       …  5 120-dim, 40 heads, 128 D, 13 824 FFN, 40 layers  (LLaMA-2 13B)
-
-Usage
------
-  python scripts/e2e_benchmark.py \\
-      --model-size 7b \\
-      --batch-sizes 1,2,4,8 \\
-      --depths 3,5,7 \\
-      --branching-factors 2,3 \\
-      --methods ragged,sdpa_flash,flashinfer,deft \\
-      --out-dir results
-
-  # Skip unavailable methods
-  python scripts/e2e_benchmark.py --skip-flashinfer --skip-deft
-
-Output
+OUTPUT
 ------
-  results/e2e_benchmark.csv  — per-row: attn_method, model, batch, depth,
-                                bfactor, tokens, layers, fwd_ms,
-                                attn_only_ms, tok_per_sec, attn_frac
+  results/e2e_benchmark.csv
+
+MODELS
+------
+  Default: meta-llama/Llama-3.1-8B-Instruct  +  yuhuili/EAGLE3-LLaMA3.1-Instruct-8B
+  Alt:     lmsys/vicuna-7b-v1.3  +  yuhuili/EAGLE-Vicuna-7B-v1.3  (--no-eagle3)
+
+Prerequisites:
+  pip install git+https://github.com/SafeAILab/EAGLE.git fschat transformers accelerate
+  For LLaMA: huggingface-cli login
+
+Usage:
+  python scripts/e2e_benchmark.py                          # default LLaMA-3.1-8B
+  python scripts/e2e_benchmark.py --skip-generation        # kernel benchmark only
+  python scripts/e2e_benchmark.py --skip-kernel            # generation timing only
+  python scripts/e2e_benchmark.py \\
+      --base-model lmsys/vicuna-7b-v1.3 \\
+      --eagle-model yuhuili/EAGLE-Vicuna-7B-v1.3 \\
+      --model-type vicuna --no-eagle3
 """
 
 from __future__ import annotations
@@ -77,23 +80,23 @@ import csv
 import importlib.util
 import math
 import os
+import sys
 import time
-import warnings
-from dataclasses import asdict, dataclass
-from typing import List
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
+import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-# Local project root on sys.path so we can import src.ragged_attn
-import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 from src.ragged_attn import ragged_attention
 from src.tree_mask import num_tree_nodes, tree_attention_mask
 
-# ── Optional library probes ───────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _has(pkg: str) -> bool:
     if importlib.util.find_spec(pkg) is None:
@@ -104,768 +107,701 @@ def _has(pkg: str) -> bool:
     except Exception:
         return False
 
-def _ensure_curand_headers():
-    """Fallback: ensure curand_kernel.h is findable if FlashInfer falls through
-    to JIT compilation (should not happen when flashinfer-cubin is installed).
-    """
-    import glob
-    cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
-    if os.path.isfile(os.path.join(cuda_home, "include", "curand_kernel.h")):
-        return
-    candidates = glob.glob("/usr/local/cuda/targets/*/include/curand_kernel.h") \
-               + glob.glob("/usr/local/cuda-*/include/curand_kernel.h") \
-               + glob.glob("/usr/include/curand_kernel.h") \
-               + glob.glob("/usr/include/*/curand_kernel.h")
-    if not candidates:
-        return
-    inc_dir = os.path.dirname(candidates[0])
-    cpath = os.environ.get("CPATH", "")
-    if inc_dir not in cpath:
-        os.environ["CPATH"] = f"{inc_dir}:{cpath}" if cpath else inc_dir
 
-_ensure_curand_headers()
-
-HAS_FLASHINFER = _has("flashinfer")
-
-_DEFT_KERNEL_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "third_party", "FastTree", "kernel_bench",
-)
-HAS_DEFT = os.path.isfile(os.path.join(_DEFT_KERNEL_DIR, "DeFT.py"))
-
-# All available attention methods
-ALL_METHODS = ["ragged", "sdpa_flash", "flashinfer", "deft"]
-
-# ── Model presets ─────────────────────────────────────────────────────────────
-
-MODEL_PRESETS = {
-    #  label       hidden  heads  head_d  ffn     layers
-    "synthetic": dict(hidden=1024,  H=8,  D=128, ffn=2816,  L=4),
-    "7b":        dict(hidden=4096,  H=32, D=128, ffn=11008, L=32),
-    "13b":       dict(hidden=5120,  H=40, D=128, ffn=13824, L=40),
-}
-
-# ── Benchmark defaults ────────────────────────────────────────────────────────
-
-DEFAULT_BATCH_SIZES       = [8, 16]
-DEFAULT_DEPTHS            = [3, 5, 7]
-DEFAULT_BRANCHING_FACTORS = [2, 3, 4]
-WARMUP_ITERS              = 3
-BENCH_ITERS               = 10
-
-# ── Minimal transformer primitives ───────────────────────────────────────────
-
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-5):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(dim))
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).sqrt()
-        return self.weight * (x / rms)
-
-
-class RaggedAttnLayer(nn.Module):
-    """
-    Single attention sublayer that wraps ``ragged_attention``.
-    Input:  x  [total_tokens, hidden]
-    Output: x  [total_tokens, hidden]  (residual-added)
-    """
-
-    def __init__(self, hidden: int, H: int, D: int):
-        super().__init__()
-        self.H = H
-        self.D = D
-        self.qkv_proj = nn.Linear(hidden, 3 * H * D, bias=False)
-        self.o_proj   = nn.Linear(H * D, hidden, bias=False)
-        self.norm     = RMSNorm(hidden)
-
-    def forward(
-        self,
-        x:             torch.Tensor,   # [total_tokens, hidden]
-        cu_seqlens:    torch.Tensor,   # [B+1] int32
-        branching_factor: int,
-        depth:            int,
-    ) -> torch.Tensor:
-        residual = x
-        x = self.norm(x)
-
-        total_tokens = x.shape[0]
-        B = cu_seqlens.shape[0] - 1
-
-        qkv = self.qkv_proj(x)                                      # [T, 3·H·D]
-        Q, K, V = qkv.chunk(3, dim=-1)                              # each [T, H·D]
-        Q = Q.view(total_tokens, self.H, self.D)
-        K = K.view(total_tokens, self.H, self.D)
-        V = V.view(total_tokens, self.H, self.D)
-
-        out = ragged_attention(Q, K, V, cu_seqlens,
-                               branching_factor=branching_factor,
-                               max_depth=depth)                      # [T, H, D]
-        out = out.view(total_tokens, self.H * self.D)
-        out = self.o_proj(out)
-        return residual + out
-
-    def prepare(self, cu_seqlens, B, N, branching_factor, depth, device):
-        """No-op — ragged kernel needs no pre-planning."""
-        pass
-
-
-class SdpaFlashAttnLayer(nn.Module):
-    """
-    SDPA baseline via SDPBackend.EFFICIENT_ATTENTION (CUTLASS mem-efficient).
-
-    FLASH_ATTENTION unconditionally rejects non-null attn_mask on PyTorch/H100;
-    EFFICIENT_ATTENTION is the correct, explicitly-forced backend for custom
-    float masks.  Uses a float additive bias [B, 1, N, N] (0 / finfo.min/2)
-    which reliably targets EFFICIENT_ATTENTION without silent fallback to MATH.
-    """
-
-    def __init__(self, hidden: int, H: int, D: int):
-        super().__init__()
-        self.H, self.D = H, D
-        self.qkv_proj = nn.Linear(hidden, 3 * H * D, bias=False)
-        self.o_proj   = nn.Linear(H * D, hidden, bias=False)
-        self.norm     = RMSNorm(hidden)
-        self._scale   = 1.0 / math.sqrt(D)
-        self._float_bias = None  # [B, 1, N, N] fp16, set by prepare()
-
-    def prepare(self, cu_seqlens, B, N, branching_factor, depth, device):
-        mask_np = tree_attention_mask(branching_factor, depth)  # [N, N] bool
-        mask_t  = torch.from_numpy(mask_np.astype(bool)).to(device)   # [N, N]
-        NEG_INF = torch.finfo(torch.float16).min / 2
-        float_bias = torch.full((B, 1, N, N), NEG_INF, device=device,
-                                dtype=torch.float16)
-        float_bias[:, 0, :N, :N] = torch.where(
-            mask_t,
-            torch.zeros(N, N, device=device, dtype=torch.float16),
-            torch.full((N, N), NEG_INF, device=device, dtype=torch.float16),
-        )
-        self._float_bias = float_bias
-
-    def forward(self, x, cu_seqlens, branching_factor, depth):
-        residual = x
-        x = self.norm(x)
-        T = x.shape[0]
-        B = cu_seqlens.shape[0] - 1
-        N = T // B
-
-        qkv = self.qkv_proj(x)
-        Q, K, V = qkv.chunk(3, dim=-1)
-        Q = Q.view(B, N, self.H, self.D).transpose(1, 2)
-        K = K.view(B, N, self.H, self.D).transpose(1, 2)
-        V = V.view(B, N, self.H, self.D).transpose(1, 2)
-
-        with torch.nn.attention.sdpa_kernel(
-            torch.nn.attention.SDPBackend.MATH
-        ):
-            out = F.scaled_dot_product_attention(
-                Q, K, V, attn_mask=self._float_bias, scale=self._scale,
-            )
-        out = out.transpose(1, 2).reshape(T, self.H * self.D)
-        out = self.o_proj(out)
-        return residual + out
-
-
-class FlashInferAttnLayer(nn.Module):
-    """
-    FlashInfer baseline — per-item single_prefill_with_kv_cache, tree mask.
-
-    Uses the exact tree-ancestor boolean mask via flashinfer's custom_mask
-    parameter.  Dispatches per batch item (serial) — measures FlashInfer's
-    kernel efficiency on the correct problem.
-
-    This uses CORRECT tree masking — directly comparable to our ragged kernel.
-    """
-
-    def __init__(self, hidden: int, H: int, D: int):
-        super().__init__()
-        self.H, self.D = H, D
-        self.qkv_proj = nn.Linear(hidden, 3 * H * D, bias=False)
-        self.o_proj   = nn.Linear(H * D, hidden, bias=False)
-        self.norm     = RMSNorm(hidden)
-        self._tree_mask = None  # [N, N] bool tensor on device
-        self._N = 0
-        self._B = 0
-
-    def prepare(self, cu_seqlens, B, N, branching_factor, depth, device):
-        import flashinfer  # type: ignore
-        mask_np = tree_attention_mask(branching_factor, depth)  # [N, N] bool
-        self._tree_mask = torch.from_numpy(mask_np.astype(bool)).to(device)
-        self._N = N
-        self._B = B
-        # Warmup JIT with a single-item prefill
-        _q = torch.randn(N, self.H, self.D, device=device, dtype=torch.float16)
-        _k = torch.randn(N, self.H, self.D, device=device, dtype=torch.float16)
-        _v = torch.randn(N, self.H, self.D, device=device, dtype=torch.float16)
-        try:
-            flashinfer.single_prefill_with_kv_cache(
-                _q, _k, _v, custom_mask=self._tree_mask, causal=False,
-            )
-            torch.cuda.synchronize()
-        except Exception:
-            pass
-
-    def forward(self, x, cu_seqlens, branching_factor, depth):
-        import flashinfer  # type: ignore
-        residual = x
-        x = self.norm(x)
-        T = x.shape[0]
-
-        qkv = self.qkv_proj(x)
-        Q, K, V = qkv.chunk(3, dim=-1)
-        Q = Q.view(T, self.H, self.D).to(torch.float16)
-        K = K.view(T, self.H, self.D).to(torch.float16)
-        V = V.view(T, self.H, self.D).to(torch.float16)
-
-        Out = torch.empty(T, self.H, self.D, device=x.device, dtype=torch.float16)
-        for b_idx in range(self._B):
-            s = b_idx * self._N
-            e = s + self._N
-            Out[s:e] = flashinfer.single_prefill_with_kv_cache(
-                Q[s:e], K[s:e], V[s:e],
-                custom_mask=self._tree_mask,
-                causal=False,
-            )
-
-        out = Out.view(T, self.H * self.D)
-        out = self.o_proj(out)
-        return residual + out
-
-
-class DeFTAttnLayer(nn.Module):
-    """
-    DeFT baseline (arXiv:2404.00242) — standalone Triton kernel.
-
-    prepare() builds the ancestor-chain scatter index and calls
-    DeFT_preparation once.  forward() gathers K/V into DeFT's K_cache
-    format and runs DeFT_decode for each batch item.
-
-    This uses CORRECT tree masking — directly comparable to our ragged kernel.
-    """
-
-    def __init__(self, hidden: int, H: int, D: int):
-        super().__init__()
-        self.H, self.D = H, D
-        self.qkv_proj = nn.Linear(hidden, 3 * H * D, bias=False)
-        self.o_proj   = nn.Linear(H * D, hidden, bias=False)
-        self.norm     = RMSNorm(hidden)
-        self._sm_scale = 1.0 / math.sqrt(D)
-        # Populated by prepare()
-        self._scatter_idx = None   # [N, d+1] long
-        self._deft_aux    = None   # tuple from DeFT_preparation
-        self._N           = 0
-        self._B           = 0
-        self._max_path    = 0
-        self._mask_len    = 64
-        self._DeFT_decode = None
-        self._deft_mod    = None
-
-    def prepare(self, cu_seqlens, B, N, branching_factor, depth, device):
-        import sys as _sys
-        if _DEFT_KERNEL_DIR not in _sys.path:
-            _sys.path.insert(0, _DEFT_KERNEL_DIR)
-        from kv_tree_simple import KVTreeNode   # type: ignore
-        from DeFT import DeFT_preparation, DeFT_decode  # type: ignore
-        import DeFT as _deft_mod                # type: ignore
-
-        self._DeFT_decode = DeFT_decode
-        self._deft_mod    = _deft_mod
-        self._N = N
-        self._B = B
-        self._max_path = depth + 1
-
-        # Parent array for BFS b-ary tree
-        parent_arr = [-1] * N
-        for i in range(1, N):
-            parent_arr[i] = (i - 1) // branching_factor
-
-        # Ancestor chains: chain[i] = [root, ..., i]
-        ancestor_chains: list[list[int]] = []
-        for i in range(N):
-            chain: list[int] = []
-            cur = i
-            while cur != -1:
-                chain.append(cur)
-                cur = parent_arr[cur]
-            chain.reverse()
-            ancestor_chains.append(chain)
-
-        # Children lists
-        children: list[list[int]] = [[] for _ in range(N)]
-        for i in range(1, N):
-            children[parent_arr[i]].append(i)
-
-        def _bfs_subtree(root: int) -> list[int]:
-            result = [root]
-            q: list[int] = [root]
-            qi = 0
-            while qi < len(q):
-                node = q[qi]; qi += 1
-                for child in children[node]:
-                    result.append(child)
-                    q.append(child)
-            return result
-
-        # KVTreeNode list
-        tree_info = []
-        for j in range(N):
-            node = KVTreeNode()
-            node.parent       = parent_arr[j]
-            node.id           = j
-            node.seqlen       = 1
-            node.num_children = len(children[j])
-            node.requests     = _bfs_subtree(j)
-            tree_info.append(node)
-
-        # Scatter index: idx[i, pos] = ancestor of node i at depth pos
-        idx = torch.zeros(N, self._max_path, dtype=torch.long, device=device)
-        for i in range(N):
-            chain = ancestor_chains[i]
-            for pos, anc in enumerate(chain):
-                idx[i, pos] = anc
-            for pos in range(len(chain), self._max_path):
-                idx[i, pos] = chain[-1]
-        self._scatter_idx = idx
-
-        # DeFT_preparation (CPU-side) — reset cur_length first
-        subtree_len = 128
-        _deft_mod.cur_length = 0
-        # Build dummy K_cache to get aux data shapes
-        K_dummy = torch.randn(N, self._max_path, self.H, self.D,
-                              device=device, dtype=torch.float16)
-        self._deft_aux = DeFT_preparation(
-            tree_info, K_dummy, subtree_len, self._mask_len, self.H, self.D,
-        )
-
-        # Warmup DeFT Triton kernel
-        Q_w = torch.randn(N, self.H, self.D, device=device, dtype=torch.float16)
-        Kf  = K_dummy.reshape(-1, self.H, self.D)
-        Vf  = K_dummy.reshape(-1, self.H, self.D)
-        Out = torch.empty_like(Q_w)
-        try:
-            DeFT_decode(
-                Q_w, Kf, Vf, Out, *self._deft_aux,
-                Q_TILE_SIZE=16, KV_TILE_SIZE=32,
-                sm_scale=self._sm_scale, mask_len=self._mask_len,
-            )
-            torch.cuda.synchronize()
-        except Exception:
-            pass
-
-    def forward(self, x, cu_seqlens, branching_factor, depth):
-        residual = x
-        x = self.norm(x)
-        T = x.shape[0]
-
-        qkv = self.qkv_proj(x)
-        Q_all, K_all, V_all = qkv.chunk(3, dim=-1)
-        Q_all = Q_all.view(T, self.H, self.D).to(torch.float16)
-        K_all = K_all.view(T, self.H, self.D).to(torch.float16)
-        V_all = V_all.view(T, self.H, self.D).to(torch.float16)
-
-        Out = torch.empty(T, self.H, self.D, device=x.device, dtype=torch.float16)
-
-        for b_idx in range(self._B):
-            s = b_idx * self._N
-            e = s + self._N
-            Q_b = Q_all[s:e].contiguous()
-            K_b = K_all[s:e].contiguous()
-            V_b = V_all[s:e].contiguous()
-
-            # Gather into ancestor-chain format: [N, d+1, H, D]
-            K_cache = K_b[self._scatter_idx.view(-1)].view(
-                self._N, self._max_path, self.H, self.D
-            )
-            V_cache = V_b[self._scatter_idx.view(-1)].view(
-                self._N, self._max_path, self.H, self.D
-            )
-
-            self._DeFT_decode(
-                Q_b,
-                K_cache.reshape(-1, self.H, self.D),
-                V_cache.reshape(-1, self.H, self.D),
-                Out[s:e],
-                *self._deft_aux,
-                Q_TILE_SIZE=16, KV_TILE_SIZE=32,
-                sm_scale=self._sm_scale,
-                mask_len=self._mask_len,
-            )
-
-        out = Out.view(T, self.H * self.D)
-        out = self.o_proj(out)
-        return residual + out
-
-
-# Map of method name → attention layer class
-ATTN_LAYER_CLS = {
-    "ragged":      RaggedAttnLayer,
-    "sdpa_flash":  SdpaFlashAttnLayer,
-    "flashinfer":  FlashInferAttnLayer,
-    "deft":        DeFTAttnLayer,
-}
-
-
-class RaggedFFNLayer(nn.Module):
-    """
-    SwiGLU FFN sublayer.
-    Input / output: [total_tokens, hidden]
-    """
-
-    def __init__(self, hidden: int, ffn: int):
-        super().__init__()
-        self.gate_up = nn.Linear(hidden, 2 * ffn, bias=False)
-        self.down    = nn.Linear(ffn, hidden, bias=False)
-        self.norm    = RMSNorm(hidden)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-        x = self.norm(x)
-        gate, up = self.gate_up(x).chunk(2, dim=-1)
-        return residual + self.down(torch.nn.functional.silu(gate) * up)
-
-
-class TransformerBlock(nn.Module):
-    def __init__(self, hidden: int, H: int, D: int, ffn: int,
-                 attn_cls: type = RaggedAttnLayer):
-        super().__init__()
-        self.attn = attn_cls(hidden, H, D)
-        self.ffn  = RaggedFFNLayer(hidden, ffn)
-
-    def forward(self, x, cu_seqlens, branching_factor, depth):
-        x = self.attn(x, cu_seqlens, branching_factor, depth)
-        x = self.ffn(x)
-        return x
-
-
-class SyntheticModel(nn.Module):
-    """
-    Stack of ``L`` transformer blocks operating on ragged (packed) token sequences.
-    Used purely for timing — weights are random fp16, no sampling head needed.
-    The attention layer class is parameterised to allow swapping in baselines.
-    """
-
-    def __init__(self, hidden: int, H: int, D: int, ffn: int, L: int,
-                 attn_cls: type = RaggedAttnLayer):
-        super().__init__()
-        self.layers = nn.ModuleList([
-            TransformerBlock(hidden, H, D, ffn, attn_cls) for _ in range(L)
-        ])
-        self.embed = nn.Embedding(32000, hidden)
-
-    def forward(self, token_ids, cu_seqlens, branching_factor, depth):
-        x = self.embed(token_ids).to(torch.float16)
-        for layer in self.layers:
-            x = layer(x, cu_seqlens, branching_factor, depth)
-        return x
-
-    def prepare_all_layers(self, cu_seqlens, B, N, branching_factor, depth, device):
-        """Call prepare() on every attention sublayer (FlashInfer plan, DeFT prep, etc.)."""
-        for layer in self.layers:
-            layer.attn.prepare(cu_seqlens, B, N, branching_factor, depth, device)
-
-# ── Timing helpers ────────────────────────────────────────────────────────────
-
-def _sync_cuda():
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-
-def _time_fn(fn, warmup: int, iters: int) -> float:
-    """Returns mean wall-clock time in milliseconds over *iters* runs."""
-    for _ in range(warmup):
-        fn()
-    _sync_cuda()
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    _sync_cuda()
-    return (time.perf_counter() - t0) * 1e3 / iters
-
-
-# ── Result dataclass ──────────────────────────────────────────────────────────
+HAS_EAGLE = _has("eagle")
+
+DEFAULT_PROMPTS = [
+    "The theory of general relativity, proposed by Albert Einstein in 1915,",
+    "In machine learning, the attention mechanism was introduced to",
+    "The Python programming language was created by Guido van Rossum and",
+    "Large language models have transformed natural language processing by",
+    "Speculative decoding accelerates autoregressive generation by",
+    "The transformer architecture consists of an encoder and a decoder, where",
+    "CUDA programming enables massively parallel computation on",
+    "Flash attention optimizes the attention computation by reducing",
+    "Tree-structured speculative decoding extends chain-based methods by",
+    "The key insight of our approach is that each query token only attends to",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data classes
+# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
-class E2ERow:
-    attn_method:           str
-    model_size:            str
-    num_layers:            int
-    batch_size:            int
-    branching_factor:      int
-    depth:                 int
-    tokens_per_seq:        int
-    total_tokens:          int
-    fwd_ms:                float   # full forward pass (ms)
-    attn_only_ms:          float   # attention sublayer alone, single block (ms)
-    tok_per_sec:           float   # tokens / second  (full model)
-    attn_frac:             float   # approx fraction of runtime in attention
+class GenerationRecord:
+    """One completed vanilla Eagle-3 eagenerate() call."""
+    prompt:                 str
+    num_tokens:             int
+    num_steps:              int
+    wall_ms:                float
+    tok_per_sec:            float
+    mean_accepted_per_step: float
+    acceptance_rate:        float   # mean_accepted / tree_budget
+    mean_verify_ms:         float   # mean CUDA-event time for tree_decoding
+    verify_fraction:        float   # sum(verify_ms) / wall_ms
 
 
-# ── Core benchmark function ───────────────────────────────────────────────────
+@dataclass
+class KernelRecord:
+    """One kernel timing row."""
+    method:           str   # "sdpa_tree" or "ragged"
+    batch_size:       int
+    branching_factor: int
+    depth:            int
+    num_tree_nodes:   int
+    num_heads:        int
+    head_dim:         int
+    latency_ms:       float
+    speedup:          float  # sdpa_tree_ms / ragged_ms  (>1 → ragged faster)
 
-def benchmark_e2e(
-    model_size:        str,
-    batch_size:        int,
-    branching_factor:  int,
-    depth:             int,
-    attn_method:       str  = "ragged",
-    warmup:            int  = WARMUP_ITERS,
-    iters:             int  = BENCH_ITERS,
-    device:            torch.device | None = None,
-) -> E2ERow:
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    cfg = MODEL_PRESETS[model_size]
-    hidden, H, D, ffn, L = cfg["hidden"], cfg["H"], cfg["D"], cfg["ffn"], cfg["L"]
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1  —  Vanilla Eagle-3 generation
+# ─────────────────────────────────────────────────────────────────────────────
 
-    N = num_tree_nodes(branching_factor, depth)
-    B = batch_size
-    total_tokens = B * N
+def _get_prompt(model_type: str, message: str) -> str:
+    try:
+        from fastchat.model import get_conversation_template
+        conv = get_conversation_template(model_type)
+        conv.append_message(conv.roles[0], message)
+        conv.append_message(conv.roles[1], None)
+        return conv.get_prompt()
+    except ImportError:
+        return f"User: {message}\nAssistant:"
 
-    attn_cls = ATTN_LAYER_CLS[attn_method]
 
-    # ── Build model (fp16, no grad) ──────────────────────────────────────────
-    model = SyntheticModel(hidden, H, D, ffn, L, attn_cls=attn_cls).to(device).half().eval()
-    for p in model.parameters():
-        p.requires_grad_(False)
-
-    # ── Build ragged inputs ───────────────────────────────────────────────────
-    torch.manual_seed(batch_size * 1000 + branching_factor * 100 + depth)
-    token_ids = torch.randint(0, 32000, (total_tokens,), device=device)
-    cu_sl = torch.arange(0, (B + 1) * N, N, device=device, dtype=torch.int32)
-
-    # ── Prepare attention layers (plan / prep — not timed) ───────────────────
-    model.prepare_all_layers(cu_sl, B, N, branching_factor, depth, device)
-
-    # ── Time full forward ────────────────────────────────────────────────────
-    fwd_ms = _time_fn(
-        lambda: model(token_ids, cu_sl, branching_factor, depth),
-        warmup, iters
+def load_eagle_model(
+    base_model: str,
+    eagle_model: str,
+    use_eagle3: bool = True,
+    total_token: int = 60,
+    depth: int = 7,
+    top_k: int = 10,
+) -> "eagle.model.ea_model.EaModel":
+    from eagle.model.ea_model import EaModel
+    print(f"\n  Loading Eagle model:")
+    print(f"    Base:  {base_model}")
+    print(f"    Eagle: {eagle_model}")
+    print(f"    Mode:  {'EAGLE-3' if use_eagle3 else 'EAGLE-2'}")
+    print(f"    Tree:  total_token={total_token}, depth={depth}, top_k={top_k}")
+    t0 = time.perf_counter()
+    model = EaModel.from_pretrained(
+        use_eagle3=use_eagle3,
+        base_model_path=base_model,
+        ea_model_path=eagle_model,
+        total_token=total_token,
+        depth=depth,
+        top_k=top_k,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+        device_map="auto",
     )
+    model.eval()
+    cfg = model.base_model.config
+    H    = cfg.num_attention_heads
+    H_kv = getattr(cfg, "num_key_value_heads", H)
+    D    = cfg.hidden_size // H
+    L    = cfg.num_hidden_layers
+    print(f"    Loaded in {time.perf_counter() - t0:.1f}s")
+    print(f"    LLM: H={H}, H_kv={H_kv}, D={D}, layers={L}")
+    if torch.cuda.is_available():
+        p = torch.cuda.get_device_properties(0)
+        print(f"    GPU: {p.name}  SM {p.major}.{p.minor}  "
+              f"{p.total_memory // 1024**3} GB")
+    return model
 
-    # ── Time a single attention sublayer (proxy for attn fraction) ───────────
-    attn_layer = model.layers[0].attn
-    with torch.no_grad():
-        x_sample = model.embed(token_ids).half()
 
-    attn_only_ms = _time_fn(
-        lambda: attn_layer(x_sample, cu_sl, branching_factor, depth),
-        warmup, iters
+def run_generation(
+    model,
+    prompts: List[str],
+    model_type: str,
+    max_new_tokens: int,
+    is_llama3: bool,
+) -> List[GenerationRecord]:
+    """
+    Run vanilla Eagle-3 eagenerate() on every prompt.
+
+    Each tree_decoding() call is timed with a pair of CUDA events so we
+    know exactly how much wall time is spent in verification.
+    """
+    from eagle.model.utils import (
+        initialize_tree, tree_decoding, evaluate_posterior,
+        update_inference_inputs, reset_tree_mode,
     )
+    from eagle.model.kv_cache import initialize_past_key_values
 
-    tok_per_sec = total_tokens / (fwd_ms * 1e-3)
-    attn_frac = min(1.0, (attn_only_ms * L) / max(fwd_ms, 1e-9))
+    device      = next(model.base_model.parameters()).device
+    total_token = model.ea_layer.total_tokens
+    records: List[GenerationRecord] = []
 
-    return E2ERow(
-        attn_method      = attn_method,
-        model_size       = model_size,
-        num_layers       = L,
-        batch_size       = batch_size,
-        branching_factor = branching_factor,
-        depth            = depth,
-        tokens_per_seq   = N,
-        total_tokens     = total_tokens,
-        fwd_ms           = round(fwd_ms,        3),
-        attn_only_ms     = round(attn_only_ms,  3),
-        tok_per_sec      = round(tok_per_sec,   1),
-        attn_frac        = round(attn_frac,     4),
-    )
+    for pi, raw in enumerate(prompts):
+        prompt    = _get_prompt(model_type, raw)
+        input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(device)
+        input_len = input_ids.shape[1]
+        max_len   = input_len + max_new_tokens + total_token + 10
+
+        (past_kv, past_kv_data, cur_len_data) = initialize_past_key_values(
+            model.base_model, max_length=max_len
+        )
+        model.past_key_values       = past_kv
+        model.past_key_values_data  = past_kv_data
+        model.current_length_data   = cur_len_data
+        model.ea_layer.reset_kv()
+        reset_tree_mode(model)
+
+        torch.cuda.synchronize()
+        wall_t0 = time.perf_counter()
+
+        (draft_tokens, retrieve_idx, tree_mask, tree_pos_ids,
+         logits, hidden_state, sample_token) = initialize_tree(
+            input_ids, model, past_kv, None
+        )
+
+        padding = (torch.zeros(1, 1, dtype=torch.long) - 1).to(device)
+        new_token   = 0
+        verify_ms_list: List[float] = []
+        accepted_list:  List[int]   = []
+        gen_max = max_len - total_token - 10
+
+        for _ in range(gen_max):
+            model.base_model.model.tree_mask = tree_mask
+
+            # ── time verification (base-model forward with tree Q×K) ───────
+            e0 = torch.cuda.Event(enable_timing=True)
+            e1 = torch.cuda.Event(enable_timing=True)
+            e0.record()
+            logits, hidden_new, _ = tree_decoding(
+                model, draft_tokens, past_kv, tree_pos_ids, input_ids, retrieve_idx,
+            )
+            e1.record()
+            torch.cuda.synchronize()
+            verify_ms_list.append(e0.elapsed_time(e1))
+
+            # acceptance
+            draft_long = torch.cat((draft_tokens, padding), dim=1)
+            candidates = draft_long[0, retrieve_idx]
+            best_cand, accept_len, sample_p = evaluate_posterior(
+                logits, candidates, None
+            )
+            (input_ids, draft_tokens, retrieve_idx, tree_mask, tree_pos_ids,
+             new_token, hidden_state, sample_token) = update_inference_inputs(
+                input_ids, candidates, best_cand, accept_len,
+                retrieve_idx, None, new_token,
+                past_kv_data, cur_len_data, model, hidden_new, sample_p,
+            )
+            accepted_list.append(int(accept_len.item()) + 1)  # +1 for sampled base token
+
+            # termination
+            gen_so_far = input_ids[0, input_len:].tolist()
+            if is_llama3:
+                eot = model.tokenizer.convert_tokens_to_ids("<|eot_id|>")
+                if eot in gen_so_far:
+                    break
+            if model.tokenizer.eos_token_id in gen_so_far:
+                break
+            if new_token >= max_new_tokens or input_ids.shape[1] >= gen_max:
+                break
+
+        torch.cuda.synchronize()
+        wall_ms  = (time.perf_counter() - wall_t0) * 1000
+        n_steps  = len(verify_ms_list)
+        total_a  = sum(accepted_list)
+        mean_a   = total_a / n_steps if n_steps else 0.0
+        acc_rate = mean_a  / (total_token + 1) if total_token else 0.0
+        tot_vms  = sum(verify_ms_list)
+        mean_vms = tot_vms / n_steps if n_steps else 0.0
+        vfrac    = tot_vms / wall_ms  if wall_ms  else 0.0
+
+        rec = GenerationRecord(
+            prompt=raw[:80],
+            num_tokens=new_token,
+            num_steps=n_steps,
+            wall_ms=wall_ms,
+            tok_per_sec=new_token / (wall_ms / 1000) if wall_ms else 0.0,
+            mean_accepted_per_step=mean_a,
+            acceptance_rate=acc_rate,
+            mean_verify_ms=mean_vms,
+            verify_fraction=vfrac,
+        )
+        records.append(rec)
+
+        snippet = model.tokenizer.decode(
+            input_ids[0, input_len: input_len + min(new_token, 50)],
+            skip_special_tokens=True,
+        )
+        print(
+            f"  [{pi+1}/{len(prompts)}] "
+            f"{new_token} tok / {n_steps} steps  "
+            f"accept={mean_a:.2f}/step ({acc_rate:.1%})  "
+            f"{rec.tok_per_sec:.1f} tok/s  "
+            f"verify={mean_vms:.1f} ms/step ({vfrac:.0%} of time)  "
+            f"→ \"{snippet[:60]}...\""
+        )
+
+    return records
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2  —  Tree attention kernel comparison
+# ─────────────────────────────────────────────────────────────────────────────
 
-def main():
+def _cuda_time(fn, warmup: int, iters: int) -> float:
+    """Return mean CUDA-elapsed time in ms over `iters` measured calls."""
+    for _ in range(warmup):
+        fn()
+    torch.cuda.synchronize()
+    pairs = [(torch.cuda.Event(enable_timing=True),
+              torch.cuda.Event(enable_timing=True)) for _ in range(iters)]
+    for s, e in pairs:
+        s.record()
+        fn()
+        e.record()
+    torch.cuda.synchronize()
+    return sum(s.elapsed_time(e) for s, e in pairs) / iters
+
+
+def _time_sdpa_tree(
+    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+    b: int, d: int,
+    warmup: int, iters: int,
+) -> float:
+    """
+    Time PyTorch SDPA with explicit tree-ancestor bool mask.
+
+    This is the same kernel path Eagle-3 uses internally:
+    the tree_mask is converted to a float additive bias and passed to SDPA.
+    Prefers FLASH_ATTENTION backend; falls back to EFFICIENT_ATTENTION if
+    flash rejects a non-null additive mask.
+
+    Q / K / V shape: [B, H, N, D]  (SDPA convention, fp16)
+    """
+    B, H, N, D = Q.shape
+    mask_np = tree_attention_mask(b, d)   # [N, N] bool numpy
+    mask_t  = torch.from_numpy(mask_np).to(Q.device)
+    bias    = torch.where(
+        mask_t,
+        torch.zeros(1, device=Q.device, dtype=torch.float32),
+        torch.full( (1,), float("-inf"), device=Q.device, dtype=torch.float32),
+    )                                     # [N, N]
+    bias4d = bias.unsqueeze(0).unsqueeze(0).expand(B, 1, N, N).contiguous()
+
+    # detect which SDPA backend accepts an additive mask (flash may refuse)
+    try:
+        with torch.nn.attention.sdpa_kernel(
+            torch.nn.attention.SDPBackend.FLASH_ATTENTION
+        ):
+            F.scaled_dot_product_attention(Q, K, V, attn_mask=bias4d)
+        backend = torch.nn.attention.SDPBackend.FLASH_ATTENTION
+    except Exception:
+        backend = torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION
+
+    def fn():
+        with torch.nn.attention.sdpa_kernel(backend):
+            return F.scaled_dot_product_attention(Q, K, V, attn_mask=bias4d)
+
+    return _cuda_time(fn, warmup, iters)
+
+
+def _time_ragged(
+    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+    cu: torch.Tensor,
+    b: int, d: int,
+    warmup: int, iters: int,
+) -> float:
+    """Time our ragged kernel. Q/K/V: [B*N, H, D] packed layout, fp16."""
+    def fn():
+        return ragged_attention(Q, K, V, cu, b, d)
+    return _cuda_time(fn, warmup, iters)
+
+
+def run_kernel_comparison(
+    num_heads: int,
+    head_dim: int,
+    batch_sizes: List[int],
+    branching_factors: List[int],
+    depths: List[int],
+    warmup: int,
+    iters: int,
+) -> List[KernelRecord]:
+    """
+    For each (B, b, d): benchmark sdpa_tree then ragged on matching fp16 tensors.
+    Returns two KernelRecords per config — one per method.
+    """
+    device = torch.device("cuda")
+    H, D   = num_heads, head_dim
+    records: List[KernelRecord] = []
+    configs = [
+        (B, b, d)
+        for B in batch_sizes
+        for b in branching_factors
+        for d in depths
+    ]
+
+    for ci, (B, b, d) in enumerate(configs):
+        N    = num_tree_nodes(b, d)
+        tot  = B * N
+
+        torch.manual_seed(B * 1000 + b * 100 + d)
+        # packed ragged layout [B*N, H, D]
+        Q_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
+        K_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
+        V_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
+        cu   = torch.arange(0, (B + 1) * N, N, dtype=torch.int32, device=device)
+        # SDPA layout [B, H, N, D]
+        Q_s  = Q_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+        K_s  = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+        V_s  = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+
+        t_sdpa   = float("nan")
+        t_ragged = float("nan")
+
+        try:
+            t_sdpa = _time_sdpa_tree(Q_s, K_s, V_s, b, d, warmup, iters)
+        except Exception as exc:
+            print(f"  [{ci+1}/{len(configs)}] sdpa_tree  "
+                  f"B={B} b={b} d={d}  ERROR: {exc}")
+
+        try:
+            t_ragged = _time_ragged(Q_r, K_r, V_r, cu, b, d, warmup, iters)
+        except Exception as exc:
+            print(f"  [{ci+1}/{len(configs)}] ragged     "
+                  f"B={B} b={b} d={d}  ERROR: {exc}")
+
+        speedup = (t_sdpa / t_ragged
+                   if (not math.isnan(t_sdpa) and not math.isnan(t_ragged)
+                       and t_ragged > 0)
+                   else float("nan"))
+        spd_str = f"{speedup:.2f}×" if not math.isnan(speedup) else " n/a "
+
+        print(
+            f"  [{ci+1:3d}/{len(configs)}]  "
+            f"B={B:3d} b={b} d={d} N={N:5d}  "
+            f"sdpa_tree={t_sdpa:8.3f} ms  "
+            f"ragged={t_ragged:8.3f} ms  "
+            f"speedup={spd_str}"
+        )
+
+        for method, ms in [("sdpa_tree", t_sdpa), ("ragged", t_ragged)]:
+            records.append(KernelRecord(
+                method=method,
+                batch_size=B,
+                branching_factor=b,
+                depth=d,
+                num_tree_nodes=N,
+                num_heads=H,
+                head_dim=D,
+                latency_ms=round(ms, 4) if not math.isnan(ms) else float("nan"),
+                speedup=round(speedup, 4) if not math.isnan(speedup) else float("nan"),
+            ))
+
+        del Q_r, K_r, V_r, Q_s, K_s, V_s, cu
+        torch.cuda.empty_cache()
+
+    return records
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3  —  Amdahl projection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def amdahl_projection(
+    gen_records:    List[GenerationRecord],
+    kernel_records: List[KernelRecord],
+    prompt_len:     int,
+    tree_size:      int,
+) -> Dict:
+    """
+    Project E2E speedup from replacing intra-tree attention with our kernel.
+
+    Amdahl formula:
+        S = 1 / ( (1 - f) + f/k )
+    where:
+        f = verify_fraction × attn_fraction × intra_tree_fraction
+        k = kernel speedup  (sdpa_tree_ms / ragged_ms, median at B=1)
+        attn_fraction       ≈ 0.35  (conservative: ~35% of model forward is attn)
+        intra_tree_fraction = N_tree / (N_prefix + N_tree)
+    """
+    if not gen_records or not kernel_records:
+        return {}
+
+    mean_vfrac  = float(np.mean([r.verify_fraction for r in gen_records]))
+    mean_tok_s  = float(np.mean([r.tok_per_sec for r in gen_records]))
+    mean_acc    = float(np.mean([r.mean_accepted_per_step for r in gen_records]))
+
+    # Kernel speedup: use B=1 rows (Eagle-3 runs batch=1)
+    speedups_b1 = [
+        r.speedup for r in kernel_records
+        if r.method == "ragged" and r.batch_size == 1
+        and not math.isnan(r.speedup)
+    ]
+    if not speedups_b1:
+        return {
+            "eagle3_tok_per_sec":     round(mean_tok_s, 1),
+            "mean_accepted_per_step": round(mean_acc, 3),
+            "verify_fraction":        round(mean_vfrac, 4),
+            "note": "no B=1 kernel results for projection",
+        }
+
+    k       = float(np.median(speedups_b1))
+    f_intra = tree_size / max(prompt_len + tree_size, 1)
+    F_ATTN  = 0.35   # conservative fraction of model forward in attention
+
+    f       = mean_vfrac * F_ATTN * f_intra
+    amdahl  = 1.0 / ((1.0 - f) + f / k) if k > 0 else 1.0
+    proj_t  = mean_tok_s * amdahl
+
+    return {
+        "eagle3_tok_per_sec":         round(mean_tok_s, 1),
+        "mean_accepted_per_step":     round(mean_acc, 3),
+        "verify_fraction":            round(mean_vfrac, 4),
+        "intra_tree_fraction":        round(f_intra, 4),
+        "attn_fraction_assumed":      F_ATTN,
+        "kernel_speedup_b1_median":   round(k, 3),
+        "amdahl_f":                   round(f, 5),
+        "amdahl_e2e_speedup":         round(amdahl, 3),
+        "projected_tok_per_sec":      round(proj_t, 1),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="End-to-end comparison benchmark for ragged (tree) speculative decoding"
+        description="Eagle-3 E2E benchmark: ragged kernel vs. vanilla Eagle-3",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
     )
-    parser.add_argument("--model-size",        default="synthetic",
-                        choices=list(MODEL_PRESETS.keys()),
-                        help="Model preset (default: synthetic)")
-    parser.add_argument("--batch-sizes",       default=",".join(map(str, DEFAULT_BATCH_SIZES)),
-                        help="Comma-separated list of batch sizes")
-    parser.add_argument("--depths",            default=",".join(map(str, DEFAULT_DEPTHS)),
-                        help="Comma-separated list of tree depths")
-    parser.add_argument("--branching-factors", default=",".join(map(str, DEFAULT_BRANCHING_FACTORS)),
-                        help="Comma-separated list of branching factors")
-    parser.add_argument("--methods",           default=None,
-                        help="Comma-separated attention methods to run "
-                             "(default: all available). Choices: "
-                             + ",".join(ALL_METHODS))
-    parser.add_argument("--skip-flashinfer",   action="store_true",
-                        help="Skip FlashInfer baseline")
-    parser.add_argument("--skip-deft",         action="store_true",
-                        help="Skip DeFT baseline")
-    parser.add_argument("--warmup",            type=int, default=WARMUP_ITERS)
-    parser.add_argument("--iters",             type=int, default=BENCH_ITERS)
-    parser.add_argument("--out-dir",           default="results",
-                        help="Directory to write CSV output")
-    parser.add_argument("--csv-name",          default="e2e_benchmark.csv",
-                        help="Output CSV filename (relative to --out-dir)")
+    # Model
+    parser.add_argument("--base-model",  default="meta-llama/Llama-3.1-8B-Instruct")
+    parser.add_argument("--eagle-model", default="yuhuili/EAGLE3-LLaMA3.1-Instruct-8B")
+    parser.add_argument("--model-type",  default="llama-3-instruct",
+                        choices=["llama-3-instruct", "llama3", "llama2", "vicuna"])
+    parser.add_argument("--no-eagle3",   action="store_true",
+                        help="Use EAGLE-2 (not EAGLE-3)")
+    # Tree config
+    parser.add_argument("--total-tokens", type=int, default=60)
+    parser.add_argument("--depth",        type=int, default=7)
+    parser.add_argument("--top-k",        type=int, default=10)
+    # Generation
+    parser.add_argument("--num-prompts",    type=int, default=5)
+    parser.add_argument("--max-new-tokens", type=int, default=256)
+    # Kernel benchmark
+    parser.add_argument("--kernel-batch-sizes", default="1,8,32,128")
+    parser.add_argument("--kernel-branching",   default="3,4")
+    parser.add_argument("--kernel-depths",      default="3,5,7")
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--iters",  type=int, default=20)
+    parser.add_argument("--prompt-len", type=int, default=128,
+                        help="Estimated prompt length for Amdahl intra-tree fraction")
+    # Control
+    parser.add_argument("--skip-generation", action="store_true")
+    parser.add_argument("--skip-kernel",     action="store_true")
+    parser.add_argument("--out-dir",  default="results")
+    parser.add_argument("--csv-name", default="e2e_benchmark.csv")
     args = parser.parse_args()
 
-    batch_sizes       = [int(x) for x in args.batch_sizes.split(",")]
-    depths            = [int(x) for x in args.depths.split(",")]
-    branching_factors = [int(x) for x in args.branching_factors.split(",")]
+    if not torch.cuda.is_available():
+        print("ERROR: CUDA required.")
+        sys.exit(1)
 
-    # ── Resolve methods to run ────────────────────────────────────────────────
-    if args.methods:
-        methods = [m.strip() for m in args.methods.split(",")]
-    else:
-        methods = list(ALL_METHODS)          # start with all
-    if args.skip_flashinfer or not HAS_FLASHINFER:
-        methods = [m for m in methods if m != "flashinfer"]
-        if not HAS_FLASHINFER and "flashinfer" not in (args.methods or ""):
-            print("  [info] FlashInfer not available — skipping.")
-    if args.skip_deft or not HAS_DEFT:
-        methods = [m for m in methods if m != "deft"]
-        if not HAS_DEFT and "deft" not in (args.methods or ""):
-            print("  [info] DeFT not available — skipping.")
+    is_eagle3 = not args.no_eagle3
+    is_llama3 = args.model_type in ("llama3", "llama-3-instruct")
+    prompts   = DEFAULT_PROMPTS[:args.num_prompts]
+    kb_sizes  = [int(x) for x in args.kernel_batch_sizes.split(",")]
+    kb_bf     = [int(x) for x in args.kernel_branching.split(",")]
+    kb_d      = [int(x) for x in args.kernel_depths.split(",")]
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    cfg    = MODEL_PRESETS[args.model_size]
-    print(
-        f"\ne2e_benchmark  —  end-to-end transformer comparison"
-        f"\n  model={args.model_size}  ({cfg['L']} layers, hidden={cfg['hidden']}, "
-        f"H={cfg['H']}, D={cfg['D']})"
-        f"\n  device={device}   dtype=fp16   random weights"
-        f"\n  methods: {', '.join(methods)}"
-    )
-    print()
-    print("  Metrics per (method, B, d, b):")
-    print("    fwd_ms       — full L-layer forward pass (embed+attn+FFN) × L")
-    print("    attn_only_ms — single attention sublayer (proxy for per-layer cost)")
-    print("    attn_frac    — estimated attention share of total compute")
-    print("    tok/s        — verification tokens/sec (synthetic)")
-    print()
+    print("\n" + "=" * 70)
+    print("  Eagle-3 E2E Benchmark  ·  ragged kernel vs. vanilla Eagle-3")
+    print("=" * 70)
+    print(f"  Base:          {args.base_model}")
+    print(f"  Eagle:         {args.eagle_model}  "
+          f"({'EAGLE-3' if is_eagle3 else 'EAGLE-2'})")
+    print(f"  Tree:          total={args.total_tokens}, "
+          f"depth={args.depth}, top_k={args.top_k}")
+    print(f"  Kernel grid:   B∈{kb_sizes}, b∈{kb_bf}, d∈{kb_d}")
 
-    configs = [
-        (B, d, b)
-        for B in batch_sizes
-        for d in depths
-        for b in branching_factors
-    ]
-    total_runs = len(configs) * len(methods)
-    run_idx    = 0
-    rows: list[dict] = []
+    # Model dimensions — will be updated from actual model if generation runs
+    n_heads, head_dim = 32, 128  # LLaMA-3.1-8B defaults
 
-    for method in methods:
+    # ── Step 1: Vanilla Eagle-3 generation ──────────────────────────────────
+    gen_records: List[GenerationRecord] = []
+
+    if not args.skip_generation:
+        if not HAS_EAGLE:
+            print("\nERROR: EAGLE not installed.")
+            print("  pip install git+https://github.com/SafeAILab/EAGLE.git fschat")
+            sys.exit(1)
+
+        model = load_eagle_model(
+            base_model=args.base_model,
+            eagle_model=args.eagle_model,
+            use_eagle3=is_eagle3,
+            total_token=args.total_tokens,
+            depth=args.depth,
+            top_k=args.top_k,
+        )
+        cfg       = model.base_model.config
+        n_heads   = cfg.num_attention_heads
+        head_dim  = cfg.hidden_size // n_heads
+
         print(f"\n{'─' * 70}")
-        print(f"  Method: {method}")
+        print("  STEP 1  —  Vanilla Eagle-3 generation  (default attention)")
         print(f"{'─' * 70}")
-        for B, d, b in configs:
-            run_idx += 1
-            N = num_tree_nodes(b, d)
-            print(
-                f"  [{run_idx:3d}/{total_runs}] {method:12s}  "
-                f"B={B}  d={d}  b={b}  N={N}  T={B*N} … ",
-                end="", flush=True,
-            )
-            try:
-                row = benchmark_e2e(
-                    model_size       = args.model_size,
-                    batch_size       = B,
-                    branching_factor = b,
-                    depth            = d,
-                    attn_method      = method,
-                    warmup           = args.warmup,
-                    iters            = args.iters,
-                    device           = device,
-                )
-                rows.append(asdict(row))
-                print(
-                    f"fwd={row.fwd_ms:.1f}ms  "
-                    f"tok/s={row.tok_per_sec:.0f}  "
-                    f"attn_frac={row.attn_frac:.1%}"
-                )
-            except Exception as exc:
-                print(f"ERROR: {exc}")
 
-    if not rows:
-        print("No results collected.")
-        return
+        gen_records = run_generation(
+            model, prompts, args.model_type,
+            max_new_tokens=args.max_new_tokens,
+            is_llama3=is_llama3,
+        )
 
-    # ── Save CSV ──────────────────────────────────────────────────────────────
+        if gen_records:
+            tok_s  = np.mean([r.tok_per_sec for r in gen_records])
+            acc    = np.mean([r.mean_accepted_per_step for r in gen_records])
+            acc_r  = np.mean([r.acceptance_rate for r in gen_records])
+            vms    = np.mean([r.mean_verify_ms for r in gen_records])
+            vfrac  = np.mean([r.verify_fraction for r in gen_records])
+            print()
+            print(f"  Summary ({len(gen_records)} prompts):")
+            print(f"    tok/s                : {tok_s:.1f}")
+            print(f"    accepted/step (mean) : {acc:.2f}")
+            print(f"    acceptance rate      : {acc_r:.1%}")
+            print(f"    verify latency       : {vms:.1f} ms/step")
+            print(f"    verify time fraction : {vfrac:.0%}")
+
+        del model
+        torch.cuda.empty_cache()
+    else:
+        try:
+            from transformers import AutoConfig
+            cfg      = AutoConfig.from_pretrained(args.base_model)
+            n_heads  = cfg.num_attention_heads
+            head_dim = cfg.hidden_size // n_heads
+        except Exception:
+            pass  # keep LLaMA defaults
+
+    # ── Step 2: Kernel comparison ─────────────────────────────────────────────
+    kernel_records: List[KernelRecord] = []
+
+    if not args.skip_kernel:
+        print(f"\n{'─' * 70}")
+        print("  STEP 2  —  Tree attention kernel comparison")
+        print(f"             sdpa_tree  (Eagle-3 native)  vs  ragged  (ours)")
+        print(f"{'─' * 70}")
+        print(f"  Model dims: H={n_heads}, D={head_dim}")
+        print()
+
+        kernel_records = run_kernel_comparison(
+            num_heads=n_heads,
+            head_dim=head_dim,
+            batch_sizes=kb_sizes,
+            branching_factors=kb_bf,
+            depths=kb_d,
+            warmup=args.warmup,
+            iters=args.iters,
+        )
+
+        # per-config speedup table
+        print()
+        print("  Speedup table  (sdpa_tree_ms / ragged_ms — >1 means ragged is faster):")
+        print(f"  {'B':>4s} {'b':>2s} {'d':>2s} {'N':>6s}  {'speedup':>10s}")
+        for r in kernel_records:
+            if r.method == "ragged":
+                s = f"{r.speedup:.2f}×" if not math.isnan(r.speedup) else "    n/a"
+                print(f"  {r.batch_size:4d} {r.branching_factor:2d} "
+                      f"{r.depth:2d} {r.num_tree_nodes:6d}  {s:>10s}")
+
+    # ── Step 3: Amdahl projection ─────────────────────────────────────────────
+    proj: Dict = {}
+    if gen_records and kernel_records:
+        # Typical tree size for Eagle-3 with the configured b/d midpoint
+        typical_n = num_tree_nodes(
+            kb_bf[0] if kb_bf else 3,
+            kb_d[len(kb_d) // 2] if kb_d else 5,
+        )
+        proj = amdahl_projection(
+            gen_records, kernel_records,
+            prompt_len=args.prompt_len,
+            tree_size=typical_n,
+        )
+
+        print(f"\n{'─' * 70}")
+        print("  STEP 3  —  Amdahl E2E projection")
+        print(f"{'─' * 70}")
+        for k, v in proj.items():
+            print(f"  {k:<35s}: {v}")
+
+    # ── Write CSV ─────────────────────────────────────────────────────────────
     os.makedirs(args.out_dir, exist_ok=True)
     csv_path = os.path.join(args.out_dir, args.csv_name)
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f"\nSaved {len(rows)} rows → {csv_path}")
+    rows: List[dict] = []
 
-    # ── Comparison summary ────────────────────────────────────────────────────
-    from collections import defaultdict
+    for r in gen_records:
+        rows.append({
+            "phase":                    "generation",
+            "mode":                     "vanilla_eagle3",
+            "model":                    args.base_model,
+            "eagle_model":              args.eagle_model,
+            "prompt":                   r.prompt,
+            "num_tokens":               r.num_tokens,
+            "num_steps":                r.num_steps,
+            "wall_ms":                  round(r.wall_ms, 1),
+            "tok_per_sec":              round(r.tok_per_sec, 1),
+            "mean_accepted_per_step":   round(r.mean_accepted_per_step, 3),
+            "acceptance_rate":          round(r.acceptance_rate, 4),
+            "mean_verify_ms":           round(r.mean_verify_ms, 3),
+            "verify_fraction":          round(r.verify_fraction, 4),
+        })
 
-    # Index: (B, d, b, method) → fwd_ms
-    fwd_index: dict[tuple, float] = {}
-    for r in rows:
-        key = (r["batch_size"], r["depth"], r["branching_factor"], r["attn_method"])
-        fwd_index[key] = r["fwd_ms"]
+    for r in kernel_records:
+        rows.append({
+            "phase":                           "kernel",
+            "method":                          r.method,
+            "batch_size":                      r.batch_size,
+            "branching_factor":                r.branching_factor,
+            "depth":                           r.depth,
+            "num_tree_nodes":                  r.num_tree_nodes,
+            "num_heads":                       r.num_heads,
+            "head_dim":                        r.head_dim,
+            "latency_ms":                      r.latency_ms,
+            "speedup_sdpa_tree_over_ragged":   r.speedup,
+        })
 
-    # Print comparison table
-    print(f"\n{'═' * 80}")
-    print("  E2E Comparison — fwd_ms and speedup vs ragged")
-    print(f"{'═' * 80}")
+    if proj:
+        rows.append({"phase": "amdahl_projection", **proj})
 
-    hdr_methods = "".join(f"  {m:>14s}" for m in methods)
-    spd_methods = "".join(f"  {'spdup':>14s}" for m in methods if m != "ragged")
-    print(f"  {'B':>3s}  {'d':>2s}  {'b':>2s}  {'N':>6s}{hdr_methods}{spd_methods}")
-    print(f"  {'':>3s}  {'':>2s}  {'':>2s}  {'':>6s}"
-          + "".join(f"  {'(ms)':>14s}" for _ in methods)
-          + "".join(f"  {'(×)':>14s}" for m in methods if m != "ragged"))
-    print("  " + "─" * (3+2+2+6 + 16*len(methods) + 16*(len(methods)-1) + 6))
+    if rows:
+        fieldnames = sorted(set().union(*(row.keys() for row in rows)))
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+        print(f"\n  Saved: {csv_path}")
 
-    for B, d, b in configs:
-        N = num_tree_nodes(b, d)
-        parts = [f"  {B:3d}  {d:2d}  {b:2d}  {N:6d}"]
-
-        # fwd_ms for each method
-        ms_vals = []
-        for m in methods:
-            ms = fwd_index.get((B, d, b, m))
-            if ms is not None:
-                parts.append(f"  {ms:14.1f}")
-                ms_vals.append((m, ms))
-            else:
-                parts.append(f"  {'—':>14s}")
-                ms_vals.append((m, None))
-
-        # speedup vs ragged for non-ragged methods
-        ragged_ms = fwd_index.get((B, d, b, "ragged"))
-        for m, ms in ms_vals:
-            if m == "ragged":
-                continue
-            if ragged_ms and ms:
-                parts.append(f"  {ms / ragged_ms:14.2f}")
-            else:
-                parts.append(f"  {'—':>14s}")
-
-        print("".join(parts))
-
-    # ── Per-method tok/s and attn_frac summary ────────────────────────────────
-    for method in methods:
-        method_rows = [r for r in rows if r["attn_method"] == method]
-        if not method_rows:
-            continue
-        print(f"\n── {method} — tok/s summary (all batch sizes averaged) ──")
-        groups: dict[tuple, list[float]] = defaultdict(list)
-        for r in method_rows:
-            groups[(r["depth"], r["branching_factor"])].append(r["tok_per_sec"])
-        hdr = f"{'depth':>6}  {'b':>3}  {'mean_tok/s':>12}  {'min_tok/s':>12}"
-        print(hdr)
-        print("-" * len(hdr))
-        for (d, b), vals in sorted(groups.items()):
-            print(f"{d:>6}  {b:>3}  {sum(vals)/len(vals):>12.1f}  {min(vals):>12.1f}")
-
+    # ── Summary ───────────────────────────────────────────────────────────────
+    print(f"\n{'=' * 70}")
+    print("  BENCHMARK COMPLETE")
+    print(f"{'=' * 70}")
+    if gen_records:
+        print(f"  Vanilla Eagle-3 tok/s :   "
+              f"{np.mean([r.tok_per_sec for r in gen_records]):.1f}")
+    if kernel_records:
+        spd = [r.speedup for r in kernel_records
+               if r.method == "ragged" and not math.isnan(r.speedup)]
+        if spd:
+            print(f"  Kernel speedup range  :   "
+                  f"{min(spd):.2f}× – {max(spd):.2f}×  "
+                  f"(median {float(np.median(spd)):.2f}×)")
+    if proj:
+        print(f"  Amdahl projected speedup: "
+              f"{proj.get('amdahl_e2e_speedup', 'n/a')}")
+        print(f"  Projected tok/s       :   "
+              f"{proj.get('projected_tok_per_sec', 'n/a')}")
     print()
-    print("─" * 70)
-    print("  Notes:")
-    print("  • All baselines use correct tree-ancestor masking")
-    print("  • speedup > 1.0 means BASELINE is slower than ragged")
-    print("  • Random fp16 weights — scaling trends, not absolute throughput")
-    print("─" * 70)
 
 
 if __name__ == "__main__":

@@ -9,20 +9,21 @@ echo "=== 1/3  Padding characterisation sweep ==="
 python scripts/padding_sweep.py --out-dir results
 
 echo ""
-echo "=== 2/3  Correctness tests ==="
+echo "=== 2/4  Correctness tests (pytest + numeric CSV) ==="
 python -m pytest tests/test_correctness.py -v --tb=short
+python scripts/correctness_benchmark.py --out-dir results
 
 echo ""
 echo "=== 3/4  Benchmark sweep ==="
 python scripts/benchmark_sweep.py --out-dir results
 
 echo ""
-echo "=== 4/4  End-to-end tok/s benchmark (synthetic model) ==="
+echo "=== 4/4  End-to-end tok/s benchmark (kernel comparison, skip Eagle-3 generation) ==="
 python scripts/e2e_benchmark.py \
-    --model-size synthetic \
-    --batch-sizes 1,2,4,8 \
-    --depths 3,5,7 \
-    --branching-factors 2,3 \
+    --skip-generation \
+    --kernel-batch-sizes 1,2,4,8 \
+    --kernel-depths 3,5,7 \
+    --kernel-branching 2,3 \
     --out-dir results
 
 echo ""

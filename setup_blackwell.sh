@@ -168,6 +168,26 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
         fi
     fi
 
+    # ── EAGLE (NeurIPS'25) — speculative decoding framework ──────────────────
+    # SafeAILab/EAGLE provides EaModel with eagenerate() for Eagle-1/2/3.
+    # Used in e2e_benchmark.py for real speculative decoding evaluation.
+    # Requires fschat for conversation templates.
+    if $PYTHON -c "from eagle.model.ea_model import EaModel" 2>/dev/null; then
+        info "  EAGLE: already installed — skipping."
+    else
+        info "  Installing EAGLE (speculative decoding framework) …"
+        if $PIP install --quiet \
+               "git+https://github.com/SafeAILab/EAGLE.git" \
+               "fschat" \
+               2>/dev/null \
+           && $PYTHON -c "from eagle.model.ea_model import EaModel; print('EAGLE installed OK')" 2>/dev/null; then
+            info "  EAGLE installed successfully."
+        else
+            warn "  EAGLE install failed — E2E benchmark will require --skip-generation."
+            warn "  Manual: pip install git+https://github.com/SafeAILab/EAGLE.git fschat"
+        fi
+    fi
+
 else
     info "Skipping optional SOTA libraries (--no-sota)."
 fi
