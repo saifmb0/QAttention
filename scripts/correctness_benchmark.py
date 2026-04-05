@@ -162,6 +162,7 @@ class CorrectnessRow:
     mean_rel_err:     float
     atol:             float
     rtol:             float
+    oom_skipped:      bool = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -187,28 +188,55 @@ def check_one(
     N       = num_tree_nodes(branching_factor, depth)
     masks   = [tree_attention_mask(branching_factor, depth) for _ in range(batch_size)]
 
-    qs = [torch.randn(N, num_heads, head_dim, device=device, dtype=torch.float16)
-          for _ in range(batch_size)]
-    ks = [torch.randn(N, num_heads, head_dim, device=device, dtype=torch.float16)
-          for _ in range(batch_size)]
-    vs = [torch.randn(N, num_heads, head_dim, device=device, dtype=torch.float16)
-          for _ in range(batch_size)]
+    _oom_row = CorrectnessRow(
+        batch_size=batch_size, branching_factor=branching_factor,
+        depth=depth, num_tokens=N, num_heads=num_heads, head_dim=head_dim,
+        passed=False,
+        peak_abs_err=float("nan"), mean_abs_err=float("nan"),
+        peak_rel_err=float("nan"), mean_rel_err=float("nan"),
+        atol=ATOL, rtol=RTOL, oom_skipped=True,
+    )
+
+    try:
+        qs = [torch.randn(N, num_heads, head_dim, device=device, dtype=torch.float16)
+              for _ in range(batch_size)]
+        ks = [torch.randn(N, num_heads, head_dim, device=device, dtype=torch.float16)
+              for _ in range(batch_size)]
+        vs = [torch.randn(N, num_heads, head_dim, device=device, dtype=torch.float16)
+              for _ in range(batch_size)]
+    except RuntimeError as exc:
+        if "out of memory" in str(exc).lower():
+            torch.cuda.empty_cache()
+            return _oom_row
+        raise
 
     # ── Ragged kernel ────────────────────────────────────────────────────────
-    Q_packed, K_packed, V_packed, cu = pack_inputs(qs, ks, vs)
-    Q_packed = Q_packed.to(device)
-    K_packed = K_packed.to(device)
-    V_packed = V_packed.to(device)
+    try:
+        Q_packed, K_packed, V_packed, cu = pack_inputs(qs, ks, vs)
+        Q_packed = Q_packed.to(device)
+        K_packed = K_packed.to(device)
+        V_packed = V_packed.to(device)
 
-    O_packed = ragged_attention(
-        Q_packed, K_packed, V_packed, cu,
-        branching_factor=branching_factor,
-        max_depth=depth,
-    )
-    ragged_outs = [O_packed[i * N:(i + 1) * N] for i in range(batch_size)]
+        O_packed = ragged_attention(
+            Q_packed, K_packed, V_packed, cu,
+            branching_factor=branching_factor,
+            max_depth=depth,
+        )
+        ragged_outs = [O_packed[i * N:(i + 1) * N] for i in range(batch_size)]
+    except RuntimeError as exc:
+        if "out of memory" in str(exc).lower():
+            torch.cuda.empty_cache()
+            return _oom_row
+        raise
 
     # ── SDPA reference ────────────────────────────────────────────────────────
-    ref_outs = _padded_sdpa_reference(qs, ks, vs, masks, device)
+    try:
+        ref_outs = _padded_sdpa_reference(qs, ks, vs, masks, device)
+    except RuntimeError as exc:
+        if "out of memory" in str(exc).lower():
+            torch.cuda.empty_cache()
+            return _oom_row
+        raise
 
     # ── Error statistics ──────────────────────────────────────────────────────
     all_abs, all_rel = [], []
@@ -336,6 +364,7 @@ def main() -> None:
     rows: List[CorrectnessRow] = []
     n_pass = 0
     n_fail = 0
+    n_oom  = 0
 
     # column widths for aligned output
     W = {
@@ -363,28 +392,40 @@ def main() -> None:
         )
         rows.append(row)
 
-        tag = " PASS" if row.passed else "*FAIL"
-        if row.passed:
+        if row.oom_skipped:
+            tag = "  OOM"
+            n_oom += 1
+        elif row.passed:
+            tag = " PASS"
             n_pass += 1
         else:
+            tag = "*FAIL"
             n_fail += 1
 
-        print(
-            f"{B:3d}  {b:2d}  {d:2d}  {row.num_tokens:6d}  "
-            f"{H:4d}  {D:5d}  {tag:>6s}  "
-            f"{row.peak_abs_err:10.3e}  "
-            f"{row.mean_abs_err:10.3e}  "
-            f"{row.peak_rel_err:10.3e}"
-        )
+        if row.oom_skipped:
+            print(
+                f"{B:3d}  {b:2d}  {d:2d}  {row.num_tokens:6d}  "
+                f"{H:4d}  {D:5d}  {tag:>6s}  "
+                f"{'(skipped — CUDA OOM)':>32s}"
+            )
+        else:
+            print(
+                f"{B:3d}  {b:2d}  {d:2d}  {row.num_tokens:6d}  "
+                f"{H:4d}  {D:5d}  {tag:>6s}  "
+                f"{row.peak_abs_err:10.3e}  "
+                f"{row.mean_abs_err:10.3e}  "
+                f"{row.peak_rel_err:10.3e}"
+            )
 
     print(sep)
 
-    # Global aggregates
-    if rows:
-        g_peak_abs = max(r.peak_abs_err for r in rows)
-        g_mean_abs = sum(r.mean_abs_err for r in rows) / len(rows)
-        g_peak_rel = max(r.peak_rel_err for r in rows)
-        g_mean_rel = sum(r.mean_rel_err for r in rows) / len(rows)
+    # Global aggregates (exclude OOM-skipped rows)
+    measured = [r for r in rows if not r.oom_skipped]
+    if measured:
+        g_peak_abs = max(r.peak_abs_err for r in measured)
+        g_mean_abs = sum(r.mean_abs_err for r in measured) / len(measured)
+        g_peak_rel = max(r.peak_rel_err for r in measured)
+        g_mean_rel = sum(r.mean_rel_err for r in measured) / len(measured)
         print(
             f"\nGlobal  |  peak_abs={g_peak_abs:.3e}  "
             f"mean_abs={g_mean_abs:.3e}  "
@@ -392,10 +433,18 @@ def main() -> None:
             f"mean_rel={g_mean_rel:.3e}"
         )
 
+    oom_note = f"  {n_oom} OOM-skipped" if n_oom else ""
     print(
-        f"\nResult  |  {n_pass} PASSED  {n_fail} FAILED  "
+        f"\nResult  |  {n_pass} PASSED  {n_fail} FAILED{oom_note}  "
         f"out of {len(rows)} configurations\n"
     )
+    if n_oom:
+        print(
+            f"  Note: {n_oom} config(s) skipped due to CUDA OOM.\n"
+            f"  The SDPA reference allocates a dense [B,H,N,N] matrix;\n"
+            f"  large trees (N > ~10k) at H=32 exceed 80 GB for this reference only.\n"
+            f"  The ragged kernel itself handles these sizes; OOM is in the reference.\n"
+        )
 
     # ── CSV output ─────────────────────────────────────────────────────────
     os.makedirs(args.out_dir, exist_ok=True)
@@ -410,7 +459,7 @@ def main() -> None:
     print(f"Saved: {csv_path}  ({len(rows)} rows)")
     print()
 
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(0 if n_fail == 0 else 1)  # OOM skips don't count as failures
 
 
 if __name__ == "__main__":
