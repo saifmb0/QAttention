@@ -34,16 +34,16 @@ Output
 
 Usage
 -----
-  # Default depth sweep [3,4,5,6,7,8], 10 prompts each
+  # Default 2D sweep: depths=[5,6,7,8,9] × branching=[8,10,12], 10 prompts each
   python scripts/e2e_benchmark.py
 
-  # Custom depths
-  python scripts/e2e_benchmark.py --depths 3,5,7,10
+  # Custom grid
+  python scripts/e2e_benchmark.py --depths 6,7,8,9 --branching-factors 8,10,12,14
 
-  # Override token budget per depth
-  python scripts/e2e_benchmark.py --total-tokens-map '3:30,7:80,10:150'
+  # Override token budget for specific (b, d) cells
+  python scripts/e2e_benchmark.py --total-tokens-map 'b10d7:60,b12d9:100'
 
-  # Only vanilla (skip ragged)
+  # Only vanilla (no ragged kernel, useful for baseline timing)
   python scripts/e2e_benchmark.py --skip-ragged
 
 Prerequisites
@@ -294,21 +294,24 @@ class TreeConfig:
     label:        str
 
 
-# Default sweep: increasing depth with proportional token budget.
-# This directly tests the paper's claim: deeper trees → more speedup.
-# top_k is set per-run from CLI (default 10, matching EAGLE-3).
-DEFAULT_DEPTH_SWEEP = [3, 4, 5, 6, 7, 8]
-DEFAULT_TOTAL_TOKENS_FOR_DEPTH = {
-    # Budget scaled so the tree can meaningfully reach the target depth.
-    # With top_k=10, full b-ary trees grow exponentially — budget is the
-    # ceiling the draft model allocates per step.
-    3:  30,
-    4:  40,
-    5:  50,
-    6:  60,    # EAGLE-3 default is (60, 7) but depth 7 with 60 tokens
-    7:  60,    # is already budget-limited → good test of deep+sparse
-    8:  80,
-}
+# Focal sweep: centred on EAGLE-3's default operating point (d=7, top_k=10).
+# We test one step below and two steps above to show the trend clearly.
+# Branching factors bracket EAGLE-3's default top_k=10 on both sides.
+DEFAULT_DEPTH_SWEEP       = [5, 6, 7, 8, 9]
+DEFAULT_BRANCHING_FACTORS = [8, 10, 12]     # low / default / high
+
+
+def _default_total_token(b: int, d: int) -> int:
+    """Token budget for a given (branching, depth) config.
+
+    Anchored at EAGLE-3's default: (b=10, d=7) → total_token=60.
+    Formula: round(6 * b * d / 7), clamped to [30, 120].
+    Produces budgets that scale naturally with tree complexity:
+      b=8 , d=5  → 34    b=8 , d=7  → 48    b=8 , d=9  → 62
+      b=10, d=5  → 43    b=10, d=7  → 60 ★  b=10, d=9  → 77
+      b=12, d=5  → 51    b=12, d=7  → 72    b=12, d=9  → 93
+    """
+    return max(30, min(120, round(6 * b * d / 7)))
 
 
 def set_tree_config(model, cfg: TreeConfig) -> None:
@@ -783,15 +786,19 @@ def main() -> None:
                         choices=["llama-3-instruct", "llama3", "llama2", "vicuna"])
     parser.add_argument("--no-eagle3",   action="store_true",
                         help="Use EAGLE-2 (not EAGLE-3)")
-    # Tree sweep
-    parser.add_argument("--depths", default=",".join(map(str, DEFAULT_DEPTH_SWEEP)),
-                        help="Comma-separated tree depths to sweep "
+    # Tree sweep — 2D grid: depths × branching factors
+    parser.add_argument("--depths",
+                        default=",".join(map(str, DEFAULT_DEPTH_SWEEP)),
+                        help="Comma-separated tree depths "
                              f"(default: {','.join(map(str, DEFAULT_DEPTH_SWEEP))})")
-    parser.add_argument("--top-k", type=int, default=10,
-                        help="EAGLE top-k (branching factor) for all configs (default: 10)")
+    parser.add_argument("--branching-factors",
+                        default=",".join(map(str, DEFAULT_BRANCHING_FACTORS)),
+                        help="Comma-separated top-k / branching factors "
+                             f"(default: {','.join(map(str, DEFAULT_BRANCHING_FACTORS))})")
     parser.add_argument("--total-tokens-map", default=None,
-                        help="Override total_token per depth, e.g. '3:30,5:50,7:60'. "
-                             "Unspecified depths use the built-in default map.")
+                        help="Override total_token for specific (b,d) pairs, "
+                             "e.g. 'b10d7:60,b12d9:100'. "
+                             "Unspecified pairs use the built-in formula.")
     # Generation
     parser.add_argument("--num-prompts",    type=int, default=10,
                         help="Number of ShareGPT prompts per config (default: 10)")
@@ -827,21 +834,28 @@ def main() -> None:
     is_eagle3 = not args.no_eagle3
     is_llama3 = args.model_type in ("llama3", "llama-3-instruct")
 
-    # ── Build tree-config sweep ──────────────────────────────────────────────
-    depths = [int(x) for x in args.depths.split(",")]
-    tt_map = dict(DEFAULT_TOTAL_TOKENS_FOR_DEPTH)
+    # ── Build 2D tree-config sweep (depths × branching factors) ────────────
+    depths  = [int(x) for x in args.depths.split(",")]
+    bfacs   = [int(x) for x in args.branching_factors.split(",")]
+
+    # Parse optional per-cell total-token overrides: 'b10d7:60,b12d9:100'
+    tt_overrides: dict = {}
     if args.total_tokens_map:
         for pair in args.total_tokens_map.split(","):
-            d_str, t_str = pair.split(":")
-            tt_map[int(d_str)] = int(t_str)
+            key, val = pair.split(":")
+            # key format: b{B}d{D}
+            import re as _re
+            m = _re.match(r"b(\d+)d(\d+)", key.strip())
+            if m:
+                tt_overrides[(int(m.group(1)), int(m.group(2)))] = int(val)
 
     configs: List[TreeConfig] = []
-    for d in depths:
-        tt = tt_map.get(d, 10 * d)  # fallback: 10 × depth
-        label = f"d={d} tt={tt}"
-        if d == 7 and tt == 60:
-            label += " [Eagle default]"
-        configs.append(TreeConfig(depth=d, total_token=tt, top_k=args.top_k, label=label))
+    for b in bfacs:
+        for d in depths:
+            tt = tt_overrides.get((b, d), _default_total_token(b, d))
+            is_default = (b == 10 and d == 7)
+            label = f"b={b} d={d} tt={tt}" + (" [Eagle-3 default]" if is_default else "")
+            configs.append(TreeConfig(depth=d, total_token=tt, top_k=b, label=label))
 
     prompts = _load_sharegpt_prompts(
         args.num_prompts, seed=args.prompt_seed, hf_token=_hf_token
@@ -849,20 +863,30 @@ def main() -> None:
 
     # ── Banner ───────────────────────────────────────────────────────────────
     print("\n" + "=" * 72)
-    print("  Eagle-3 E2E Benchmark  ·  Tree Depth Sweep")
-    print("  Narrative: deeper trees → more ragged-kernel speedup")
+    print("  Eagle-3 E2E Benchmark  ·  2D Sweep: depth × branching factor")
+    print("  Narrative: deeper trees + higher b → ragged kernel wins more")
     print("=" * 72)
-    print(f"  Base:     {args.base_model}")
-    print(f"  Eagle:    {args.eagle_model}  "
+    print(f"  Base:             {args.base_model}")
+    print(f"  Eagle:            {args.eagle_model}  "
           f"({'EAGLE-3' if is_eagle3 else 'EAGLE-2'})")
-    print(f"  Prompts:  {args.num_prompts} (seed={args.prompt_seed})")
-    print(f"  Configs:  {len(configs)} depth points")
-    for c in configs:
-        print(f"            {c.label}")
+    print(f"  Prompts:          {args.num_prompts} per config (seed={args.prompt_seed})")
+    print(f"  Depths:           {depths}")
+    print(f"  Branching (top_k):{bfacs}")
+    print(f"  Total configs:    {len(configs)}  ({len(depths)} depths × {len(bfacs)} b-factors)")
+    # Print token budget grid
+    print(f"  Token budget grid (total_token per (b, d)):")
+    hdr_b = "  " + " " * 10 + "".join(f"  d={d:2d}" for d in depths)
+    print(hdr_b)
+    for b in bfacs:
+        row_tt = "".join(f"  {_default_total_token(b,d):4d}" + ("★" if b==10 and d==7 else " ")
+                         for d in depths)
+        mark = " ← default" if b == 10 else ""
+        print(f"  b={b:>2d} (top_k)  {row_tt}{mark}")
+    print(f"  (★ = EAGLE-3 default config)")
     if _hf_token:
-        print(f"  HF token: {_hf_token[:8]}…")
+        print(f"  HF token:         {_hf_token[:8]}…")
     p = torch.cuda.get_device_properties(0)
-    print(f"  GPU:      {p.name}  SM {p.major}.{p.minor}  "
+    print(f"  GPU:              {p.name}  SM {p.major}.{p.minor}  "
           f"{p.total_memory // 1024**3} GB")
     print("=" * 72)
 
@@ -991,11 +1015,15 @@ def main() -> None:
             writer.writerows(all_rows)
         print(f"\n  Saved: {csv_path}")
 
-    # Also write the summary table as a separate CSV for easy plotting.
+    # Summary CSV — one row per (b, d) config.
     summary_csv = os.path.join(args.out_dir, "e2e_summary.csv")
     if summary_rows:
-        s_fields = list(summary_rows[0].keys())
-        # ensure all rows have all fields
+        # Collect all keys across rows (some may be absent if a mode was skipped)
+        s_fields: List[str] = []
+        for row in summary_rows:
+            for k in row.keys():
+                if k not in s_fields:
+                    s_fields.append(k)
         for row in summary_rows:
             for k in s_fields:
                 row.setdefault(k, "")
@@ -1005,50 +1033,76 @@ def main() -> None:
             writer.writerows(summary_rows)
         print(f"  Saved: {summary_csv}")
 
-    # ── Final summary ────────────────────────────────────────────────────────
+    # ── Final summary: 2D pivot tables ───────────────────────────────────────
     print(f"\n{'=' * 72}")
-    print("  E2E BENCHMARK COMPLETE — DEPTH SWEEP RESULTS")
+    print("  E2E BENCHMARK COMPLETE  —  depth × branching factor grid")
     print(f"{'=' * 72}")
-    print()
-    hdr = f"  {'depth':>5s}  {'tt':>4s}  {'vanilla tok/s':>14s}  {'ragged tok/s':>13s}  {'E2E speedup':>12s}  {'vanilla acc/step':>17s}  {'ragged acc/step':>16s}"
-    print(hdr)
-    print("  " + "─" * (len(hdr) - 2))
-    for s in summary_rows:
-        v_tok = s.get("vanilla_tok_s", "")
-        r_tok = s.get("ragged_tok_s", "")
-        spd   = s.get("e2e_speedup", "")
-        v_acc = s.get("vanilla_acc", "")
-        r_acc = s.get("ragged_acc", "")
-        v_str = f"{v_tok:>14.1f}" if isinstance(v_tok, (int, float)) else f"{'—':>14s}"
-        r_str = f"{r_tok:>13.1f}" if isinstance(r_tok, (int, float)) else f"{'—':>13s}"
-        s_str = f"{spd:>11.3f}×" if isinstance(spd, (int, float)) else f"{'—':>12s}"
-        va_s  = f"{v_acc:>17.3f}" if isinstance(v_acc, (int, float)) else f"{'—':>17s}"
-        ra_s  = f"{r_acc:>16.3f}" if isinstance(r_acc, (int, float)) else f"{'—':>16s}"
-        print(f"  {s['depth']:>5d}  {s['total_token']:>4d}  {v_str}  {r_str}  {s_str}  {va_s}  {ra_s}")
-    print()
 
-    # ── Identify crossover ───────────────────────────────────────────────────
-    speedups = [(s["depth"], s["e2e_speedup"])
-                for s in summary_rows
-                if isinstance(s.get("e2e_speedup"), (int, float))
-                and not math.isnan(s["e2e_speedup"])]
-    if speedups:
-        wins  = [(d, sp) for d, sp in speedups if sp > 1.0]
-        loses = [(d, sp) for d, sp in speedups if sp <= 1.0]
-        best  = max(speedups, key=lambda x: x[1])
-        print(f"  Best speedup: {best[1]:.3f}× at depth={best[0]}")
-        if wins and loses:
-            threshold = min(d for d, _ in wins)
-            print(f"  Crossover threshold: ragged wins at depth ≥ {threshold}")
-        elif wins:
-            print(f"  Ragged kernel wins at ALL tested depths ({min(d for d,_ in wins)}–{max(d for d,_ in wins)})")
-        else:
-            print("  Ragged kernel does not win at any tested depth "
-                  "(tree too small / overhead dominates)")
+    # Helper: look up summary value for (b, d)
+    def _s(b: int, d: int, key: str):
+        for row in summary_rows:
+            if row["top_k"] == b and row["depth"] == d:
+                v = row.get(key, "")
+                return v if isinstance(v, (int, float)) and not (
+                    isinstance(v, float) and math.isnan(v)
+                ) else None
+        return None
+
+    def _pivot(metric_key: str, fmt: str, title: str) -> None:
+        print(f"\n  {title}")
+        col_w = 8
+        # header row
+        hline = "  " + f"{'b \\ d':>6s}" + "".join(f"{d:>{col_w}d}" for d in depths)
+        print(hline)
+        print("  " + "─" * (len(hline) - 2))
+        for b in bfacs:
+            cells = []
+            for d in depths:
+                v = _s(b, d, metric_key)
+                if v is None:
+                    cells.append(f"{'—':>{col_w}s}")
+                else:
+                    mark = "★" if b == 10 and d == 7 else " "
+                    cells.append(f"{fmt.format(v)+mark:>{col_w}s}")
+            b_mark = " ← default" if b == 10 else ""
+            print(f"  {f'b={b}':>6s}" + "".join(cells) + b_mark)
+
+    _pivot("e2e_speedup",    "{:.3f}×", "E2E Speedup  (ragged tok/s / vanilla tok/s — >1 means ragged wins)")
+    _pivot("vanilla_tok_s",  "{:.1f}",  "Vanilla Eagle-3  tok/s")
+    _pivot("ragged_tok_s",   "{:.1f}",  "Ragged-kernel Eagle-3  tok/s")
+    _pivot("vanilla_acc",    "{:.2f}",  "Mean accepted tokens/step  (vanilla)")
+
+    # ── Per-b crossover analysis ──────────────────────────────────────────────
+    print(f"\n  {'─' * 68}")
+    print("  Crossover analysis  (min depth where ragged first beats vanilla, per b)")
+    print(f"  {'─' * 68}")
+    all_speedups = [
+        (s["top_k"], s["depth"], s["e2e_speedup"])
+        for s in summary_rows
+        if isinstance(s.get("e2e_speedup"), (int, float))
+        and not math.isnan(float(s["e2e_speedup"]))
+    ]
+    if all_speedups:
+        best_overall = max(all_speedups, key=lambda x: x[2])
+        print(f"  Overall best: {best_overall[2]:.3f}× at b={best_overall[0]}, d={best_overall[1]}")
+        print()
+        for b in bfacs:
+            group = sorted(
+                [(d, sp) for bv, d, sp in all_speedups if bv == b],
+                key=lambda x: x[0],
+            )
+            wins  = [d for d, sp in group if sp > 1.0]
+            b_mark = " (EAGLE-3 default top_k)" if b == 10 else ""
+            if wins:
+                best_d, best_sp = max(group, key=lambda x: x[1])
+                xover = min(wins)
+                print(f"  b={b}{b_mark}:  ragged wins at d ≥ {xover}  "
+                      f"(best {best_sp:.3f}× at d={best_d})")
+            else:
+                print(f"  b={b}{b_mark}:  ragged does not win at any tested depth")
     print()
-    print("  NOTE: Kernel-level microbenchmarks (sdpa_tree vs ragged vs FlashInfer")
-    print("  vs DeFT) are in scripts/benchmark_sota.py — not duplicated here.")
-    print("  A focused micro-bench for paper figures is in scripts/benchmark_micro.py.")
+    print("  Kernel microbenchmarks (SDPA vs FlashInfer vs DeFT): benchmark_sota.py")
+    print("  Paper-figure micro-bench (BS=8,16 × b × d):          benchmark_micro.py")
     print(f"{'=' * 72}")
     print()
 
