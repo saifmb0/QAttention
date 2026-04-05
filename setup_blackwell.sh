@@ -177,18 +177,25 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
     # EAGLE's runtime code is compatible with any recent torch.
     # We install transformers, accelerate, fschat, and sentencepiece separately
     # so EAGLE's actual runtime imports are satisfied.
+    #
+    # transformers>=4.46.0 required: LossKwargs added in 4.46 (used by
+    # eagle/model/modeling_qwen3_kv.py).  We always upgrade transformers first,
+    # even if EAGLE is already installed, to fix older installs.
+    info "  Ensuring transformers>=4.46.0 (required by EAGLE modeling_qwen3_kv) …"
+    $PIP install --quiet --upgrade "transformers>=4.46.0" 2>/dev/null || \
+        warn "  transformers upgrade failed — EAGLE may not import correctly."
+
     if $PYTHON -c "from eagle.model.ea_model import EaModel" 2>/dev/null; then
-        info "  EAGLE: already installed — skipping."
+        info "  EAGLE: already installed and importable."
     else
         info "  Installing EAGLE (speculative decoding framework) …"
-        # Step 1: runtime deps that eagle-llm uses (not covered by --no-deps)
+        # Install remaining runtime deps (--no-deps won't pull these)
         $PIP install --quiet \
-            "transformers>=4.38.0" \
             "accelerate>=0.27.0" \
             "sentencepiece" \
             "fschat" \
             2>/dev/null || true
-        # Step 2: EAGLE itself — bypass the torch==2.0.1 metadata pin
+        # Install EAGLE itself — bypass the erroneous torch==2.0.1 metadata pin
         if $PIP install --quiet --no-deps \
                "git+https://github.com/SafeAILab/EAGLE.git" \
                2>/dev/null \
@@ -197,7 +204,7 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
         else
             warn "  EAGLE install failed — E2E benchmark will require --skip-generation."
             warn "  Manual: pip install --no-deps git+https://github.com/SafeAILab/EAGLE.git"
-            warn "          pip install transformers accelerate sentencepiece fschat"
+            warn "          pip install transformers>=4.46.0 accelerate sentencepiece fschat"
         fi
     fi
 
