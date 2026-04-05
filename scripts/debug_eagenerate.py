@@ -45,6 +45,7 @@ def run_debug():
                 max_new_tokens=64,
                 temperature=0.0,
                 do_sample=False,
+                use_cache=False, # Bypass DynamicCache compatibility in the modified Llama codes
                 pad_token_id=model.tokenizer.eos_token_id,
             )
             base_output_text = model.tokenizer.decode(base_out[0, input_ids.shape[1]:])
@@ -60,6 +61,7 @@ def run_debug():
                 max_new_tokens=64,
                 temperature=0.0,
                 do_sample=False,
+                use_cache=False, # Bypass DynamicCache compatibility in the modified Llama codes
                 pad_token_id=model.tokenizer.eos_token_id,
             )
             base_output_text = model.tokenizer.decode(base_out[0, input_ids.shape[1]:])
