@@ -482,7 +482,10 @@ def run_generation(
             input_ids, model, past_kv, None
         )
 
-        padding = (torch.zeros(1, 1, dtype=torch.long) - 1).to(device)
+        # Create padding on the same device as `draft_tokens` to avoid
+        # cross-GPU concatenation errors when model parts are sharded
+        # across devices (device_map="auto").
+        padding = torch.full((1, 1), -1, dtype=torch.long, device=draft_tokens.device)
         new_token   = 0
         verify_ms_list: List[float] = []
         accepted_list:  List[int]   = []
