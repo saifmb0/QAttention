@@ -171,20 +171,33 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
     # ── EAGLE (NeurIPS'25) — speculative decoding framework ──────────────────
     # SafeAILab/EAGLE provides EaModel with eagenerate() for Eagle-1/2/3.
     # Used in e2e_benchmark.py for real speculative decoding evaluation.
-    # Requires fschat for conversation templates.
+    #
+    # eagle-llm==3.0.0 pins torch==2.0.1 in its metadata, which conflicts with
+    # our torch 2.8+.  We install with --no-deps to skip that metadata check —
+    # EAGLE's runtime code is compatible with any recent torch.
+    # We install transformers, accelerate, fschat, and sentencepiece separately
+    # so EAGLE's actual runtime imports are satisfied.
     if $PYTHON -c "from eagle.model.ea_model import EaModel" 2>/dev/null; then
         info "  EAGLE: already installed — skipping."
     else
         info "  Installing EAGLE (speculative decoding framework) …"
-        if $PIP install --quiet \
+        # Step 1: runtime deps that eagle-llm uses (not covered by --no-deps)
+        $PIP install --quiet \
+            "transformers>=4.38.0" \
+            "accelerate>=0.27.0" \
+            "sentencepiece" \
+            "fschat" \
+            2>/dev/null || true
+        # Step 2: EAGLE itself — bypass the torch==2.0.1 metadata pin
+        if $PIP install --quiet --no-deps \
                "git+https://github.com/SafeAILab/EAGLE.git" \
-               "fschat" \
                2>/dev/null \
            && $PYTHON -c "from eagle.model.ea_model import EaModel; print('EAGLE installed OK')" 2>/dev/null; then
             info "  EAGLE installed successfully."
         else
             warn "  EAGLE install failed — E2E benchmark will require --skip-generation."
-            warn "  Manual: pip install git+https://github.com/SafeAILab/EAGLE.git fschat"
+            warn "  Manual: pip install --no-deps git+https://github.com/SafeAILab/EAGLE.git"
+            warn "          pip install transformers accelerate sentencepiece fschat"
         fi
     fi
 
