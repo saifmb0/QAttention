@@ -81,8 +81,8 @@ def _tree_n(b: int, d: int, token_cap: int = 0) -> int:
 # Eagle-3 operates at b∈{8-12}, d=7 (N~48-72).  We push d up to 20 so N
 # reaches 200+ at b=12, revealing the asymptotic speedup ceiling.
 DEFAULT_BATCH_SIZES       = [8, 16, 32, 64]
-DEFAULT_BRANCHING_FACTORS = [8, 10, 12]
-DEFAULT_DEPTHS            = [5, 7, 9, 12, 14, 16, 20]
+DEFAULT_BRANCHING_FACTORS = [8, 10, 12, 14]
+DEFAULT_DEPTHS            = [5, 7, 9, 12, 14, 16, 20, 24]
 DEFAULT_TOKEN_CAP         = 0     # 0 = no cap; E2E benchmark uses 120
 DEFAULT_NUM_HEADS         = 32    # LLaMA-3.1-8B
 DEFAULT_HEAD_DIM          = 128   # LLaMA-3.1-8B
