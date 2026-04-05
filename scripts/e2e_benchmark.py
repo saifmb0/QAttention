@@ -76,6 +76,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import importlib.util
 import math
@@ -92,7 +93,7 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.ragged_attn import ragged_attention
+from src.ragged_attn import ragged_attention, ragged_attention_with_lse
 from src.tree_mask import num_tree_nodes, tree_attention_mask
 
 
@@ -358,12 +359,17 @@ def run_generation(
     model_type: str,
     max_new_tokens: int,
     is_llama3: bool,
+    use_ragged: bool = False,
+    branching_factor: int = 4,
+    max_depth: int = 7,
 ) -> List[GenerationRecord]:
     """
-    Run vanilla Eagle-3 eagenerate() on every prompt.
+    Run Eagle-3 eagenerate() on every prompt.
 
-    Each tree_decoding() call is timed with a pair of CUDA events so we
-    know exactly how much wall time is spent in verification.
+    When use_ragged=True, F.scaled_dot_product_attention is patched for each
+    tree_decoding() call so the intra-tree Q×K block uses the ragged Triton
+    kernel + prefix flash + online-LSE merge instead of vanilla SDPA+tree-mask.
+    Each tree_decoding() call is timed with a pair of CUDA events.
     """
     from eagle.model.utils import (
         initialize_tree, tree_decoding, evaluate_posterior,
@@ -411,9 +417,15 @@ def run_generation(
             e0 = torch.cuda.Event(enable_timing=True)
             e1 = torch.cuda.Event(enable_timing=True)
             e0.record()
-            logits, hidden_new, _ = tree_decoding(
-                model, draft_tokens, past_kv, tree_pos_ids, input_ids, retrieve_idx,
-            )
+            if use_ragged:
+                with ragged_eagle_context(branching_factor, max_depth):
+                    logits, hidden_new, _ = tree_decoding(
+                        model, draft_tokens, past_kv, tree_pos_ids, input_ids, retrieve_idx,
+                    )
+            else:
+                logits, hidden_new, _ = tree_decoding(
+                    model, draft_tokens, past_kv, tree_pos_ids, input_ids, retrieve_idx,
+                )
             e1.record()
             torch.cuda.synchronize()
             verify_ms_list.append(e0.elapsed_time(e1))
@@ -482,6 +494,118 @@ def run_generation(
         )
 
     return records
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ragged-kernel SDPA hook + context manager
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ragged_attn_sdpa_hook(
+    query:     torch.Tensor,
+    key:       torch.Tensor,
+    value:     torch.Tensor,
+    attn_mask=None,
+    dropout_p: float = 0.0,
+    is_causal: bool  = False,
+    scale:     Optional[float] = None,
+    *,
+    _b:        int,
+    _d:        int,
+    _orig_sdpa,
+) -> torch.Tensor:
+    """
+    Drop-in for F.scaled_dot_product_attention during Eagle-3 tree_decoding.
+
+    Distinguishes tree verification from other attention calls:
+      Prefill / draft-network:  key.shape[-2] == query.shape[-2]  → pass-through
+      Tree verification:        key.shape[-2]  > query.shape[-2]  → intercept
+
+    For tree verification:
+      1. Dense flash attention over prefix KV  Q × K[:N_prefix]  → O_p, lse_p
+      2. Ragged ancestor-sparse kernel over tree Q × K[N_prefix:] → O_t, lse_t
+      3. Online-softmax merge:
+             O = (exp(lse_p)*O_p + exp(lse_t)*O_t) / (exp(lse_p) + exp(lse_t))
+    """
+    # Non-tree SDPA calls: pass through unchanged
+    if key.dim() != 4 or key.shape[-2] <= query.shape[-2]:
+        return _orig_sdpa(query, key, value, attn_mask, dropout_p, is_causal, scale)
+
+    B, H, N_q, D = query.shape
+    N_prefix = key.shape[-2] - N_q
+    scale_v  = scale if scale is not None else (1.0 / math.sqrt(D))
+
+    # ── Part 1: dense prefix attention ──────────────────────────────────────
+    K_pre = key[:, :, :N_prefix, :].contiguous()    # [B, H, N_prefix, D]
+    V_pre = value[:, :, :N_prefix, :].contiguous()
+    if N_prefix > 0:
+        try:
+            out_pre, lse_pre, *_ = torch.ops.aten._scaled_dot_product_flash_attention(
+                query.contiguous(), K_pre, V_pre,
+                dropout_p=0.0, is_causal=False, scale=scale_v,
+                return_debug_mask=False,
+            )
+            # lse_pre: [B, H, N_q]  (flash returns log-sum-exp per token/head)
+        except Exception:
+            # Fallback: manual numerically stable computation
+            sc = torch.matmul(query, K_pre.transpose(-2, -1)) * scale_v
+            lse_pre = torch.logsumexp(sc.float(), dim=-1)    # [B, H, N_q]
+            out_pre = torch.softmax(sc, dim=-1) @ V_pre      # [B, H, N_q, D]
+
+    # ── Part 2: ragged intra-tree attention ─────────────────────────────────
+    K_tree = key[:, :, N_prefix:, :].contiguous()    # [B, H, N_q, D]
+    V_tree = value[:, :, N_prefix:, :].contiguous()
+
+    # Pack [B, H, N_q, D] → [B*N_q, H, D]
+    Q_r = query.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
+    K_r = K_tree.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
+    V_r = V_tree.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
+    cu  = torch.arange(0, (B + 1) * N_q, N_q, dtype=torch.int32, device=query.device)
+
+    out_tree_r, lse_tree_r = ragged_attention_with_lse(Q_r, K_r, V_r, cu, _b, _d)
+    # Unpack [B*N_q, H, D] → [B, H, N_q, D]  and  [B*N_q, H] → [B, H, N_q]
+    out_tree = out_tree_r.view(B, N_q, H, D).permute(0, 2, 1, 3)
+    lse_tree = lse_tree_r.view(B, N_q, H).permute(0, 2, 1)
+
+    # ── Part 3: online-softmax merge ────────────────────────────────────────
+    if N_prefix == 0:
+        return out_tree.to(query.dtype)
+
+    lse_p   = lse_pre.float()   # [B, H, N_q]
+    lse_t   = lse_tree.float()  # [B, H, N_q]
+    lse_max = torch.maximum(lse_p, lse_t)
+    w_p     = torch.exp(lse_p - lse_max)
+    w_t     = torch.exp(lse_t - lse_max)
+    w_sum   = (w_p + w_t).clamp_min(1e-8).unsqueeze(-1)   # [B, H, N_q, 1]
+    out     = (w_p.unsqueeze(-1) * out_pre.float()
+               + w_t.unsqueeze(-1) * out_tree.float()) / w_sum
+    return out.to(query.dtype)
+
+
+@contextlib.contextmanager
+def ragged_eagle_context(branching_factor: int, max_depth: int):
+    """
+    Context manager that patches F.scaled_dot_product_attention to route
+    Eagle-3's tree-verification forward pass through the ragged Triton kernel
+    + prefix flash attention + online-LSE merge.
+
+    All non-tree SDPA calls (draft network, prefill) pass through unchanged.
+    The patch is applied only within the with-block and restored on exit.
+    """
+    import torch.nn.functional as _F_mod
+    _orig = _F_mod.scaled_dot_product_attention
+
+    def _hook(query, key, value, attn_mask=None, dropout_p=0.0,
+              is_causal=False, scale=None):
+        return _ragged_attn_sdpa_hook(
+            query, key, value, attn_mask, dropout_p, is_causal, scale,
+            _b=branching_factor, _d=max_depth, _orig_sdpa=_orig,
+        )
+
+    _F_mod.scaled_dot_product_attention = _hook
+    try:
+        yield
+    finally:
+        _F_mod.scaled_dot_product_attention = _orig
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -771,6 +895,8 @@ def main() -> None:
                         help="Estimated prompt length for Amdahl intra-tree fraction")
     # Control
     parser.add_argument("--skip-generation", action="store_true")
+    parser.add_argument("--skip-ragged",     action="store_true",
+                        help="Skip Step 1b (ragged-kernel E2E generation)")
     parser.add_argument("--skip-kernel",     action="store_true")
     parser.add_argument("--out-dir",  default="results")
     parser.add_argument("--csv-name", default="e2e_benchmark.csv")
@@ -821,7 +947,8 @@ def main() -> None:
     n_heads, head_dim = 32, 128  # LLaMA-3.1-8B defaults
 
     # ── Step 1: Vanilla Eagle-3 generation ──────────────────────────────────
-    gen_records: List[GenerationRecord] = []
+    gen_records:    List[GenerationRecord] = []
+    ragged_records: List[GenerationRecord] = []
 
     if not args.skip_generation:
         if not HAS_EAGLE:
@@ -864,6 +991,36 @@ def main() -> None:
             print(f"    acceptance rate      : {acc_r:.1%}")
             print(f"    verify latency       : {vms:.1f} ms/step")
             print(f"    verify time fraction : {vfrac:.0%}")
+
+        # ── Step 1b: Ragged-kernel Eagle-3 generation ───────────────────────
+        if not args.skip_ragged:
+            print(f"\n{'─' * 70}")
+            print("  STEP 1b —  Ragged-kernel Eagle-3 generation  (patched SDPA)")
+            print(f"{'─' * 70}")
+            print(f"  Branching factor b={args.top_k}, depth d={args.depth}")
+            print("  (intra-tree Q×K → ragged Triton; prefix Q×K → flash; outputs merged via LSE)")
+
+            ragged_records = run_generation(
+                model, prompts, args.model_type,
+                max_new_tokens=args.max_new_tokens,
+                is_llama3=is_llama3,
+                use_ragged=True,
+                branching_factor=args.top_k,
+                max_depth=args.depth,
+            )
+
+            if ragged_records:
+                r_tok_s = np.mean([r.tok_per_sec for r in ragged_records])
+                r_vms   = np.mean([r.mean_verify_ms for r in ragged_records])
+                r_vfrac = np.mean([r.verify_fraction for r in ragged_records])
+                v_tok_s = np.mean([r.tok_per_sec for r in gen_records]) if gen_records else 0
+                print()
+                print(f"  Summary ({len(ragged_records)} prompts, ragged kernel):")
+                print(f"    tok/s                : {r_tok_s:.1f}")
+                print(f"    verify latency       : {r_vms:.1f} ms/step")
+                print(f"    verify time fraction : {r_vfrac:.0%}")
+                if gen_records:
+                    print(f"    speedup vs vanilla   : {r_tok_s / v_tok_s:.3f}×")
 
         del model
         torch.cuda.empty_cache()
@@ -935,7 +1092,26 @@ def main() -> None:
     for r in gen_records:
         rows.append({
             "phase":                    "generation",
-            "mode":                     "vanilla_eagle3",
+            "mode":                     "vanilla",
+            "kernel":                   "sdpa_tree",
+            "model":                    args.base_model,
+            "eagle_model":              args.eagle_model,
+            "prompt":                   r.prompt,
+            "num_tokens":               r.num_tokens,
+            "num_steps":                r.num_steps,
+            "wall_ms":                  round(r.wall_ms, 1),
+            "tok_per_sec":              round(r.tok_per_sec, 1),
+            "mean_accepted_per_step":   round(r.mean_accepted_per_step, 3),
+            "acceptance_rate":          round(r.acceptance_rate, 4),
+            "mean_verify_ms":           round(r.mean_verify_ms, 3),
+            "verify_fraction":          round(r.verify_fraction, 4),
+        })
+
+    for r in ragged_records:
+        rows.append({
+            "phase":                    "generation",
+            "mode":                     "ragged",
+            "kernel":                   "ragged_triton",
             "model":                    args.base_model,
             "eagle_model":              args.eagle_model,
             "prompt":                   r.prompt,
@@ -980,8 +1156,13 @@ def main() -> None:
     print("  BENCHMARK COMPLETE")
     print(f"{'=' * 70}")
     if gen_records:
-        print(f"  Vanilla Eagle-3 tok/s :   "
-              f"{np.mean([r.tok_per_sec for r in gen_records]):.1f}")
+        v_tok_s = np.mean([r.tok_per_sec for r in gen_records])
+        print(f"  Vanilla Eagle-3 tok/s :   {v_tok_s:.1f}")
+    if ragged_records:
+        r_tok_s = np.mean([r.tok_per_sec for r in ragged_records])
+        print(f"  Ragged-kernel tok/s   :   {r_tok_s:.1f}")
+        if gen_records:
+            print(f"  Actual E2E speedup    :   {r_tok_s / v_tok_s:.3f}×")
     if kernel_records:
         spd = [r.speedup for r in kernel_records
                if r.method == "ragged" and not math.isnan(r.speedup)]

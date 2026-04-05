@@ -387,6 +387,186 @@ def _ragged_attn_sparse_kernel(
 
 
 # ---------------------------------------------------------------------------
+# LSE variant — same ancestor-sparse kernel but also writes
+#   lse[token, head] = m_i + log(l_i)   (log-sum-exp, float32)
+# Used by ragged_attention_with_lse() for the online-softmax prefix merge.
+# ---------------------------------------------------------------------------
+
+@triton.autotune(
+    configs=_get_autotune_configs(),
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH"],
+)
+@triton.jit
+def _ragged_attn_sparse_kernel_lse(
+    Q_ptr, K_ptr, V_ptr, O_ptr, LSE_ptr,
+    cu_seqlens_ptr,
+    stride_qt, stride_qh, stride_qd,
+    stride_kt, stride_kh, stride_kd,
+    stride_vt, stride_vh, stride_vd,
+    stride_ot, stride_oh, stride_od,
+    stride_lse_t, stride_lse_h,
+    scale,
+    max_seqlen,
+    H:                tl.constexpr,
+    HEAD_DIM:         tl.constexpr,
+    BRANCHING_FACTOR: tl.constexpr,
+    MAX_DEPTH:        tl.constexpr,
+    BLOCK_M:          tl.constexpr,
+):
+    pid0   = tl.program_id(0)
+    m_tile = tl.program_id(1)
+
+    seq_idx  = pid0 // H
+    head_idx = pid0  % H
+
+    seq_start = tl.load(cu_seqlens_ptr + seq_idx)
+    seq_end   = tl.load(cu_seqlens_ptr + seq_idx + 1)
+    seq_len   = seq_end - seq_start
+
+    q_off = m_tile * BLOCK_M
+    if q_off >= seq_len:
+        return
+
+    m_range  = tl.arange(0, BLOCK_M)
+    d_range  = tl.arange(0, HEAD_DIM)
+    valid_q  = (m_range + q_off) < seq_len
+    q_global = (seq_start + q_off + m_range).to(tl.int64)
+
+    q_ptrs = (Q_ptr
+              + q_global[:, None] * stride_qt
+              + head_idx          * stride_qh
+              + d_range  [None,:] * stride_qd)
+    q = tl.load(q_ptrs, mask=valid_q[:, None], other=0.0)
+    _out_dtype = q.dtype
+
+    m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M],              dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, HEAD_DIM],    dtype=tl.float32)
+
+    cur  = (m_range + q_off).to(tl.int32)
+    prev = tl.full([BLOCK_M], -1, dtype=tl.int32)
+
+    for _step in range(MAX_DEPTH + 1):
+        is_new = (cur != prev) & valid_q
+        kv_abs = (seq_start + cur).to(tl.int64)
+
+        k_ptrs = (K_ptr
+                  + kv_abs[:, None] * stride_kt
+                  + head_idx        * stride_kh
+                  + d_range [None,:] * stride_kd)
+        k_anc = tl.load(k_ptrs, mask=is_new[:, None], other=0.0)
+
+        raw   = tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale
+        s     = tl.where(is_new, raw, float("-inf"))
+
+        m_new = tl.maximum(m_i, s)
+        alpha = tl.exp(m_i - m_new)
+        p     = tl.exp(s   - m_new)
+        p_pos = tl.where(is_new, p, 0.0)
+
+        v_ptrs = (V_ptr
+                  + kv_abs[:, None] * stride_vt
+                  + head_idx        * stride_vh
+                  + d_range [None,:] * stride_vd)
+        v_anc = tl.load(v_ptrs, mask=is_new[:, None], other=0.0)
+
+        l_i = l_i * alpha + p_pos
+        acc = acc * alpha[:, None] + p_pos[:, None] * v_anc.to(tl.float32)
+        m_i = m_new
+
+        prev = cur
+        cur  = tl.maximum(cur - 1, tl.zeros_like(cur)) // BRANCHING_FACTOR
+
+    l_safe = tl.where(l_i == 0.0, 1.0, l_i)
+
+    # Write lse = m_i + log(l_i)  [total_tokens, H]
+    lse_ptrs = (LSE_ptr
+                + q_global * stride_lse_t
+                + head_idx * stride_lse_h)
+    tl.store(lse_ptrs, m_i + tl.log(l_safe), mask=valid_q)
+
+    # Normalise and write output
+    acc = acc / l_safe[:, None]
+    o_ptrs = (O_ptr
+              + q_global[:, None] * stride_ot
+              + head_idx          * stride_oh
+              + d_range  [None,:] * stride_od)
+    tl.store(o_ptrs, acc.to(_out_dtype), mask=valid_q[:, None])
+
+
+def ragged_attention_with_lse(
+    Q:  torch.Tensor,
+    K:  torch.Tensor,
+    V:  torch.Tensor,
+    cu_seqlens:       torch.Tensor,
+    branching_factor: int,
+    max_depth:        int,
+) -> tuple:
+    """Ancestor-sparse attention returning (output, lse) for online-softmax merging.
+
+    Same algorithm as ragged_attention() but also returns the per-token per-head
+    log-sum-exp needed to merge this block's output with another attention block
+    (e.g., the prefix KV-cache) via the standard FA2 split-softmax formula:
+
+        O = (exp(lse_a) * O_a + exp(lse_b) * O_b) / (exp(lse_a) + exp(lse_b))
+
+    Returns
+    -------
+    O   : same dtype as Q,  [Σ L_i, H, D]
+    lse : float32,          [Σ L_i, H]    — log(Σ exp(score_j)) for each (token, head)
+    """
+    _SUPPORTED = (torch.float16, torch.bfloat16)
+    assert Q.dtype in _SUPPORTED and Q.dtype == K.dtype == V.dtype, (
+        f"Inputs must be fp16 or bf16 (got {Q.dtype})"
+    )
+
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(Q.device)
+        if Q.dtype == torch.bfloat16 and (props.major, props.minor) < (8, 9):
+            Q, K, V = Q.to(torch.float16), K.to(torch.float16), V.to(torch.float16)
+            _cast_back = True
+        else:
+            _cast_back = False
+    else:
+        _cast_back = False
+
+    total_tokens, H, D = Q.shape
+    B      = int(cu_seqlens.shape[0]) - 1
+    device = Q.device
+    scale  = 1.0 / math.sqrt(D)
+
+    cu_sl_cpu  = cu_seqlens.cpu()
+    sl_list    = cu_sl_cpu.tolist()
+    max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+
+    cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
+
+    O   = torch.empty_like(Q)
+    LSE = torch.empty(total_tokens, H, dtype=torch.float32, device=device)
+
+    grid = lambda meta: (B * H, triton.cdiv(max_seqlen, meta["BLOCK_M"]))
+
+    _ragged_attn_sparse_kernel_lse[grid](
+        Q, K, V, O, LSE,
+        cu_seqlens_dev,
+        Q.stride(0),   Q.stride(1),   Q.stride(2),
+        K.stride(0),   K.stride(1),   K.stride(2),
+        V.stride(0),   V.stride(1),   V.stride(2),
+        O.stride(0),   O.stride(1),   O.stride(2),
+        LSE.stride(0), LSE.stride(1),
+        scale,
+        max_seqlen,
+        H=H,
+        HEAD_DIM=D,
+        BRANCHING_FACTOR=branching_factor,
+        MAX_DEPTH=max_depth,
+    )
+    if _cast_back:
+        O = O.to(torch.bfloat16)
+    return O, LSE
+
+
+# ---------------------------------------------------------------------------
 # Paged KV-Cache variant
 # ---------------------------------------------------------------------------
 # PagedAttention (vLLM) stores K/V in non-contiguous 16-token pages.
