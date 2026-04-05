@@ -22,9 +22,21 @@ def run_debug():
 
     print("\n--- Testing Base Model native generate ---")
     try:
-        # Generate using just the base model to isolate if the base model is corrupted
-        # (e.g. from float16 on T4, or device_map="auto" issues)
-        base_out = model.base_model.generate(
+        # LlamaForCausalLM is wrapped or we just need to use its generate method.
+        # Sometimes base_model is just a PyTorch module missing GenerationMixin if imported weirdly,
+        # but typically we can do `model.model.generate` or import AutoModelForCausalLM.
+        import transformers
+        if hasattr(model.base_model, "generate"):
+            gen_func = model.base_model.generate
+        else:
+            # Fallback for some EAGLE versions where base_model doesn't inherit GenerationMixin
+            from transformers import GenerationMixin
+            class Wrapper(model.base_model.__class__, GenerationMixin):
+                pass
+            model.base_model.__class__ = Wrapper
+            gen_func = model.base_model.generate
+            
+        base_out = gen_func(
             input_ids,
             max_new_tokens=64,
             temperature=0.0,
