@@ -378,12 +378,14 @@ def run_generation(
         mean_vms = tot_vms / n_steps if n_steps else 0.0
         vfrac    = tot_vms / wall_ms  if wall_ms  else 0.0
 
+        n_new = int(new_token)  # update_inference_inputs returns a CUDA tensor
+
         rec = GenerationRecord(
             prompt=raw[:80],
-            num_tokens=new_token,
+            num_tokens=n_new,
             num_steps=n_steps,
             wall_ms=wall_ms,
-            tok_per_sec=new_token / (wall_ms / 1000) if wall_ms else 0.0,
+            tok_per_sec=n_new / (wall_ms / 1000) if wall_ms else 0.0,
             mean_accepted_per_step=mean_a,
             acceptance_rate=acc_rate,
             mean_verify_ms=mean_vms,
@@ -392,12 +394,12 @@ def run_generation(
         records.append(rec)
 
         snippet = model.tokenizer.decode(
-            input_ids[0, input_len: input_len + min(new_token, 50)],
+            input_ids[0, input_len: input_len + min(n_new, 50)],
             skip_special_tokens=True,
         )
         print(
             f"  [{pi+1}/{len(prompts)}] "
-            f"{new_token} tok / {n_steps} steps  "
+            f"{n_new} tok / {n_steps} steps  "
             f"accept={mean_a:.2f}/step ({acc_rate:.1%})  "
             f"{rec.tok_per_sec:.1f} tok/s  "
             f"verify={mean_vms:.1f} ms/step ({vfrac:.0%} of time)  "
