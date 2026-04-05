@@ -448,20 +448,33 @@ def run_generation(
     )
     from eagle.model.kv_cache import initialize_past_key_values
 
-    device      = next(model.base_model.parameters()).device
-    total_token = model.ea_layer.total_tokens
+    # ── device resolution ────────────────────────────────────────────────────
+    # With device_map="auto" (e.g. Kaggle 2×T4) the model is sharded: the
+    # embedding lives on cuda:0 while later transformer blocks live on cuda:1.
+    # initialize_tree / tree_decoding return tensors on the *last-layer* device.
+    # We must keep all Eagle-API tensors on the same device; we discover that
+    # canonical device after initialize_tree (see below).
+    prefill_device = next(model.base_model.parameters()).device
+    total_token    = model.ea_layer.total_tokens
     records: List[GenerationRecord] = []
 
     for pi, raw in enumerate(prompts):
-        # LLaMA-3 Instruct: must tokenize via apply_chat_template directly so
-        # that <|begin_of_text|> and friends are encoded as special-token IDs.
-        # Any text-roundtrip (tokenize=False → tokenizer(str)) maps them to
-        # ordinary sub-word tokens and produces degenerate output.
+        # ── tokenise ─────────────────────────────────────────────────────────
+        # LLaMA-3 Instruct: apply_chat_template with tokenize=True so that
+        # <|begin_of_text|> etc. are proper special-token IDs, not sub-words.
         if is_llama3 and hasattr(model.tokenizer, "apply_chat_template"):
-            input_ids = _llama3_input_ids(model.tokenizer, raw, device)
+            input_ids = _llama3_input_ids(model.tokenizer, raw, prefill_device)
         else:
             prompt    = _get_prompt(model_type, raw)
-            input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(device)
+            input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(prefill_device)
+
+        # Diagnostic on first prompt: verify the prompt decoded correctly.
+        if pi == 0:
+            decoded_head = model.tokenizer.decode(input_ids[0, :16], skip_special_tokens=False)
+            print(f"  [diag] input_ids shape={tuple(input_ids.shape)} "
+                  f"device={input_ids.device}  "
+                  f"head tokens: {decoded_head!r}")
+
         input_len = input_ids.shape[1]
         max_len   = input_len + max_new_tokens + total_token + 10
 
@@ -482,10 +495,25 @@ def run_generation(
             input_ids, model, past_kv, None
         )
 
-        # Create padding on the same device as `draft_tokens` to avoid
-        # cross-GPU concatenation errors when model parts are sharded
-        # across devices (device_map="auto").
-        padding = torch.full((1, 1), -1, dtype=torch.long, device=draft_tokens.device)
+        # ── pin all Eagle tensors to a single canonical device ───────────────
+        # With device_map="auto", initialize_tree may return tensors on a
+        # different device than prefill_device (e.g. cuda:1 on Kaggle 2×T4).
+        # Every subsequent Eagle API call must receive tensors on the same
+        # device or the KV cache writes target the wrong GPU and hidden states
+        # are corrupted, producing degenerate repetitive output.
+        tree_device  = draft_tokens.device
+        input_ids    = input_ids.to(tree_device)
+        retrieve_idx = retrieve_idx.to(tree_device)
+        tree_mask    = tree_mask.to(tree_device)
+        tree_pos_ids = tree_pos_ids.to(tree_device)
+        if hidden_state is not None:
+            hidden_state = hidden_state.to(tree_device)
+
+        if pi == 0 and tree_device != prefill_device:
+            print(f"  [diag] multi-GPU detected: prefill={prefill_device} "
+                  f"tree_device={tree_device} — all Eagle tensors pinned to {tree_device}")
+
+        padding = torch.full((1, 1), -1, dtype=torch.long, device=tree_device)
         new_token   = 0
         verify_ms_list: List[float] = []
         accepted_list:  List[int]   = []
@@ -511,11 +539,11 @@ def run_generation(
             torch.cuda.synchronize()
             verify_ms_list.append(e0.elapsed_time(e1))
 
-            # acceptance
+            # acceptance — temperature=0 → greedy (safest default for EAGLE)
             draft_long = torch.cat((draft_tokens, padding), dim=1)
             candidates = draft_long[0, retrieve_idx]
             best_cand, accept_len, sample_p = evaluate_posterior(
-                logits, candidates, None
+                logits, candidates, 0
             )
             (input_ids, draft_tokens, retrieve_idx, tree_mask, tree_pos_ids,
              new_token, hidden_state, sample_token) = update_inference_inputs(
@@ -523,6 +551,13 @@ def run_generation(
                 retrieve_idx, None, new_token,
                 past_kv_data, cur_len_data, model, hidden_new, sample_p,
             )
+
+            # Re-pin after update in case Eagle returns tensors on a different device.
+            input_ids    = input_ids.to(tree_device)
+            draft_tokens = draft_tokens.to(tree_device)
+            retrieve_idx = retrieve_idx.to(tree_device)
+            tree_mask    = tree_mask.to(tree_device)
+            tree_pos_ids = tree_pos_ids.to(tree_device)
             accepted_list.append(int(accept_len.item()) + 1)  # +1 for sampled base token
 
             # termination
