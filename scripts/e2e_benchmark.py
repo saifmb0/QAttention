@@ -448,8 +448,8 @@ def _time_sdpa_tree(
     mask_t  = torch.from_numpy(mask_np).to(Q.device)
     bias    = torch.where(
         mask_t,
-        torch.zeros(1, device=Q.device, dtype=torch.float32),
-        torch.full( (1,), float("-inf"), device=Q.device, dtype=torch.float32),
+        torch.zeros(1, device=Q.device, dtype=Q.dtype),
+        torch.full( (1,), float("-inf"), device=Q.device, dtype=Q.dtype),
     )                                     # [N, N]
     bias4d = bias.unsqueeze(0).unsqueeze(0).expand(B, 1, N, N).contiguous()
 
