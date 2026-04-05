@@ -1,56 +1,121 @@
-acceptance_rate,amdahl_e2e_speedup,amdahl_f,attn_fraction_assumed,batch_size,branching_factor,depth,eagle3_tok_per_sec,eagle_model,head_dim,intra_tree_fraction,kernel,kernel_speedup_b1_median,latency_ms,mean_accepted_per_step,mean_verify_ms,method,mode,model,num_heads,num_steps,num_tokens,num_tree_nodes,phase,projected_tok_per_sec,prompt,speedup_sdpa_tree_over_ragged,tok_per_sec,verify_fraction,wall_ms
-0.1083,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,6.5,45.967,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,24,156,,generation,,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",,62.8,0.4441,2484.0
-0.0963,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,5.778,45.428,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,45,260,,generation,,is decentralized finance just a group of people coming together and pooling thei,,84.3,0.6627,3084.7
-0.0749,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,4.492,45.48,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,59,265,,generation,,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,,68.2,0.6906,3885.4
-0.0741,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,4.444,45.082,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,18,80,,generation,,I want you act as best book seller and I will ask you questions. You have to giv,,64.2,0.6513,1245.9
-0.0768,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,4.607,45.446,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,56,258,,generation,,Authenticating Guest Users for Firebase using laravel,,70.0,0.6903,3686.7
-0.1083,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,6.5,45.166,,ragged,meta-llama/Llama-3.1-8B-Instruct,,24,156,,generation,,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",,97.0,0.6742,1607.7
-0.0963,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,5.778,45.368,,ragged,meta-llama/Llama-3.1-8B-Instruct,,45,260,,generation,,is decentralized finance just a group of people coming together and pooling thei,,87.4,0.6864,2974.4
-0.0749,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,4.492,45.473,,ragged,meta-llama/Llama-3.1-8B-Instruct,,59,265,,generation,,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,,68.2,0.6903,3886.6
-0.0741,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,4.444,45.016,,ragged,meta-llama/Llama-3.1-8B-Instruct,,18,80,,generation,,I want you act as best book seller and I will ask you questions. You have to giv,,65.6,0.6645,1219.4
-0.0768,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,4.607,45.406,,ragged,meta-llama/Llama-3.1-8B-Instruct,,56,258,,generation,,Authenticating Guest Users for Firebase using laravel,,70.1,0.6905,3682.7
-,,,,1,3,3,,,128,,,,0.2588,,,sdpa_tree,,,32,,,40,kernel,,,1.4509,,,
-,,,,1,3,3,,,128,,,,0.1784,,,ragged,,,32,,,40,kernel,,,1.4509,,,
-,,,,1,3,5,,,128,,,,0.6744,,,sdpa_tree,,,32,,,364,kernel,,,3.6277,,,
-,,,,1,3,5,,,128,,,,0.1859,,,ragged,,,32,,,364,kernel,,,3.6277,,,
-,,,,1,3,7,,,128,,,,37.2282,,,sdpa_tree,,,32,,,3280,kernel,,,84.676,,,
-,,,,1,3,7,,,128,,,,0.4397,,,ragged,,,32,,,3280,kernel,,,84.676,,,
-,,,,1,4,3,,,128,,,,0.2599,,,sdpa_tree,,,32,,,85,kernel,,,1.4644,,,
-,,,,1,4,3,,,128,,,,0.1775,,,ragged,,,32,,,85,kernel,,,1.4644,,,
-,,,,1,4,5,,,128,,,,7.0785,,,sdpa_tree,,,32,,,1365,kernel,,,28.0772,,,
-,,,,1,4,5,,,128,,,,0.2521,,,ragged,,,32,,,1365,kernel,,,28.0772,,,
-,,,,1,4,7,,,128,,,,nan,,,sdpa_tree,,,32,,,21845,kernel,,,nan,,,
-,,,,1,4,7,,,128,,,,2.1078,,,ragged,,,32,,,21845,kernel,,,nan,,,
-,,,,8,3,3,,,128,,,,0.2743,,,sdpa_tree,,,32,,,40,kernel,,,1.5252,,,
-,,,,8,3,3,,,128,,,,0.1799,,,ragged,,,32,,,40,kernel,,,1.5252,,,
-,,,,8,3,5,,,128,,,,4.7662,,,sdpa_tree,,,32,,,364,kernel,,,12.3248,,,
-,,,,8,3,5,,,128,,,,0.3867,,,ragged,,,32,,,364,kernel,,,12.3248,,,
-,,,,8,3,7,,,128,,,,nan,,,sdpa_tree,,,32,,,3280,kernel,,,nan,,,
-,,,,8,3,7,,,128,,,,2.6101,,,ragged,,,32,,,3280,kernel,,,nan,,,
-,,,,8,4,3,,,128,,,,0.5764,,,sdpa_tree,,,32,,,85,kernel,,,3.032,,,
-,,,,8,4,3,,,128,,,,0.1901,,,ragged,,,32,,,85,kernel,,,3.032,,,
-,,,,8,4,5,,,128,,,,55.0643,,,sdpa_tree,,,32,,,1365,kernel,,,51.3231,,,
-,,,,8,4,5,,,128,,,,1.0729,,,ragged,,,32,,,1365,kernel,,,51.3231,,,
-,,,,8,4,7,,,128,,,,nan,,,sdpa_tree,,,32,,,21845,kernel,,,nan,,,
-,,,,8,4,7,,,128,,,,16.2969,,,ragged,,,32,,,21845,kernel,,,nan,,,
-,,,,32,3,3,,,128,,,,0.9367,,,sdpa_tree,,,32,,,40,kernel,,,3.9856,,,
-,,,,32,3,3,,,128,,,,0.235,,,ragged,,,32,,,40,kernel,,,3.9856,,,
-,,,,32,3,5,,,128,,,,18.7659,,,sdpa_tree,,,32,,,364,kernel,,,16.2782,,,
-,,,,32,3,5,,,128,,,,1.1528,,,ragged,,,32,,,364,kernel,,,16.2782,,,
-,,,,32,3,7,,,128,,,,nan,,,sdpa_tree,,,32,,,3280,kernel,,,nan,,,
-,,,,32,3,7,,,128,,,,9.8061,,,ragged,,,32,,,3280,kernel,,,nan,,,
-,,,,32,4,3,,,128,,,,2.1645,,,sdpa_tree,,,32,,,85,kernel,,,6.1447,,,
-,,,,32,4,3,,,128,,,,0.3523,,,ragged,,,32,,,85,kernel,,,6.1447,,,
-,,,,32,4,5,,,128,,,,nan,,,sdpa_tree,,,32,,,1365,kernel,,,nan,,,
-,,,,32,4,5,,,128,,,,3.8335,,,ragged,,,32,,,1365,kernel,,,nan,,,
-,,,,128,3,3,,,128,,,,3.6334,,,sdpa_tree,,,32,,,40,kernel,,,6.6884,,,
-,,,,128,3,3,,,128,,,,0.5432,,,ragged,,,32,,,40,kernel,,,6.6884,,,
-,,,,128,3,5,,,128,,,,74.5933,,,sdpa_tree,,,32,,,364,kernel,,,17.4477,,,
-,,,,128,3,5,,,128,,,,4.2752,,,ragged,,,32,,,364,kernel,,,17.4477,,,
-,,,,128,3,7,,,128,,,,nan,,,sdpa_tree,,,32,,,3280,kernel,,,nan,,,
-,,,,128,3,7,,,128,,,,nan,,,ragged,,,32,,,3280,kernel,,,nan,,,
-,,,,128,4,3,,,128,,,,9.0395,,,sdpa_tree,,,32,,,85,kernel,,,9.0917,,,
-,,,,128,4,3,,,128,,,,0.9943,,,ragged,,,32,,,85,kernel,,,9.0917,,,
-,,,,128,4,5,,,128,,,,nan,,,sdpa_tree,,,32,,,1365,kernel,,,nan,,,
-,,,,128,4,5,,,128,,,,15.1867,,,ragged,,,32,,,1365,kernel,,,nan,,,
-,1.133,0.16257,0.35,,,,69.9,,,0.7398,,3.628,,5.164,,,,,,,,,amdahl_projection,79.2,,,,0.6278,
+depth,total_token,top_k,config_label,mode,model,eagle_model,prompt,num_tokens,num_steps,wall_ms,tok_per_sec,mean_accepted_per_step,acceptance_rate,mean_verify_ms,verify_fraction
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,33,2412.7,64.7,4.727,0.1576,42.687,0.5838
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,261,62,3334.3,78.3,4.21,0.1403,41.305,0.768
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,258,74,3916.0,65.9,3.486,0.1162,41.407,0.7825
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,22,1213.7,65.9,3.636,0.1212,41.004,0.7432
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,73,3882.3,66.5,3.534,0.1178,41.481,0.78
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,258,59,3114.1,82.8,4.373,0.1458,41.193,0.7804
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,261,58,3059.9,85.3,4.5,0.15,41.186,0.7807
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",259,84,4412.6,58.7,3.083,0.1028,41.229,0.7848
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",260,68,3594.4,72.3,3.824,0.1275,41.329,0.7819
+3,30,10,d=3 tt=30,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,259,64,3376.5,76.7,4.047,0.1349,41.213,0.7812
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,33,1761.9,88.5,4.727,0.1576,41.102,0.7698
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,261,62,3270.2,79.8,4.21,0.1403,41.199,0.7811
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,258,74,3891.1,66.3,3.486,0.1162,41.22,0.7839
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,22,1189.0,67.3,3.636,0.1212,40.955,0.7578
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,73,3837.1,67.2,3.534,0.1178,41.202,0.7839
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,258,59,3114.0,82.9,4.373,0.1458,41.19,0.7804
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,261,58,3062.3,85.2,4.5,0.15,41.195,0.7802
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",259,84,4411.7,58.7,3.083,0.1028,41.235,0.7851
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",260,68,3590.4,72.4,3.824,0.1275,41.316,0.7825
+3,30,10,d=3 tt=30,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,259,64,3374.0,76.8,4.047,0.1349,41.223,0.7819
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,29,1724.3,90.5,5.379,0.1345,44.732,0.7523
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,257,52,3064.4,83.9,4.942,0.1236,44.926,0.7623
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,260,68,3987.0,65.2,3.824,0.0956,44.943,0.7665
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,19,1145.5,69.8,4.211,0.1053,44.529,0.7386
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,67,3918.9,65.8,3.851,0.0963,44.859,0.7669
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,258,55,3231.0,79.9,4.691,0.1173,44.856,0.7636
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,262,54,3171.0,82.6,4.852,0.1213,44.824,0.7633
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",260,74,4327.6,60.1,3.514,0.0878,44.885,0.7675
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",258,67,3939.1,65.5,3.851,0.0963,45.049,0.7662
+4,40,10,d=4 tt=40,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,260,55,3231.6,80.5,4.727,0.1182,44.898,0.7641
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,29,1726.9,90.3,5.379,0.1345,44.753,0.7515
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,257,52,3062.5,83.9,4.942,0.1236,44.899,0.7624
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,260,68,3983.5,65.3,3.824,0.0956,44.933,0.767
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,19,1146.5,69.8,4.211,0.1053,44.537,0.7381
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,67,3919.3,65.8,3.851,0.0963,44.866,0.767
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,258,55,3229.5,79.9,4.691,0.1173,44.854,0.7639
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,262,54,3170.5,82.6,4.852,0.1213,44.821,0.7634
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",260,74,4328.7,60.1,3.514,0.0878,44.902,0.7676
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",258,67,3935.2,65.6,3.851,0.0963,45.038,0.7668
+4,40,10,d=4 tt=40,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,260,55,3232.8,80.4,4.727,0.1182,44.928,0.7644
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,27,1682.8,92.7,5.778,0.1156,45.173,0.7248
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,258,50,3080.5,83.8,5.16,0.1032,45.397,0.7369
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,262,61,3746.6,69.9,4.295,0.0859,45.429,0.7396
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,19,1199.7,66.7,4.211,0.0842,45.023,0.7131
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,58,3561.6,72.4,4.448,0.089,45.391,0.7392
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,257,50,3091.5,83.1,5.14,0.1028,45.378,0.7339
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,263,51,3143.6,83.7,5.157,0.1031,45.336,0.7355
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",262,74,4551.3,57.6,3.541,0.0708,45.437,0.7388
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",257,59,3661.2,70.2,4.356,0.0871,45.585,0.7346
+5,50,10,d=5 tt=50,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,261,51,3160.8,82.6,5.118,0.1024,45.46,0.7335
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,27,1698.1,91.9,5.778,0.1156,45.259,0.7196
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,258,50,3086.6,83.6,5.16,0.1032,45.396,0.7354
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,262,61,3765.9,69.6,4.295,0.0859,45.485,0.7368
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,19,1206.9,66.3,4.211,0.0842,45.089,0.7098
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,58,3579.4,72.1,4.448,0.089,45.442,0.7363
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,257,50,3095.5,83.0,5.14,0.1028,45.399,0.7333
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,263,51,3160.9,83.2,5.157,0.1031,45.405,0.7326
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",262,74,4552.8,57.5,3.541,0.0708,45.443,0.7386
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",257,59,3654.2,70.3,4.356,0.0871,45.56,0.7356
+5,50,10,d=5 tt=50,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,261,51,3160.9,82.6,5.118,0.1024,45.472,0.7337
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,23,1507.2,103.5,6.783,0.113,45.258,0.6906
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,259,46,2963.9,87.4,5.63,0.0938,45.481,0.7059
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,264,59,3786.6,69.7,4.475,0.0746,45.552,0.7098
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,18,1186.1,67.4,4.444,0.0741,45.131,0.6849
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,56,3591.9,71.8,4.607,0.0768,45.495,0.7093
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,258,45,2890.9,89.2,5.733,0.0956,45.382,0.7064
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,264,47,3024.2,87.3,5.617,0.0936,45.436,0.7061
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",262,68,4338.2,60.4,3.853,0.0642,45.431,0.7121
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",260,57,3656.4,71.1,4.561,0.076,45.585,0.7106
+6,60,10,d=6 tt=60,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,262,48,3071.0,85.3,5.458,0.091,45.416,0.7099
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,23,1498.5,104.1,6.783,0.113,45.194,0.6937
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,259,46,2953.8,87.7,5.63,0.0938,45.433,0.7075
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,264,59,3797.3,69.5,4.475,0.0746,45.59,0.7083
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,18,1200.7,66.6,4.444,0.0741,45.209,0.6777
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,56,3608.3,71.5,4.607,0.0768,45.58,0.7074
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,258,45,2885.8,89.4,5.733,0.0956,45.373,0.7075
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,264,47,3005.4,87.8,5.617,0.0936,45.38,0.7097
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",262,68,4314.8,60.7,3.853,0.0642,45.387,0.7153
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",260,57,3643.7,71.4,4.561,0.076,45.573,0.7129
+6,60,10,d=6 tt=60,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,262,48,3066.7,85.4,5.458,0.091,45.41,0.7108
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,24,1613.2,96.7,6.5,0.1083,45.198,0.6724
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,260,45,2976.7,87.3,5.778,0.0963,45.369,0.6859
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,265,59,3885.2,68.2,4.492,0.0749,45.468,0.6905
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,18,1219.9,65.6,4.444,0.0741,44.99,0.6638
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,56,3688.1,70.0,4.607,0.0768,45.436,0.6899
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,262,44,2908.2,90.1,5.955,0.0992,45.329,0.6858
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,265,47,3104.2,85.4,5.638,0.094,45.348,0.6866
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",263,67,4396.9,59.8,3.925,0.0654,45.392,0.6917
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",263,60,3958.2,66.4,4.383,0.0731,45.551,0.6905
+7,60,10,d=7 tt=60 [Eagle default],vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,263,46,3040.7,86.5,5.717,0.0953,45.43,0.6873
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,24,1613.1,96.7,6.5,0.1083,45.21,0.6726
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,260,45,2974.7,87.4,5.778,0.0963,45.384,0.6866
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,265,59,3885.4,68.2,4.492,0.0749,45.474,0.6905
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,18,1220.3,65.6,4.444,0.0741,45.014,0.664
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,56,3686.9,70.0,4.607,0.0768,45.435,0.6901
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,262,44,2908.0,90.1,5.955,0.0992,45.344,0.6861
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,265,47,3103.0,85.4,5.638,0.094,45.351,0.6869
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",263,67,4407.5,59.7,3.925,0.0654,45.418,0.6904
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",263,60,3967.1,66.3,4.383,0.0731,45.582,0.6894
+7,60,10,d=7 tt=60 [Eagle default],ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,263,46,3041.1,86.5,5.717,0.0953,45.433,0.6872
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,22,1619.6,96.3,7.091,0.0886,48.992,0.6655
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,260,43,3111.8,83.6,6.047,0.0756,49.127,0.6788
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,265,57,4103.9,64.6,4.649,0.0581,49.199,0.6833
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,17,1259.9,63.5,4.706,0.0588,48.705,0.6572
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,55,3962.3,65.1,4.691,0.0586,49.202,0.683
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,258,42,3031.3,85.1,6.143,0.0768,48.985,0.6787
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,265,44,3178.7,83.4,6.023,0.0753,49.104,0.6797
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",263,66,4735.9,55.5,3.985,0.0498,49.112,0.6844
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",263,60,4330.8,60.7,4.383,0.0548,49.314,0.6832
+8,80,10,d=8 tt=80,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,264,45,3250.6,81.2,5.867,0.0733,49.143,0.6803
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,22,1615.6,96.6,7.091,0.0886,48.868,0.6655
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,260,43,3106.2,83.7,6.047,0.0756,49.092,0.6796
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,265,57,4107.4,64.5,4.649,0.0581,49.211,0.6829
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,I want you act as best book seller and I will ask you questions. You have to giv,80,17,1261.6,63.4,4.706,0.0588,48.724,0.6565
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Authenticating Guest Users for Firebase using laravel,258,55,3958.4,65.2,4.691,0.0586,49.174,0.6833
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,What means if my ALB in AWS returns 408 http error?,258,42,3031.3,85.1,6.143,0.0768,48.988,0.6787
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,Please list the man hours to supply the BSA and 3 companies,265,44,3177.4,83.4,6.023,0.0753,49.062,0.6794
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"How to handle ""enum.IntFlag"" and make it compatible with both python 2 and 3?",263,66,4743.9,55.4,3.985,0.0498,49.121,0.6834
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"As Ao Lie moves to pick up his cup of tea, Macaque notices a bandaged wound on h",263,60,4336.0,60.7,4.383,0.0548,49.309,0.6823
+8,80,10,d=8 tt=80,ragged,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,can you write a script for youtube video related to hypnosis,264,45,3255.1,81.1,5.867,0.0733,49.168,0.6797
