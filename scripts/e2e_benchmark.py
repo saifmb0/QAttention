@@ -656,165 +656,145 @@ def run_generation(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Ragged-kernel SDPA hook + context manager
+# Ragged-kernel attention replacement + context manager
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _ragged_attn_sdpa_hook(
-    query:     torch.Tensor,
-    key:       torch.Tensor,
-    value:     torch.Tensor,
-    attn_mask=None,
-    dropout_p: float = 0.0,
-    is_causal: bool  = False,
-    scale:     Optional[float] = None,
-    *,
-    _b:        int,
-    _d:        int,
-    _orig_sdpa,
-) -> torch.Tensor:
+def _ragged_tree_attn(
+    Q:  torch.Tensor,   # [B, H, N_q, D]  — post-RoPE query
+    K:  torch.Tensor,   # [B, H, N_kv, D] — full KV (prefix + tree)
+    V:  torch.Tensor,   # [B, H, N_kv, D]
+    branching_factor: int,
+    max_depth: int,
+) -> torch.Tensor:      # [B, H, N_q, D]
     """
-    Drop-in for F.scaled_dot_product_attention during Eagle-3 tree_decoding.
+    Ragged ancestor-sparse attention for Eagle-3 tree-verification.
 
-    Distinguishes tree verification from other attention calls:
-      Prefill / draft-network:  key.shape[-2] == query.shape[-2]  → pass-through
-      Tree verification:        key.shape[-2]  > query.shape[-2]  → intercept
-
-    For tree verification:
-      1. Dense flash attention over prefix KV  Q × K[:N_prefix]  → O_p, lse_p
-      2. Ragged ancestor-sparse kernel over tree Q × K[N_prefix:] → O_t, lse_t
-      3. Online-softmax merge:
-             O = (exp(lse_p)*O_p + exp(lse_t)*O_t) / (exp(lse_p) + exp(lse_t))
+    Splits K/V into prefix (dense causal) and tree (sparse ancestor) parts,
+    runs flash attention over the prefix and the ragged Triton kernel over
+    the tree, then merges via online-softmax LSE combination.
     """
-    # Non-tree SDPA calls: pass through unchanged
-    if key.dim() != 4 or key.shape[-2] <= query.shape[-2]:
-        return _orig_sdpa(query, key, value, attn_mask, dropout_p, is_causal, scale)
-
-    B, H, N_q, D = query.shape
-    N_prefix = key.shape[-2] - N_q
-    scale_v  = scale if scale is not None else (1.0 / math.sqrt(D))
+    B, H, N_q, D = Q.shape
+    N_kv         = K.shape[2]
+    N_prefix     = N_kv - N_q
+    scale_v      = 1.0 / math.sqrt(D)
+    dtype        = Q.dtype
 
     # ── Part 1: dense prefix attention ──────────────────────────────────────
-    K_pre = key[:, :, :N_prefix, :].contiguous()    # [B, H, N_prefix, D]
-    V_pre = value[:, :, :N_prefix, :].contiguous()
     if N_prefix > 0:
+        K_pre = K[:, :, :N_prefix, :].contiguous()   # [B, H, N_prefix, D]
+        V_pre = V[:, :, :N_prefix, :].contiguous()
         try:
             out_pre, lse_pre, *_ = torch.ops.aten._scaled_dot_product_flash_attention(
-                query.contiguous(), K_pre, V_pre,
+                Q.contiguous(), K_pre, V_pre,
                 dropout_p=0.0, is_causal=False, scale=scale_v,
                 return_debug_mask=False,
             )
-            # lse_pre: [B, H, N_q]  (flash returns log-sum-exp per token/head)
         except Exception:
-            # Fallback: manual numerically stable computation
-            sc = torch.matmul(query, K_pre.transpose(-2, -1)) * scale_v
-            lse_pre = torch.logsumexp(sc.float(), dim=-1)    # [B, H, N_q]
-            out_pre = torch.softmax(sc, dim=-1) @ V_pre      # [B, H, N_q, D]
+            sc       = torch.ops.aten.matmul(Q, K_pre.transpose(-2, -1)) * scale_v
+            lse_pre  = torch.logsumexp(sc.float(), dim=-1)     # [B, H, N_q]
+            out_pre  = torch.softmax(sc, dim=-1) @ V_pre       # [B, H, N_q, D]
 
     # ── Part 2: ragged intra-tree attention ─────────────────────────────────
-    K_tree = key[:, :, N_prefix:, :].contiguous()    # [B, H, N_q, D]
-    V_tree = value[:, :, N_prefix:, :].contiguous()
+    K_tree = K[:, :, N_prefix:, :].contiguous()   # [B, H, N_q, D]
+    V_tree = V[:, :, N_prefix:, :].contiguous()
 
     # Pack [B, H, N_q, D] → [B*N_q, H, D]
-    Q_r = query.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
+    Q_r = Q.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
     K_r = K_tree.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
     V_r = V_tree.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
-    cu  = torch.arange(0, (B + 1) * N_q, N_q, dtype=torch.int32, device=query.device)
+    cu  = torch.arange(0, (B + 1) * N_q, N_q, dtype=torch.int32, device=Q.device)
 
-    out_tree_r, lse_tree_r = ragged_attention_with_lse(Q_r, K_r, V_r, cu, _b, _d)
-    # Unpack [B*N_q, H, D] → [B, H, N_q, D]  and  [B*N_q, H] → [B, H, N_q]
-    out_tree = out_tree_r.view(B, N_q, H, D).permute(0, 2, 1, 3)
-    lse_tree = lse_tree_r.view(B, N_q, H).permute(0, 2, 1)
+    out_tree_r, lse_tree_r = ragged_attention_with_lse(Q_r, K_r, V_r, cu,
+                                                        branching_factor, max_depth)
+    out_tree = out_tree_r.view(B, N_q, H, D).permute(0, 2, 1, 3)   # [B…]
+    lse_tree = lse_tree_r.view(B, N_q, H).permute(0, 2, 1)          # [B, H, N_q]
 
     # ── Part 3: online-softmax merge ────────────────────────────────────────
     if N_prefix == 0:
-        return out_tree.to(query.dtype)
+        return out_tree.to(dtype)
 
-    lse_p   = lse_pre.float()   # [B, H, N_q]
-    lse_t   = lse_tree.float()  # [B, H, N_q]
+    lse_p   = lse_pre.float()
+    lse_t   = lse_tree.float()
     lse_max = torch.maximum(lse_p, lse_t)
     w_p     = torch.exp(lse_p - lse_max)
     w_t     = torch.exp(lse_t - lse_max)
-    w_sum   = (w_p + w_t).clamp_min(1e-8).unsqueeze(-1)   # [B, H, N_q, 1]
+    w_sum   = (w_p + w_t).clamp_min(1e-8).unsqueeze(-1)
     out     = (w_p.unsqueeze(-1) * out_pre.float()
                + w_t.unsqueeze(-1) * out_tree.float()) / w_sum
-    return out.to(query.dtype)
+    return out.to(dtype)
 
 
 @contextlib.contextmanager
 def ragged_eagle_context(branching_factor: int, max_depth: int):
     """
-    Context manager that patches F.scaled_dot_product_attention to route
-    Eagle-3's tree-verification forward pass through the ragged Triton kernel
-    + prefix flash attention + online-LSE merge.
+    Context manager that replaces Eagle-3's tree-verification attention
+    (the dense QK-softmax-AV triple) with the ragged Triton kernel.
 
-    Patches BOTH the torch.nn.functional module attribute AND every already-
-    loaded module that captured the function via::
+    Root cause of previous SDPA-patch failure:
+      EAGLE's modeling_llama_kv.py and cnets.py both implement attention via
+      manual  ``torch.matmul(Q, K^T) / scale``  + ``softmax``  + ``matmul(A, V)``.
+      They NEVER call ``F.scaled_dot_product_attention``, so patching SDPA
+      had zero effect — the hook fired 0 times.
 
-        from torch.nn.functional import scaled_dot_product_attention
+    This implementation patches ``torch.matmul`` with a shape-aware state
+    machine that identifies the two attention matmuls by their 4-D shapes:
 
-    That ``from``-import style binds the original function object as a local
-    name in the importing module's namespace, bypassing any subsequent
-    module-attribute patch.  We scan sys.modules and overwrite every such
-    binding so that EAGLE / transformers attention layers see our hook
-    regardless of which import style they used.
+      QK step:  matmul([B,H,q,D], [B,H,D,kv])  where q>1 and kv>q
+                → save Q and K; return zeros placeholder (discarded by softmax)
 
-    All non-tree SDPA calls (draft network, prefill) pass through unchanged.
-    The patch is applied only within the with-block and restored on exit.
+      AV step:  matmul([B,H,q,kv], [B,H,kv,D])  (immediately after QK)
+                → ignore the garbage softmax weights in A;
+                  use saved Q, K and current V to run _ragged_tree_attn;
+                  return the correct ragged output.
+
+    Re-entrancy guard (``_inside`` flag) prevents the prefix-flash fallback
+    inside ``_ragged_tree_attn`` from re-triggering the state machine.
     """
-    import sys as _sys
-    import torch.nn.functional as _F_mod
-    _orig = _F_mod.scaled_dot_product_attention
-    _hook_calls = [0]    # mutable counter for diagnostics
+    _orig_mm = torch.matmul
 
-    def _hook(query, key, value, attn_mask=None, dropout_p=0.0,
-              is_causal=False, scale=None):
-        _hook_calls[0] += 1
-        return _ragged_attn_sdpa_hook(
-            query, key, value, attn_mask, dropout_p, is_causal, scale,
-            _b=branching_factor, _d=max_depth, _orig_sdpa=_orig,
-        )
+    # State: q/kt set while waiting for the AV matmul; cleared after.
+    _s: Dict[str, object] = {"q": None, "kt": None, "n": 0, "inside": False}
 
-    # ── Patch torch.nn.functional module attribute ────────────────────────
-    _F_mod.scaled_dot_product_attention = _hook
+    def _patched_matmul(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        # Re-entrancy guard — calls from inside _ragged_tree_attn bypass us.
+        if _s["inside"]:
+            return _orig_mm(A, B)
 
-    # ── Also patch every module that imported the function directly ───────
-    # `from torch.nn.functional import scaled_dot_product_attention` creates
-    # a local name binding that points at the *function object*, not at the
-    # module attribute.  Changing the module attribute won't affect those
-    # bindings.  So we walk sys.modules and replace every attribute whose
-    # value is exactly _orig with _hook, then undo on exit.
-    _extra: list = []   # [(mod, attr_name, orig_fn)]
-    for _m in list(_sys.modules.values()):
-        if _m is None or _m is _F_mod:
-            continue
-        try:
-            _mvars = vars(_m)
-        except TypeError:
-            continue
-        for _attr in list(_mvars.keys()):
-            try:
-                if getattr(_m, _attr) is _orig:
-                    setattr(_m, _attr, _hook)
-                    _extra.append((_m, _attr, _orig))
-            except Exception:
-                pass
+        if A.dim() == 4 and B.dim() == 4:
+            q_len  = A.shape[2]
+            kv_len = B.shape[3]   # B is already transposed: [B,H,D,kv]
 
-    if _extra:
-        print(f"  [ragged] patched {len(_extra)} extra module binding(s): "
-              + ", ".join(f"{getattr(m, '__name__', '?')}.{a}" for m, a, _ in _extra[:5])
-              + (" ..." if len(_extra) > 5 else ""))
+            if _s["q"] is None and q_len > 1 and kv_len > q_len:
+                # ── QK matmul: save Q=[B,H,q,D] and K^T=[B,H,D,kv] ──────────
+                # Return zeros; the downstream softmax produces garbage weights
+                # that we discard at the AV step.
+                _s["q"]  = A
+                _s["kt"] = B
+                return torch.zeros(A.shape[0], A.shape[1], q_len, kv_len,
+                                   device=A.device, dtype=A.dtype)
 
+            elif _s["q"] is not None:
+                # ── AV matmul: ignore A (garbage softmax), run ragged ────────
+                Q  = _s["q"]                    # [B, H, q_len, D]
+                K  = _s["kt"].transpose(-2, -1) # [B, H, kv_len, D]
+                V  = B                          # [B, H, kv_len, D]
+                _s["q"] = _s["kt"] = None
+                _s["n"] = _s["n"] + 1           # type: ignore[assignment]
+                _s["inside"] = True
+                try:
+                    return _ragged_tree_attn(Q, K, V, branching_factor, max_depth)
+                finally:
+                    _s["inside"] = False
+
+        return _orig_mm(A, B)
+
+    torch.matmul = _patched_matmul          # type: ignore[assignment]
     try:
         yield
     finally:
-        _F_mod.scaled_dot_product_attention = _orig
-        for _m, _attr, _fn in _extra:
-            try:
-                setattr(_m, _attr, _fn)
-            except Exception:
-                pass
-        print(f"  [ragged] SDPA hook fired {_hook_calls[0]} times "
-              f"({len(_extra)} extra binding(s) restored)")
+        torch.matmul = _orig_mm             # type: ignore[assignment]
+        print(f"  [ragged] matmul hook fired {_s['n']} times "
+              f"(~{int(_s['n']) // max(1, max_depth)} layer-steps)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

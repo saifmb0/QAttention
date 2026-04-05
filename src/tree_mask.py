@@ -128,6 +128,48 @@ def tree_attention_mask(branching_factor: int, depth: int) -> np.ndarray:
     return mask
 
 
+def tree_attention_mask_n(branching_factor: int, N: int) -> np.ndarray:
+    """
+    Ancestor attention mask for the **first N BFS nodes** of a b-ary tree.
+
+    Use this when you want a fixed token budget (e.g. Eagle-3's total_token
+    of 34–93 tokens), rather than the full complete-tree mask which can be
+    astronomically large (O(b^d) × O(b^d) for b=8-12, d=5-9).
+
+    In a BFS-ordered b-ary tree the parent of node i is ``(i - 1) // b`` for
+    i > 0 and -1 for the root.  This is verifiably equivalent to the formula
+    used by ``build_tree`` / ``tree_attention_mask``.
+
+    Parameters
+    ----------
+    branching_factor : int
+        b — number of children per node.
+    N : int
+        Number of BFS-ordered tree nodes to include.
+
+    Returns
+    -------
+    mask : np.ndarray, shape (N, N), dtype bool
+        mask[i, j] == True  iff j is an ancestor of i (or j == i),
+        restricted to indices 0 … N-1.
+    """
+    b = branching_factor
+    # parent(i) = (i-1)//b  for i > 0;  -1 for i == 0
+    parent = np.empty(N, dtype=np.int32)
+    parent[0] = -1
+    if N > 1:
+        idx = np.arange(1, N, dtype=np.int32)
+        parent[1:] = (idx - 1) // b
+
+    mask = np.zeros((N, N), dtype=bool)
+    for i in range(N):
+        j = i
+        while j >= 0:
+            mask[i, j] = True
+            j = int(parent[j])
+    return mask
+
+
 def full_sequence_mask(ctx_len: int, branching_factor: int, depth: int) -> np.ndarray:
     """
     Full attention mask for [context | draft-tree] combined sequence.

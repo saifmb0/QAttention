@@ -7,9 +7,13 @@ Compares the ragged ancestor-sparse attention kernel against PyTorch SDPA
 with correct tree-ancestor masking across a targeted grid designed for the
 paper's main result figure:
 
-    BS ∈ {8, 16}     batch sizes (typical serving / continuous-batching)
-    b  ∈ {2, 3, 4}   branching factors
-    d  ∈ {1 … 8}     tree depths
+    BS ∈ {8, 16}      batch sizes (typical serving / continuous-batching)
+    b  ∈ {8, 10, 12}  branching factors  (bracket Eagle-3 default top_k=10)
+    d  ∈ {5 … 9}      tree depths        (centred on Eagle-3 default depth=7)
+
+Grid matches the E2E benchmark sweep.  The ragged kernel is designed for high
+branching factors and deep trees; b=2-4 / d<=4 is too sparse to show a
+benefit over SDPA MATH (Triton kernel launch overhead dominates).
 
 Both kernels compute IDENTICAL attention over the same b-ary tree topology:
   • sdpa_tree:  PyTorch SDPA + float additive bias [B, 1, N, N] from
@@ -54,14 +58,28 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ragged_attn import ragged_attention
-from src.tree_mask import num_tree_nodes, tree_attention_mask
+from src.tree_mask import tree_attention_mask_n
+
+
+def _eagle_token_budget(b: int, d: int) -> int:
+    """Token budget matching the E2E benchmark formula: round(6*b*d/7), clamped [30, 120].
+
+    Eagle-3 prunes the b-ary tree to exactly this many tokens at runtime
+    (top_k selection at each depth level).  The micro-benchmark must test
+    the kernel at these sizes — NOT at the complete-tree size num_tree_nodes(b,d)
+    which is astronomically larger (e.g. 37K for b=8, d=5).
+    """
+    return max(30, min(120, round(6 * b * d / 7)))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Defaults
 # ─────────────────────────────────────────────────────────────────────────────
 DEFAULT_BATCH_SIZES       = [8, 16]
-DEFAULT_BRANCHING_FACTORS = [2, 3, 4]
-DEFAULT_DEPTHS            = [1, 2, 3, 4, 5, 6, 7, 8]
+# Branching factors and depths match the E2E sweep grid (Eagle-3 default is
+# top_k=10, depth=7).  The ragged kernel is designed for high b and deep d;
+# b=2-4 with d<=4 is too sparse to show a benefit over SDPA MATH.
+DEFAULT_BRANCHING_FACTORS = [8, 10, 12]
+DEFAULT_DEPTHS            = [5, 6, 7, 8, 9]
 DEFAULT_NUM_HEADS         = 32     # LLaMA-3.1-8B
 DEFAULT_HEAD_DIM          = 128    # LLaMA-3.1-8B
 WARMUP_ITERS              = 10
@@ -120,8 +138,14 @@ def benchmark_one(
     warmup: int, iters: int,
     device: torch.device,
 ) -> MicroRow:
-    """Benchmark one (B, b, d) configuration.  Returns a MicroRow."""
-    N   = num_tree_nodes(b, d)
+    """Benchmark one (B, b, d) configuration.  Returns a MicroRow.
+
+    N = _eagle_token_budget(b, d)  matches the actual token count that Eagle-3
+    drafts at runtime (48–93 for our grid).  Using num_tree_nodes(b, d) — a
+    complete b-ary tree — would give 37K–quadrillions of nodes, which doesn't
+    reflect real usage.
+    """
+    N   = _eagle_token_budget(b, d)   # actual EAGLE tree size: 34–93 tokens
     tot = B * N
     nan = float("nan")
 
@@ -149,8 +173,10 @@ def benchmark_one(
         K_s = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
         V_s = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
 
-        # Tree-ancestor additive bias mask [B, 1, N, N]  (O(N²) — the bottleneck)
-        mask_np = tree_attention_mask(b, d)   # [N, N] bool
+        # Tree-ancestor additive bias mask [B, 1, N, N].
+        # tree_attention_mask_n(b, N) builds the mask for exactly the first N
+        # BFS nodes — matching Eagle-3's actual token budget (34–93 tokens).
+        mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
         mask_t  = torch.from_numpy(mask_np).to(device)
         bias    = torch.where(
             mask_t,
