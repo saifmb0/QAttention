@@ -393,6 +393,10 @@ def _time_sdpa_tree(
         ):
             F.scaled_dot_product_attention(Q, K, V, attn_mask=bias4d)
         backend = torch.nn.attention.SDPBackend.FLASH_ATTENTION
+    except RuntimeError as _be:
+        if "out of memory" in str(_be).lower():
+            raise  # propagate OOM — don't silently fall through
+        backend = torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION
     except Exception:
         backend = torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION
 
@@ -443,30 +447,57 @@ def run_kernel_comparison(
         tot  = B * N
 
         torch.manual_seed(B * 1000 + b * 100 + d)
-        # packed ragged layout [B*N, H, D]
-        Q_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
-        K_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
-        V_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
-        cu   = torch.arange(0, (B + 1) * N, N, dtype=torch.int32, device=device)
-        # SDPA layout [B, H, N, D]
-        Q_s  = Q_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-        K_s  = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-        V_s  = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+        try:
+            # packed ragged layout [B*N, H, D]
+            Q_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
+            K_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
+            V_r  = torch.randn(tot, H, D, device=device, dtype=torch.float16)
+            cu   = torch.arange(0, (B + 1) * N, N, dtype=torch.int32, device=device)
+            # SDPA layout [B, H, N, D]
+            Q_s  = Q_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+            K_s  = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+            V_s  = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower():
+                torch.cuda.empty_cache()
+                print(
+                    f"  [{ci+1:3d}/{len(configs)}]  "
+                    f"B={B:3d} b={b} d={d} N={N:5d}  "
+                    f"OOM during tensor alloc — skipped"
+                )
+                continue
+            raise
 
         t_sdpa   = float("nan")
         t_ragged = float("nan")
 
         try:
             t_sdpa = _time_sdpa_tree(Q_s, K_s, V_s, b, d, warmup, iters)
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower():
+                torch.cuda.empty_cache()
+                print(
+                    f"  [{ci+1:3d}/{len(configs)}]  "
+                    f"B={B:3d} b={b} d={d} N={N:5d}  sdpa_tree OOM — t_sdpa=NaN"
+                )
+            else:
+                print(f"  [{ci+1}/{len(configs)}] sdpa_tree B={B} b={b} d={d}  ERROR: {exc}")
         except Exception as exc:
-            print(f"  [{ci+1}/{len(configs)}] sdpa_tree  "
-                  f"B={B} b={b} d={d}  ERROR: {exc}")
+            print(f"  [{ci+1}/{len(configs)}] sdpa_tree B={B} b={b} d={d}  ERROR: {exc}")
 
         try:
             t_ragged = _time_ragged(Q_r, K_r, V_r, cu, b, d, warmup, iters)
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower():
+                torch.cuda.empty_cache()
+                print(
+                    f"  [{ci+1:3d}/{len(configs)}]  "
+                    f"B={B:3d} b={b} d={d} N={N:5d}  ragged OOM — t_ragged=NaN"
+                )
+            else:
+                print(f"  [{ci+1}/{len(configs)}] ragged B={B} b={b} d={d}  ERROR: {exc}")
         except Exception as exc:
-            print(f"  [{ci+1}/{len(configs)}] ragged     "
-                  f"B={B} b={b} d={d}  ERROR: {exc}")
+            print(f"  [{ci+1}/{len(configs)}] ragged B={B} b={b} d={d}  ERROR: {exc}")
 
         speedup = (t_sdpa / t_ragged
                    if (not math.isnan(t_sdpa) and not math.isnan(t_ragged)
