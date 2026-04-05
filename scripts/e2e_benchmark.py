@@ -782,12 +782,17 @@ def _time_sdpa_tree(
     warmup: int, iters: int,
 ) -> float:
     """
-    Time PyTorch SDPA with explicit tree-ancestor bool mask.
+    Time PyTorch SDPA with explicit tree-ancestor additive bias mask.
 
-    This is the same kernel path Eagle-3 uses internally:
-    the tree_mask is converted to a float additive bias and passed to SDPA.
-    Prefers FLASH_ATTENTION backend; falls back to EFFICIENT_ATTENTION if
-    flash rejects a non-null additive mask.
+    This is the same attention path EAGLE-3's modeling_llama_kv.py uses:
+    the tree_mask is converted to a float additive bias applied inside
+    _prepare_decoder_attention_mask and then passed to the attention layer
+    as a [B, 1, N, N] float bias.
+
+    Flash Attention and Memory-Efficient Attention both reject non-null
+    additive masks, so we explicitly select SDPBackend.MATH — the only
+    backend that handles them — to avoid noisy "kernel not used" warnings
+    and to correctly represent the kernel path Eagle-3 actually exercises.
 
     Q / K / V shape: [B, H, N, D]  (SDPA convention, fp16)
     """
@@ -801,22 +806,13 @@ def _time_sdpa_tree(
     )                                     # [N, N]
     bias4d = bias.unsqueeze(0).unsqueeze(0).expand(B, 1, N, N).contiguous()
 
-    # detect which SDPA backend accepts an additive mask (flash may refuse)
-    try:
-        with torch.nn.attention.sdpa_kernel(
-            torch.nn.attention.SDPBackend.FLASH_ATTENTION
-        ):
-            F.scaled_dot_product_attention(Q, K, V, attn_mask=bias4d)
-        backend = torch.nn.attention.SDPBackend.FLASH_ATTENTION
-    except RuntimeError as _be:
-        if "out of memory" in str(_be).lower():
-            raise  # propagate OOM — don't silently fall through
-        backend = torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION
-    except Exception:
-        backend = torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION
-
+    # Flash / MEff / CuDNN all reject non-null additive masks.
+    # Use MATH explicitly — it is the only backend that supports them,
+    # and it matches what EAGLE's modeling_llama_kv.py actually executes.
     def fn():
-        with torch.nn.attention.sdpa_kernel(backend):
+        with torch.nn.attention.sdpa_kernel(
+            torch.nn.attention.SDPBackend.MATH
+        ):
             return F.scaled_dot_product_attention(Q, K, V, attn_mask=bias4d)
 
     return _cuda_time(fn, warmup, iters)
