@@ -403,6 +403,15 @@ def load_eagle_model(
     print(f"    Mode:  {'EAGLE-3' if use_eagle3 else 'EAGLE-2'}")
     print(f"    Tree:  total_token={total_token}, depth={depth}, top_k={top_k}")
     t0 = time.perf_counter()
+    # bfloat16 requires SM 8.0+ (Ampere/Ada/Hopper).  On Turing (T4, GTX 1650,
+    # SM 7.5) bf16 GEMMs fall back to fp16 internally via cuBLAS, truncating the
+    # dynamic range and producing degenerate output after 32 residual layers.
+    # Auto-select: bf16 on Ampere+, fp16 on Turing/Volta.
+    _sm = torch.cuda.get_device_properties(0).major if torch.cuda.is_available() else 0
+    _dtype = torch.bfloat16 if _sm >= 8 else torch.float16
+    print(f"    dtype: {'bfloat16' if _dtype == torch.bfloat16 else 'float16'} "
+          f"(SM {_sm}.x detected)")
+
     model = EaModel.from_pretrained(
         use_eagle3=use_eagle3,
         base_model_path=base_model,
@@ -410,7 +419,7 @@ def load_eagle_model(
         total_token=total_token,
         depth=depth,
         top_k=top_k,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=_dtype,
         low_cpu_mem_usage=True,
         device_map="auto",
     )
