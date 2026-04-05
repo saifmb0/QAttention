@@ -221,16 +221,25 @@ def load_eagle_model(
     _patch_transformers_for_eagle()
     from eagle.model.ea_model import EaModel
 
-    # Llama-3.1 uses rope_scaling["rope_type"] but EAGLE's cnets.py expects ["type"].
-    # Monkey-patch _init_rope to normalise the key before it is read.
+    # EAGLE's cnets.py _init_rope only understands rope_scaling types "linear" and
+    # "dynamic" and requires a "factor" key.  Llama-3.1 uses type "llama3" with a
+    # slightly different schema.  For the EAGLE *draft* model the RoPE precision
+    # doesn't affect correctness testing, so we simply fall back to standard
+    # (unscaled) RoPE for any type that cnets.py doesn't natively handle.
     try:
         from eagle.model import cnets as _cnets
+        _EAGLE_ROPE_TYPES = {"linear", "dynamic"}
         _orig_init_rope = _cnets.LlamaAttention._init_rope
         def _patched_init_rope(self):
             rs = getattr(self.config, "rope_scaling", None)
-            if isinstance(rs, dict) and "type" not in rs and "rope_type" in rs:
-                import copy
-                self.config.rope_scaling = {**rs, "type": rs["rope_type"]}
+            if isinstance(rs, dict):
+                rope_type = rs.get("type") or rs.get("rope_type", "")
+                if rope_type not in _EAGLE_ROPE_TYPES:
+                    # Unsupported type — disable scaling so the fallback branch runs
+                    self.config.rope_scaling = None
+                elif "type" not in rs:
+                    # Has rope_type but not type — add alias
+                    self.config.rope_scaling = {**rs, "type": rope_type}
             _orig_init_rope(self)
         _cnets.LlamaAttention._init_rope = _patched_init_rope
     except Exception:
