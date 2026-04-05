@@ -672,7 +672,19 @@ def main() -> None:
     parser.add_argument("--skip-kernel",     action="store_true")
     parser.add_argument("--out-dir",  default="results")
     parser.add_argument("--csv-name", default="e2e_benchmark.csv")
+    parser.add_argument("--hf-token", default=None,
+                        help="HuggingFace API token for gated models "
+                             "(overrides $HF_TOKEN / $HUGGING_FACE_HUB_TOKEN)")
     args = parser.parse_args()
+
+    # Propagate HF token so every huggingface_hub call (including EAGLE internals)
+    # authenticates automatically.  CLI flag takes priority over env vars.
+    _hf_token = (args.hf_token
+                 or os.environ.get("HF_TOKEN")
+                 or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+    if _hf_token:
+        os.environ["HF_TOKEN"] = _hf_token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = _hf_token
 
     if not torch.cuda.is_available():
         print("ERROR: CUDA required.")
@@ -694,6 +706,10 @@ def main() -> None:
     print(f"  Tree:          total={args.total_tokens}, "
           f"depth={args.depth}, top_k={args.top_k}")
     print(f"  Kernel grid:   B∈{kb_sizes}, b∈{kb_bf}, d∈{kb_d}")
+    if _hf_token:
+        print(f"  HF token:      {_hf_token[:8]}…")
+    else:
+        print("  HF token:      (none — public/local models only)")
 
     # Model dimensions — will be updated from actual model if generation runs
     n_heads, head_dim = 32, 128  # LLaMA-3.1-8B defaults
