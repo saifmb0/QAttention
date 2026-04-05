@@ -1,56 +1,56 @@
 acceptance_rate,amdahl_e2e_speedup,amdahl_f,attn_fraction_assumed,batch_size,branching_factor,depth,eagle3_tok_per_sec,eagle_model,head_dim,intra_tree_fraction,kernel,kernel_speedup_b1_median,latency_ms,mean_accepted_per_step,mean_verify_ms,method,mode,model,num_heads,num_steps,num_tokens,num_tree_nodes,phase,projected_tok_per_sec,prompt,speedup_sdpa_tree_over_ragged,tok_per_sec,verify_fraction,wall_ms
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,1.0,52.038,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",,13.2,0.6847,19456.8
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,1.0,51.841,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,is decentralized finance just a group of people coming together and pooling thei,,13.7,0.7124,18629.7
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,1.0,51.85,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,,13.8,0.7129,18617.9
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,1.0,51.89,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,I want you act as best book seller and I will ask you questions. You have to giv,,13.7,0.7128,18637.1
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,1.0,51.819,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,Authenticating Guest Users for Firebase using laravel,,13.8,0.7135,18591.9
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,1.0,51.924,,ragged,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",,13.7,0.7136,18627.6
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,1.0,51.868,,ragged,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,is decentralized finance just a group of people coming together and pooling thei,,13.7,0.7126,18633.3
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,1.0,51.837,,ragged,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,,13.8,0.7146,18570.0
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,1.0,51.914,,ragged,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,I want you act as best book seller and I will ask you questions. You have to giv,,13.8,0.7142,18608.5
-0.0167,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,1.0,51.859,,ragged,meta-llama/Llama-3.1-8B-Instruct,,256,256,,generation,,Authenticating Guest Users for Firebase using laravel,,13.7,0.7129,18621.1
-,,,,1,3,3,,,128,,,,0.092,,,sdpa_tree,,,32,,,40,kernel,,,0.4391,,,
-,,,,1,3,3,,,128,,,,0.2094,,,ragged,,,32,,,40,kernel,,,0.4391,,,
-,,,,1,3,5,,,128,,,,0.1399,,,sdpa_tree,,,32,,,364,kernel,,,0.6586,,,
-,,,,1,3,5,,,128,,,,0.2124,,,ragged,,,32,,,364,kernel,,,0.6586,,,
-,,,,1,3,7,,,128,,,,5.6058,,,sdpa_tree,,,32,,,3280,kernel,,,12.0462,,,
-,,,,1,3,7,,,128,,,,0.4654,,,ragged,,,32,,,3280,kernel,,,12.0462,,,
-,,,,1,4,3,,,128,,,,0.1259,,,sdpa_tree,,,32,,,85,kernel,,,0.6072,,,
-,,,,1,4,3,,,128,,,,0.2074,,,ragged,,,32,,,85,kernel,,,0.6072,,,
-,,,,1,4,5,,,128,,,,1.0532,,,sdpa_tree,,,32,,,1365,kernel,,,3.8762,,,
-,,,,1,4,5,,,128,,,,0.2717,,,ragged,,,32,,,1365,kernel,,,3.8762,,,
-,,,,1,4,7,,,128,,,,248.2999,,,sdpa_tree,,,32,,,21845,kernel,,,116.8524,,,
-,,,,1,4,7,,,128,,,,2.1249,,,ragged,,,32,,,21845,kernel,,,116.8524,,,
-,,,,8,3,3,,,128,,,,0.0946,,,sdpa_tree,,,32,,,40,kernel,,,0.4495,,,
-,,,,8,3,3,,,128,,,,0.2104,,,ragged,,,32,,,40,kernel,,,0.4495,,,
-,,,,8,3,5,,,128,,,,0.6639,,,sdpa_tree,,,32,,,364,kernel,,,1.5447,,,
-,,,,8,3,5,,,128,,,,0.4298,,,ragged,,,32,,,364,kernel,,,1.5447,,,
-,,,,8,3,7,,,128,,,,44.0789,,,sdpa_tree,,,32,,,3280,kernel,,,16.7113,,,
-,,,,8,3,7,,,128,,,,2.6377,,,ragged,,,32,,,3280,kernel,,,16.7113,,,
-,,,,8,4,3,,,128,,,,0.1362,,,sdpa_tree,,,32,,,85,kernel,,,0.6179,,,
-,,,,8,4,3,,,128,,,,0.2204,,,ragged,,,32,,,85,kernel,,,0.6179,,,
-,,,,8,4,5,,,128,,,,8.2188,,,sdpa_tree,,,32,,,1365,kernel,,,7.4987,,,
-,,,,8,4,5,,,128,,,,1.096,,,ragged,,,32,,,1365,kernel,,,7.4987,,,
+0.1083,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,6.5,45.967,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,24,156,,generation,,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",,62.8,0.4441,2484.0
+0.0963,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,5.778,45.428,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,45,260,,generation,,is decentralized finance just a group of people coming together and pooling thei,,84.3,0.6627,3084.7
+0.0749,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,4.492,45.48,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,59,265,,generation,,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,,68.2,0.6906,3885.4
+0.0741,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,4.444,45.082,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,18,80,,generation,,I want you act as best book seller and I will ask you questions. You have to giv,,64.2,0.6513,1245.9
+0.0768,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,sdpa_tree,,,4.607,45.446,,vanilla,meta-llama/Llama-3.1-8B-Instruct,,56,258,,generation,,Authenticating Guest Users for Firebase using laravel,,70.0,0.6903,3686.7
+0.1083,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,6.5,45.166,,ragged,meta-llama/Llama-3.1-8B-Instruct,,24,156,,generation,,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",,97.0,0.6742,1607.7
+0.0963,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,5.778,45.368,,ragged,meta-llama/Llama-3.1-8B-Instruct,,45,260,,generation,,is decentralized finance just a group of people coming together and pooling thei,,87.4,0.6864,2974.4
+0.0749,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,4.492,45.473,,ragged,meta-llama/Llama-3.1-8B-Instruct,,59,265,,generation,,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,,68.2,0.6903,3886.6
+0.0741,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,4.444,45.016,,ragged,meta-llama/Llama-3.1-8B-Instruct,,18,80,,generation,,I want you act as best book seller and I will ask you questions. You have to giv,,65.6,0.6645,1219.4
+0.0768,,,,,,,,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,,,ragged_triton,,,4.607,45.406,,ragged,meta-llama/Llama-3.1-8B-Instruct,,56,258,,generation,,Authenticating Guest Users for Firebase using laravel,,70.1,0.6905,3682.7
+,,,,1,3,3,,,128,,,,0.2588,,,sdpa_tree,,,32,,,40,kernel,,,1.4509,,,
+,,,,1,3,3,,,128,,,,0.1784,,,ragged,,,32,,,40,kernel,,,1.4509,,,
+,,,,1,3,5,,,128,,,,0.6744,,,sdpa_tree,,,32,,,364,kernel,,,3.6277,,,
+,,,,1,3,5,,,128,,,,0.1859,,,ragged,,,32,,,364,kernel,,,3.6277,,,
+,,,,1,3,7,,,128,,,,37.2282,,,sdpa_tree,,,32,,,3280,kernel,,,84.676,,,
+,,,,1,3,7,,,128,,,,0.4397,,,ragged,,,32,,,3280,kernel,,,84.676,,,
+,,,,1,4,3,,,128,,,,0.2599,,,sdpa_tree,,,32,,,85,kernel,,,1.4644,,,
+,,,,1,4,3,,,128,,,,0.1775,,,ragged,,,32,,,85,kernel,,,1.4644,,,
+,,,,1,4,5,,,128,,,,7.0785,,,sdpa_tree,,,32,,,1365,kernel,,,28.0772,,,
+,,,,1,4,5,,,128,,,,0.2521,,,ragged,,,32,,,1365,kernel,,,28.0772,,,
+,,,,1,4,7,,,128,,,,nan,,,sdpa_tree,,,32,,,21845,kernel,,,nan,,,
+,,,,1,4,7,,,128,,,,2.1078,,,ragged,,,32,,,21845,kernel,,,nan,,,
+,,,,8,3,3,,,128,,,,0.2743,,,sdpa_tree,,,32,,,40,kernel,,,1.5252,,,
+,,,,8,3,3,,,128,,,,0.1799,,,ragged,,,32,,,40,kernel,,,1.5252,,,
+,,,,8,3,5,,,128,,,,4.7662,,,sdpa_tree,,,32,,,364,kernel,,,12.3248,,,
+,,,,8,3,5,,,128,,,,0.3867,,,ragged,,,32,,,364,kernel,,,12.3248,,,
+,,,,8,3,7,,,128,,,,nan,,,sdpa_tree,,,32,,,3280,kernel,,,nan,,,
+,,,,8,3,7,,,128,,,,2.6101,,,ragged,,,32,,,3280,kernel,,,nan,,,
+,,,,8,4,3,,,128,,,,0.5764,,,sdpa_tree,,,32,,,85,kernel,,,3.032,,,
+,,,,8,4,3,,,128,,,,0.1901,,,ragged,,,32,,,85,kernel,,,3.032,,,
+,,,,8,4,5,,,128,,,,55.0643,,,sdpa_tree,,,32,,,1365,kernel,,,51.3231,,,
+,,,,8,4,5,,,128,,,,1.0729,,,ragged,,,32,,,1365,kernel,,,51.3231,,,
 ,,,,8,4,7,,,128,,,,nan,,,sdpa_tree,,,32,,,21845,kernel,,,nan,,,
-,,,,8,4,7,,,128,,,,16.33,,,ragged,,,32,,,21845,kernel,,,nan,,,
-,,,,32,3,3,,,128,,,,0.1446,,,sdpa_tree,,,32,,,40,kernel,,,0.551,,,
-,,,,32,3,3,,,128,,,,0.2624,,,ragged,,,32,,,40,kernel,,,0.551,,,
-,,,,32,3,5,,,128,,,,2.5482,,,sdpa_tree,,,32,,,364,kernel,,,1.995,,,
-,,,,32,3,5,,,128,,,,1.2773,,,ragged,,,32,,,364,kernel,,,1.995,,,
-,,,,32,3,7,,,128,,,,175.9248,,,sdpa_tree,,,32,,,3280,kernel,,,17.8887,,,
-,,,,32,3,7,,,128,,,,9.8344,,,ragged,,,32,,,3280,kernel,,,17.8887,,,
-,,,,32,4,3,,,128,,,,0.304,,,sdpa_tree,,,32,,,85,kernel,,,0.7719,,,
-,,,,32,4,3,,,128,,,,0.3939,,,ragged,,,32,,,85,kernel,,,0.7719,,,
-,,,,32,4,5,,,128,,,,32.5302,,,sdpa_tree,,,32,,,1365,kernel,,,8.4302,,,
-,,,,32,4,5,,,128,,,,3.8588,,,ragged,,,32,,,1365,kernel,,,8.4302,,,
-,,,,128,3,3,,,128,,,,0.5484,,,sdpa_tree,,,32,,,40,kernel,,,1.0012,,,
-,,,,128,3,3,,,128,,,,0.5477,,,ragged,,,32,,,40,kernel,,,1.0012,,,
-,,,,128,3,5,,,128,,,,10.1301,,,sdpa_tree,,,32,,,364,kernel,,,2.1457,,,
-,,,,128,3,5,,,128,,,,4.7212,,,ragged,,,32,,,364,kernel,,,2.1457,,,
+,,,,8,4,7,,,128,,,,16.2969,,,ragged,,,32,,,21845,kernel,,,nan,,,
+,,,,32,3,3,,,128,,,,0.9367,,,sdpa_tree,,,32,,,40,kernel,,,3.9856,,,
+,,,,32,3,3,,,128,,,,0.235,,,ragged,,,32,,,40,kernel,,,3.9856,,,
+,,,,32,3,5,,,128,,,,18.7659,,,sdpa_tree,,,32,,,364,kernel,,,16.2782,,,
+,,,,32,3,5,,,128,,,,1.1528,,,ragged,,,32,,,364,kernel,,,16.2782,,,
+,,,,32,3,7,,,128,,,,nan,,,sdpa_tree,,,32,,,3280,kernel,,,nan,,,
+,,,,32,3,7,,,128,,,,9.8061,,,ragged,,,32,,,3280,kernel,,,nan,,,
+,,,,32,4,3,,,128,,,,2.1645,,,sdpa_tree,,,32,,,85,kernel,,,6.1447,,,
+,,,,32,4,3,,,128,,,,0.3523,,,ragged,,,32,,,85,kernel,,,6.1447,,,
+,,,,32,4,5,,,128,,,,nan,,,sdpa_tree,,,32,,,1365,kernel,,,nan,,,
+,,,,32,4,5,,,128,,,,3.8335,,,ragged,,,32,,,1365,kernel,,,nan,,,
+,,,,128,3,3,,,128,,,,3.6334,,,sdpa_tree,,,32,,,40,kernel,,,6.6884,,,
+,,,,128,3,3,,,128,,,,0.5432,,,ragged,,,32,,,40,kernel,,,6.6884,,,
+,,,,128,3,5,,,128,,,,74.5933,,,sdpa_tree,,,32,,,364,kernel,,,17.4477,,,
+,,,,128,3,5,,,128,,,,4.2752,,,ragged,,,32,,,364,kernel,,,17.4477,,,
 ,,,,128,3,7,,,128,,,,nan,,,sdpa_tree,,,32,,,3280,kernel,,,nan,,,
 ,,,,128,3,7,,,128,,,,nan,,,ragged,,,32,,,3280,kernel,,,nan,,,
-,,,,128,4,3,,,128,,,,1.1282,,,sdpa_tree,,,32,,,85,kernel,,,1.0141,,,
-,,,,128,4,3,,,128,,,,1.1125,,,ragged,,,32,,,85,kernel,,,1.0141,,,
-,,,,128,4,5,,,128,,,,129.67,,,sdpa_tree,,,32,,,1365,kernel,,,8.5964,,,
-,,,,128,4,5,,,128,,,,15.0842,,,ragged,,,32,,,1365,kernel,,,8.5964,,,
-,1.114,0.18314,0.35,,,,13.6,,,0.7398,,2.267,,1.0,,,,,,,,,amdahl_projection,15.2,,,,0.7073,
+,,,,128,4,3,,,128,,,,9.0395,,,sdpa_tree,,,32,,,85,kernel,,,9.0917,,,
+,,,,128,4,3,,,128,,,,0.9943,,,ragged,,,32,,,85,kernel,,,9.0917,,,
+,,,,128,4,5,,,128,,,,nan,,,sdpa_tree,,,32,,,1365,kernel,,,nan,,,
+,,,,128,4,5,,,128,,,,15.1867,,,ragged,,,32,,,1365,kernel,,,nan,,,
+,1.133,0.16257,0.35,,,,69.9,,,0.7398,,3.628,,5.164,,,,,,,,,amdahl_projection,79.2,,,,0.6278,
