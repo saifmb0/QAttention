@@ -275,7 +275,28 @@ class KernelRecord:
 # Step 1  —  Vanilla Eagle-3 generation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_prompt(model_type: str, message: str) -> str:
+def _get_prompt(model_type: str, message: str, tokenizer=None) -> str:
+    """Format a raw user message into the chat template expected by the model.
+
+    For LLaMA-3 / LLaMA-3.1 Instruct models, the tokenizer ships with the
+    official Jinja chat template  — use that directly so we get the correct
+    <|begin_of_text|>/<|start_header_id|>/... framing.  Fastchat's template
+    registry does NOT cover LLaMA-3 and silently returns a wrong format,
+    which causes degenerate output ("recib recib…").
+    """
+    # ── LLaMA-3 family: use tokenizer.apply_chat_template ──────────────────
+    if model_type in ("llama-3-instruct", "llama3") and tokenizer is not None:
+        if hasattr(tokenizer, "apply_chat_template"):
+            try:
+                return tokenizer.apply_chat_template(
+                    [{"role": "user", "content": message}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except Exception:
+                pass  # fall through to fastchat / manual fallback
+
+    # ── Other models: try fastchat conversation template ───────────────────
     try:
         from fastchat.model import get_conversation_template
         conv = get_conversation_template(model_type)
@@ -283,7 +304,9 @@ def _get_prompt(model_type: str, message: str) -> str:
         conv.append_message(conv.roles[1], None)
         return conv.get_prompt()
     except ImportError:
-        return f"User: {message}\nAssistant:"
+        pass
+
+    return f"User: {message}\nAssistant:"
 
 
 def load_eagle_model(
@@ -382,7 +405,7 @@ def run_generation(
     records: List[GenerationRecord] = []
 
     for pi, raw in enumerate(prompts):
-        prompt    = _get_prompt(model_type, raw)
+        prompt    = _get_prompt(model_type, raw, tokenizer=model.tokenizer)
         input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(device)
         input_len = input_ids.shape[1]
         max_len   = input_len + max_new_tokens + total_token + 10
