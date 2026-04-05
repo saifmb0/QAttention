@@ -182,17 +182,26 @@ if [[ $INSTALL_SOTA -eq 1 ]]; then
     # LossKwargs, auto_docstring, can_return_tuple which were added in recent
     # releases (4.47+ / 4.50+).  We unconditionally upgrade to latest to avoid
     # a stale install blocking the import — even if EAGLE is already present.
-    info "  Upgrading transformers to latest (required by EAGLE modeling_qwen3_kv) …"
-    $PIP install --quiet --upgrade "transformers" 2>/dev/null || \
-        warn "  transformers upgrade failed — EAGLE may not import correctly."
+    # Pin to EAGLE's tested version range.  EAGLE's requirements.txt specifies
+    # transformers>=4.53.1, and that is the version the EAGLE code was actually
+    # written and tested against.  Using a newer (or much older) version can
+    # silently corrupt generation (wrong RoPE, wrong dtype, wrong output dict
+    # keys) without raising any errors.  We pin <5.0 to avoid major-version
+    # breaks; remove the upper bound once EAGLE explicitly supports 5.x.
+    info "  Installing transformers==4.53.1 (EAGLE-required version) …"
+    $PIP install --quiet "transformers==4.53.1" 2>/dev/null || \
+        $PIP install --quiet "transformers>=4.53.1,<5.0" 2>/dev/null || \
+        warn "  transformers install failed — EAGLE may not import correctly."
 
     if $PYTHON -c "from eagle.model.ea_model import EaModel" 2>/dev/null; then
         info "  EAGLE: already installed and importable."
     else
         info "  Installing EAGLE (speculative decoding framework) …"
-        # Install remaining runtime deps (--no-deps won't pull these)
+        # Install remaining runtime deps that --no-deps skips.
+        # accelerate: EAGLE was authored for 0.26.0; 1.x changed device-map hooks
+        # significantly.  Pin to 0.x to avoid silent corruption with device_map="auto".
         $PIP install --quiet \
-            "accelerate>=0.27.0" \
+            "accelerate>=0.26.0,<1.0" \
             "sentencepiece" \
             "fschat" \
             2>/dev/null || true

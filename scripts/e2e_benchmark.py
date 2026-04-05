@@ -97,6 +97,55 @@ from src.ragged_attn import ragged_attention, ragged_attention_with_lse
 from src.tree_mask import num_tree_nodes, tree_attention_mask
 
 
+# ── Version gate ─────────────────────────────────────────────────────────────
+# EAGLE 3.0.x was authored + tested against transformers 4.53.1 and
+# accelerate 0.26.0.  Silent numerical corruption (degenerate "Destination
+# Destination..." output, 0% acceptance rate) has been observed with:
+#   • transformers > 4.53.x  (changed RoPE / attn-mask internals)
+#   • accelerate >= 1.0       (changed device-map hook semantics)
+# If you see garbage output, run:
+#   pip install "transformers==4.53.1" "accelerate>=0.26.0,<1.0"
+def _check_env_versions() -> None:
+    import importlib.metadata as _im
+    def _ver(pkg):
+        try: return tuple(int(x) for x in _im.version(pkg).split(".")[:3])
+        except Exception: return (0,)
+
+    tx = _ver("transformers")
+    ac = _ver("accelerate")
+
+    problems = []
+    if tx < (4, 53, 1):
+        problems.append(
+            f"transformers {'.'.join(str(x) for x in tx)} < 4.53.1  "
+            "(EAGLE requires >=4.53.1)"
+        )
+    if tx >= (5, 0, 0):
+        problems.append(
+            f"transformers {'.'.join(str(x) for x in tx)} is a major-version "
+            "release that EAGLE has not been tested with"
+        )
+    if ac >= (1, 0, 0):
+        problems.append(
+            f"accelerate {'.'.join(str(x) for x in ac)} >= 1.0  "
+            "(EAGLE requires <1.0 for stable device_map='auto' behaviour)"
+        )
+
+    tx_s = ".".join(str(x) for x in tx)
+    ac_s = ".".join(str(x) for x in ac)
+    print(f"  [env] transformers={tx_s}  accelerate={ac_s}", end="")
+    if problems:
+        print("  ← WARNING")
+        for p in problems:
+            print(f"    [env:warn] {p}")
+        print("    Run:  pip install 'transformers==4.53.1' 'accelerate>=0.26.0,<1.0'")
+    else:
+        print("  OK")
+
+
+_check_env_versions()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -403,14 +452,13 @@ def load_eagle_model(
     print(f"    Mode:  {'EAGLE-3' if use_eagle3 else 'EAGLE-2'}")
     print(f"    Tree:  total_token={total_token}, depth={depth}, top_k={top_k}")
     t0 = time.perf_counter()
-    # bfloat16 requires SM 8.0+ (Ampere/Ada/Hopper).  On Turing (T4, GTX 1650,
-    # SM 7.5) bf16 GEMMs fall back to fp16 internally via cuBLAS, truncating the
-    # dynamic range and producing degenerate output after 32 residual layers.
-    # Auto-select: bf16 on Ampere+, fp16 on Turing/Volta.
-    _sm = torch.cuda.get_device_properties(0).major if torch.cuda.is_available() else 0
-    _dtype = torch.bfloat16 if _sm >= 8 else torch.float16
-    print(f"    dtype: {'bfloat16' if _dtype == torch.bfloat16 else 'float16'} "
-          f"(SM {_sm}.x detected)")
+    # EAGLE was authored and tested at float16.  EAGLE's own README notes
+    # bf16 as a special case only for Qwen2 (numerical overflow).  For LLaMA
+    # models the default is fp16 regardless of GPU capability.  On SM < 8.0
+    # (Turing / T4) bf16 compute falls back to fp16 anyway, so fp16 is always
+    # the right choice here.
+    _dtype = torch.float16
+    print(f"    dtype: float16 (EAGLE tested config)")
 
     model = EaModel.from_pretrained(
         use_eagle3=use_eagle3,
