@@ -98,6 +98,45 @@ from src.tree_mask import num_tree_nodes, tree_attention_mask
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _patch_transformers_for_eagle() -> None:
+    """
+    Compatibility shim for EAGLE 3.0.0 vs transformers v5+.
+
+    eagle/model/modeling_qwen3_kv.py imports LossKwargs, auto_docstring, and
+    can_return_tuple from transformers.utils.  These symbols were added in
+    transformers 4.47–4.50 and were moved / renamed in the v5 refactor.
+    We inject lightweight stubs for any missing symbol so EaModel imports
+    cleanly regardless of the installed transformers version.
+    """
+    try:
+        import transformers.utils as _tu
+        from typing import TypedDict
+
+        if not hasattr(_tu, "LossKwargs"):
+            class _LossKwargs(TypedDict, total=False):
+                pass
+            _tu.LossKwargs = _LossKwargs  # type: ignore[attr-defined]
+
+        if not hasattr(_tu, "auto_docstring"):
+            def _auto_docstring(*args, **kwargs):
+                if args and callable(args[0]):
+                    return args[0]
+                return lambda fn: fn
+            _tu.auto_docstring = _auto_docstring  # type: ignore[attr-defined]
+
+        if not hasattr(_tu, "can_return_tuple"):
+            def _can_return_tuple(fn):
+                return fn
+            _tu.can_return_tuple = _can_return_tuple  # type: ignore[attr-defined]
+
+    except Exception:
+        pass  # Let EaModel fail naturally if transformers isn't importable at all
+
+
+# Apply at module load so _has("eagle") and all subsequent imports succeed.
+_patch_transformers_for_eagle()
+
+
 def _has(pkg: str) -> bool:
     if importlib.util.find_spec(pkg) is None:
         return False
@@ -179,6 +218,7 @@ def load_eagle_model(
     depth: int = 7,
     top_k: int = 10,
 ) -> "eagle.model.ea_model.EaModel":
+    _patch_transformers_for_eagle()
     from eagle.model.ea_model import EaModel
     print(f"\n  Loading Eagle model:")
     print(f"    Base:  {base_model}")
