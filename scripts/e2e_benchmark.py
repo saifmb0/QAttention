@@ -383,9 +383,14 @@ def load_eagle_model(
                 rope_type = rs.get("type") or rs.get("rope_type", "")
                 if rope_type not in _EAGLE_ROPE_TYPES:
                     # Unsupported type — disable scaling so the fallback branch runs
+                    # IMPORTANT: Deepcopy so we don't mutate the base model's shared config!
+                    import copy
+                    self.config = copy.deepcopy(self.config)
                     self.config.rope_scaling = None
                 elif "type" not in rs:
                     # Has rope_type but not type — add alias
+                    import copy
+                    self.config = copy.deepcopy(self.config)
                     self.config.rope_scaling = {**rs, "type": rope_type}
             _orig_init_rope(self)
         _cnets.LlamaAttention._init_rope = _patched_init_rope
