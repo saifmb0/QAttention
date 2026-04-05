@@ -449,183 +449,150 @@ def run_generation(
     max_depth: int = 7,
 ) -> List[GenerationRecord]:
     """
-    Run Eagle-3 eagenerate() on every prompt.
+    Run Eagle-3 generation on every prompt by calling model.eagenerate() directly
+    (no reimplemented loop) and monkey-patching tree_decoding for per-step timing.
 
-    When use_ragged=True, F.scaled_dot_product_attention is patched for each
-    tree_decoding() call so the intra-tree Q×K block uses the ragged Triton
-    kernel + prefix flash + online-LSE merge instead of vanilla SDPA+tree-mask.
-    Each tree_decoding() call is timed with a pair of CUDA events.
+    When use_ragged=True, SDPA is additionally patched inside each tree_decoding
+    call to route the intra-tree Q×K block through the ragged Triton kernel.
     """
-    from eagle.model.utils import (
-        initialize_tree, tree_decoding, evaluate_posterior,
-        update_inference_inputs, reset_tree_mode,
-    )
-    from eagle.model.kv_cache import initialize_past_key_values
+    import eagle.model.utils as _eagle_utils
+    import eagle.model.ea_model as _eagle_ea
 
-    # ── device resolution ────────────────────────────────────────────────────
-    # With device_map="auto" (e.g. Kaggle 2×T4) the model is sharded: the
-    # embedding lives on cuda:0 while later transformer blocks live on cuda:1.
-    # initialize_tree / tree_decoding return tensors on the *last-layer* device.
-    # We must keep all Eagle-API tensors on the same device; we discover that
-    # canonical device after initialize_tree (see below).
     prefill_device = next(model.base_model.parameters()).device
     total_token    = model.ea_layer.total_tokens
     records: List[GenerationRecord] = []
 
-    for pi, raw in enumerate(prompts):
-        # ── tokenise ─────────────────────────────────────────────────────────
-        # LLaMA-3 Instruct: apply_chat_template with tokenize=True so that
-        # <|begin_of_text|> etc. are proper special-token IDs, not sub-words.
-        if is_llama3 and hasattr(model.tokenizer, "apply_chat_template"):
-            input_ids = _llama3_input_ids(model.tokenizer, raw, prefill_device)
-        else:
-            prompt    = _get_prompt(model_type, raw)
-            input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(prefill_device)
+    # ── per-call timing state (shared across the monkey-patch closure) ───────
+    _state: Dict[str, object] = {
+        "verify_ms":    [],   # List[float]
+        "accepted":     [],   # List[int]  (accept_length + 1 per step)
+        "prev_new_tok": 0,    # int – new_token value before this step
+    }
 
-        # Diagnostic on first prompt: verify the prompt decoded correctly.
-        if pi == 0:
-            decoded_head = model.tokenizer.decode(input_ids[0, :16], skip_special_tokens=False)
-            print(f"  [diag] input_ids shape={tuple(input_ids.shape)} "
-                  f"device={input_ids.device}  "
-                  f"head tokens: {decoded_head!r}")
+    # ea_model.py uses `from .utils import *` so eagenerate() calls the names
+    # bound in ea_model's own module namespace.  Patch there, not in utils.
+    _orig_tree_decoding = _eagle_ea.tree_decoding
+    _orig_update        = _eagle_ea.update_inference_inputs
 
-        input_len = input_ids.shape[1]
-        max_len   = input_len + max_new_tokens + total_token + 10
-
-        (past_kv, past_kv_data, cur_len_data) = initialize_past_key_values(
-            model.base_model, max_length=max_len
-        )
-        model.past_key_values       = past_kv
-        model.past_key_values_data  = past_kv_data
-        model.current_length_data   = cur_len_data
-        model.ea_layer.reset_kv()
-        reset_tree_mode(model)
-
-        torch.cuda.synchronize()
-        wall_t0 = time.perf_counter()
-
-        (draft_tokens, retrieve_idx, tree_mask, tree_pos_ids,
-         logits, hidden_state, sample_token) = initialize_tree(
-            input_ids, model, past_kv, None
-        )
-
-        # ── pin all Eagle tensors to a single canonical device ───────────────
-        # With device_map="auto", initialize_tree may return tensors on a
-        # different device than prefill_device (e.g. cuda:1 on Kaggle 2×T4).
-        # Every subsequent Eagle API call must receive tensors on the same
-        # device or the KV cache writes target the wrong GPU and hidden states
-        # are corrupted, producing degenerate repetitive output.
-        tree_device  = draft_tokens.device
-        input_ids    = input_ids.to(tree_device)
-        retrieve_idx = retrieve_idx.to(tree_device)
-        tree_mask    = tree_mask.to(tree_device)
-        tree_pos_ids = tree_pos_ids.to(tree_device)
-        if hidden_state is not None:
-            hidden_state = hidden_state.to(tree_device)
-
-        if pi == 0 and tree_device != prefill_device:
-            print(f"  [diag] multi-GPU detected: prefill={prefill_device} "
-                  f"tree_device={tree_device} — all Eagle tensors pinned to {tree_device}")
-
-        padding = torch.full((1, 1), -1, dtype=torch.long, device=tree_device)
-        new_token   = 0
-        verify_ms_list: List[float] = []
-        accepted_list:  List[int]   = []
-        gen_max = max_len - total_token - 10
-
-        for _ in range(gen_max):
-            model.base_model.model.tree_mask = tree_mask
-
-            # ── time verification (base-model forward with tree Q×K) ───────
-            e0 = torch.cuda.Event(enable_timing=True)
-            e1 = torch.cuda.Event(enable_timing=True)
-            e0.record()
-            if use_ragged:
-                with ragged_eagle_context(branching_factor, max_depth):
-                    logits, hidden_new, _ = tree_decoding(
-                        model, draft_tokens, past_kv, tree_pos_ids, input_ids, retrieve_idx,
-                    )
-            else:
-                logits, hidden_new, _ = tree_decoding(
-                    model, draft_tokens, past_kv, tree_pos_ids, input_ids, retrieve_idx,
+    def _timed_tree_decoding(mdl, tree_candidates, past_key_values,
+                              tree_position_ids, input_ids, retrieve_indices):
+        e0 = torch.cuda.Event(enable_timing=True)
+        e1 = torch.cuda.Event(enable_timing=True)
+        e0.record()
+        if use_ragged:
+            with ragged_eagle_context(branching_factor, max_depth):
+                result = _orig_tree_decoding(
+                    mdl, tree_candidates, past_key_values,
+                    tree_position_ids, input_ids, retrieve_indices,
                 )
-            e1.record()
-            torch.cuda.synchronize()
-            verify_ms_list.append(e0.elapsed_time(e1))
-
-            # acceptance
-            draft_long = torch.cat((draft_tokens, padding), dim=1)
-            candidates = draft_long[0, retrieve_idx]
-            # Use EAGLE's default temperature handling (pass None).
-            # Some Eagle versions expect a callable/logits_processor when a
-            # non-None numeric temperature is passed; preserve original API
-            # behaviour by passing None here.
-            best_cand, accept_len, sample_p = evaluate_posterior(
-                logits, candidates, None
+        else:
+            result = _orig_tree_decoding(
+                mdl, tree_candidates, past_key_values,
+                tree_position_ids, input_ids, retrieve_indices,
             )
-            (input_ids, draft_tokens, retrieve_idx, tree_mask, tree_pos_ids,
-             new_token, hidden_state, sample_token) = update_inference_inputs(
-                input_ids, candidates, best_cand, accept_len,
-                retrieve_idx, None, new_token,
-                past_kv_data, cur_len_data, model, hidden_new, sample_p,
-            )
-
-            # Re-pin after update in case Eagle returns tensors on a different device.
-            input_ids    = input_ids.to(tree_device)
-            draft_tokens = draft_tokens.to(tree_device)
-            retrieve_idx = retrieve_idx.to(tree_device)
-            tree_mask    = tree_mask.to(tree_device)
-            tree_pos_ids = tree_pos_ids.to(tree_device)
-            accepted_list.append(int(accept_len.item()) + 1)  # +1 for sampled base token
-
-            # termination
-            gen_so_far = input_ids[0, input_len:].tolist()
-            if is_llama3:
-                eot = model.tokenizer.convert_tokens_to_ids("<|eot_id|>")
-                if eot in gen_so_far:
-                    break
-            if model.tokenizer.eos_token_id in gen_so_far:
-                break
-            if new_token >= max_new_tokens or input_ids.shape[1] >= gen_max:
-                break
-
+        e1.record()
         torch.cuda.synchronize()
-        wall_ms  = (time.perf_counter() - wall_t0) * 1000
-        n_steps  = len(verify_ms_list)
-        total_a  = sum(accepted_list)
-        mean_a   = total_a / n_steps if n_steps else 0.0
-        acc_rate = mean_a  / (total_token + 1) if total_token else 0.0
-        tot_vms  = sum(verify_ms_list)
-        mean_vms = tot_vms / n_steps if n_steps else 0.0
-        vfrac    = tot_vms / wall_ms  if wall_ms  else 0.0
+        _state["verify_ms"].append(e0.elapsed_time(e1))  # type: ignore[attr-defined]
+        return result
 
-        n_new = int(new_token)  # update_inference_inputs returns a CUDA tensor
+    def _tracked_update(input_ids, candidates, best_candidate, accept_length,
+                        retrieve_indices, logits_processor, new_token,
+                        past_key_values_data_list, current_length_data,
+                        mdl, hidden_state_new, sample_p):
+        result = _orig_update(
+            input_ids, candidates, best_candidate, accept_length,
+            retrieve_indices, logits_processor, new_token,
+            past_key_values_data_list, current_length_data,
+            mdl, hidden_state_new, sample_p,
+        )
+        # result[5] is new_token after the update step.
+        new_tok_after = int(result[5])
+        delta = new_tok_after - int(_state["prev_new_tok"])  # type: ignore[arg-type]
+        _state["accepted"].append(delta)  # type: ignore[attr-defined]
+        _state["prev_new_tok"] = new_tok_after
+        return result
 
-        rec = GenerationRecord(
-            prompt=raw[:80],
-            num_tokens=n_new,
-            num_steps=n_steps,
-            wall_ms=wall_ms,
-            tok_per_sec=n_new / (wall_ms / 1000) if wall_ms else 0.0,
-            mean_accepted_per_step=mean_a,
-            acceptance_rate=acc_rate,
-            mean_verify_ms=mean_vms,
-            verify_fraction=vfrac,
-        )
-        records.append(rec)
+    _eagle_ea.tree_decoding           = _timed_tree_decoding
+    _eagle_ea.update_inference_inputs = _tracked_update
 
-        snippet = model.tokenizer.decode(
-            input_ids[0, input_len: input_len + min(n_new, 50)],
-            skip_special_tokens=True,
-        )
-        print(
-            f"  [{pi+1}/{len(prompts)}] "
-            f"{n_new} tok / {n_steps} steps  "
-            f"accept={mean_a:.2f}/step ({acc_rate:.1%})  "
-            f"{rec.tok_per_sec:.1f} tok/s  "
-            f"verify={mean_vms:.1f} ms/step ({vfrac:.0%} of time)  "
-            f"→ \"{snippet[:60]}...\""
-        )
+    try:
+        for pi, raw in enumerate(prompts):
+            # ── tokenise ─────────────────────────────────────────────────────
+            if is_llama3 and hasattr(model.tokenizer, "apply_chat_template"):
+                input_ids = _llama3_input_ids(model.tokenizer, raw, prefill_device)
+            else:
+                prompt    = _get_prompt(model_type, raw)
+                input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(prefill_device)
+
+            # Diagnostic on first prompt.
+            if pi == 0:
+                decoded_head = model.tokenizer.decode(input_ids[0, :16], skip_special_tokens=False)
+                print(f"  [diag] input_ids shape={tuple(input_ids.shape)} "
+                      f"device={input_ids.device}  "
+                      f"head tokens: {decoded_head!r}")
+
+            input_len = input_ids.shape[1]
+
+            # ── reset per-prompt state ────────────────────────────────────────
+            _state["verify_ms"]    = []
+            _state["accepted"]     = []
+            _state["prev_new_tok"] = 0
+
+            torch.cuda.synchronize()
+            wall_t0 = time.perf_counter()
+
+            # ── run generation via EAGLE's own loop (no reimplementation) ─────
+            out_ids, new_token, n_steps_idx = model.eagenerate(
+                input_ids,
+                temperature=0.0,
+                max_new_tokens=max_new_tokens,
+                is_llama3=is_llama3,
+                log=True,
+            )
+
+            torch.cuda.synchronize()
+            wall_ms = (time.perf_counter() - wall_t0) * 1000
+
+            verify_ms_list: List[float] = list(_state["verify_ms"])   # type: ignore[arg-type]
+            accepted_list:  List[int]   = list(_state["accepted"])     # type: ignore[arg-type]
+            n_steps  = len(verify_ms_list)
+            total_a  = sum(accepted_list)
+            mean_a   = total_a / n_steps if n_steps else 0.0
+            acc_rate = mean_a  / (total_token + 1) if total_token else 0.0
+            tot_vms  = sum(verify_ms_list)
+            mean_vms = tot_vms / n_steps if n_steps else 0.0
+            vfrac    = tot_vms / wall_ms  if wall_ms  else 0.0
+            n_new    = int(new_token)
+
+            rec = GenerationRecord(
+                prompt=raw[:80],
+                num_tokens=n_new,
+                num_steps=n_steps,
+                wall_ms=wall_ms,
+                tok_per_sec=n_new / (wall_ms / 1000) if wall_ms else 0.0,
+                mean_accepted_per_step=mean_a,
+                acceptance_rate=acc_rate,
+                mean_verify_ms=mean_vms,
+                verify_fraction=vfrac,
+            )
+            records.append(rec)
+
+            snippet = model.tokenizer.decode(
+                out_ids[0, input_len: input_len + min(n_new, 50)],
+                skip_special_tokens=True,
+            )
+            print(
+                f"  [{pi+1}/{len(prompts)}] "
+                f"{n_new} tok / {n_steps} steps  "
+                f"accept={mean_a:.2f}/step ({acc_rate:.1%})  "
+                f"{rec.tok_per_sec:.1f} tok/s  "
+                f"verify={mean_vms:.1f} ms/step ({vfrac:.0%} of time)  "
+                f"→ \"{snippet[:60]}...\""
+            )
+    finally:
+        # Always restore originals even if an exception occurs.
+        _eagle_ea.tree_decoding           = _orig_tree_decoding
+        _eagle_ea.update_inference_inputs = _orig_update
 
     return records
 
