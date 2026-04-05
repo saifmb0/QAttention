@@ -394,19 +394,6 @@ def load_eagle_model(
                     self.config.rope_scaling = {**rs, "type": rope_type}
             _orig_init_rope(self)
         _cnets.LlamaAttention._init_rope = _patched_init_rope
-
-        from eagle.model import modeling_llama_kv as _m_kv
-        if hasattr(_m_kv, "LlamaRotaryEmbedding_L31"):
-            _orig_l31_init = _m_kv.LlamaRotaryEmbedding_L31.__init__
-            def _patched_l31_init(self, *args, **kwargs):
-                _orig_l31_init(self, *args, **kwargs)
-                if self.config is not None and getattr(self.config, "rope_scaling", None):
-                    factor = self.config.rope_scaling.get("factor", 8.0)
-                    self.rope_kwargs["factor"] = factor
-                    inv_freq, self.attention_scaling = self.rope_init_fn(self.config, None, **self.rope_kwargs)
-                    self.register_buffer("inv_freq", inv_freq, persistent=False)
-                    self.original_inv_freq = self.inv_freq
-            _m_kv.LlamaRotaryEmbedding_L31.__init__ = _patched_l31_init
     except Exception:
         pass
 
