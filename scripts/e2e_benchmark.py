@@ -99,6 +99,124 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ragged_attn import ragged_attention_with_lse
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-component profiler for _ragged_tree_attn
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _RaggedProfiler:
+    """
+    Zero-overhead (CUDA-event based) profiler for _ragged_tree_attn.
+
+    Records 7 CUDA events per call, bracketing 6 phases:
+        [0]→[1] prefix_split   : K_pre/V_pre slice + .contiguous()
+        [1]→[2] flash_prefix   : flash-attention over prefix KV cache
+        [2]→[3] tree_reshape   : permute/reshape/contiguous + cu_seqlens
+        [3]→[4] ragged_kernel  : Triton ragged ancestor-sparse kernel
+        [4]→[5] out_reshape    : view + permute of kernel output
+        [5]→[6] lse_merge      : online-softmax merge of prefix + tree
+
+    Events are recorded asynchronously (negligible overhead).
+    Timing is resolved ONCE after torch.cuda.synchronize() in summary().
+    """
+
+    PHASES = ("prefix_split", "flash_prefix", "tree_reshape",
+              "ragged_kernel", "out_reshape", "lse_merge")
+
+    def __init__(self, max_shapes: int = 10):
+        self.max_shapes = max_shapes
+        self.entries: List[List[torch.cuda.Event]] = []   # 7 events each
+        self.shapes: List[str] = []
+        # hook dispatch counters
+        self.hook_total       = 0   # all _patched_matmul invocations
+        self.hook_intercept   = 0   # matched QK or AV  (ragged path)
+        self.hook_skip_verify = 0   # skipped: not in tree_verify window
+        self.hook_skip_inside = 0   # skipped: re-entrancy guard
+        self.hook_skip_shape  = 0   # skipped: dim/shape didn't match
+
+    def reset(self):
+        """Clear for next prompt."""
+        self.entries.clear()
+        self.shapes.clear()
+        self.hook_total = 0
+        self.hook_intercept = 0
+        self.hook_skip_verify = 0
+        self.hook_skip_inside = 0
+        self.hook_skip_shape = 0
+
+    def record_shapes(self, Q: torch.Tensor, K: torch.Tensor,
+                      N_prefix: int, N_tree: int):
+        if len(self.shapes) < self.max_shapes:
+            self.shapes.append(
+                f"Q={list(Q.shape)} K={list(K.shape)} "
+                f"N_prefix={N_prefix} N_tree={N_tree} "
+                f"prefix:tree=1:{N_prefix / max(N_tree, 1):.1f}"
+            )
+
+    def summary(self) -> str:
+        """
+        Format a timing breakdown table.
+        MUST be called after torch.cuda.synchronize().
+        """
+        n = len(self.entries)
+        if n == 0:
+            return "  [profile] no ragged attention calls recorded"
+
+        # compute per-phase timings from events
+        phase_sums = {p: 0.0 for p in self.PHASES}
+        total_sum = 0.0
+        for evts in self.entries:
+            for i, p in enumerate(self.PHASES):
+                phase_sums[p] += evts[i].elapsed_time(evts[i + 1])
+            total_sum += evts[0].elapsed_time(evts[6])
+
+        n_steps = max(n // 32, 1)  # assume 32 layers (LLaMA-3.1-8B)
+
+        lines = [
+            f"  ┌── RAGGED PROFILE  ({n} calls ≈ {n_steps} steps × 32 layers) {'─' * 24}",
+            f"  │ {'Component':<18s}  {'Mean/call':>10s}  {'Total':>10s}  "
+            f"{'%total':>7s}  {'Per-step':>10s}",
+            f"  │ {'─' * 18}  {'─' * 10}  {'─' * 10}  {'─' * 7}  {'─' * 10}",
+        ]
+        for p in self.PHASES:
+            s = phase_sums[p]
+            m = s / n
+            pct = s / total_sum * 100 if total_sum else 0
+            per_step = s / n_steps
+            lines.append(
+                f"  │ {p:<18s}  {m:>8.4f}ms  {s:>8.1f}ms  "
+                f"{pct:>6.1f}%  {per_step:>8.3f}ms"
+            )
+        lines.append(f"  │ {'─' * 18}  {'─' * 10}  {'─' * 10}  {'─' * 7}  {'─' * 10}")
+        per_step_total = total_sum / n_steps
+        lines.append(
+            f"  │ {'TOTAL':<18s}  {total_sum / n:>8.4f}ms  {total_sum:>8.1f}ms  "
+            f"{'100.0':>6s}%  {per_step_total:>8.3f}ms"
+        )
+
+        # hook dispatch stats
+        lines.append(f"  │")
+        lines.append(f"  │ Hook dispatch:  {self.hook_total} total matmul calls")
+        lines.append(f"  │   intercepted (→ ragged):  {self.hook_intercept}  "
+                     f"({self.hook_intercept // 2} layers × 2 matmuls)")
+        lines.append(f"  │   skip (not in verify):    {self.hook_skip_verify}")
+        lines.append(f"  │   skip (re-entrancy):      {self.hook_skip_inside}")
+        lines.append(f"  │   skip (dim/shape):        {self.hook_skip_shape}")
+
+        # shapes
+        if self.shapes:
+            lines.append(f"  │")
+            lines.append(f"  │ Shapes (first {len(self.shapes)} calls):")
+            for s in self.shapes:
+                lines.append(f"  │   {s}")
+
+        lines.append(f"  └{'─' * 70}")
+        return "\n".join(lines)
+
+
+# Module-level profiler — set by run_generation, read by _ragged_tree_attn
+_ACTIVE_PROFILER: Optional[_RaggedProfiler] = None
+
+
 # ── Version gate ─────────────────────────────────────────────────────────────
 # EAGLE 3.0.x was authored + tested against transformers 4.53.1 and
 # accelerate 0.26.0.  Silent numerical corruption (degenerate "Destination
@@ -334,9 +452,15 @@ class TreeConfig:
 # The paper shows this crossover: EAGLE-3 default (d=7) is in or near the
 # loss regime, but deeper trees — as targeted by future SD systems — win.
 #
-# Branching factors: b=8 (conservative), b=10 (EAGLE-3 default ★), b=12 (aggressive).
-DEFAULT_DEPTH_SWEEP       = [5, 7, 9, 12, 16, 20, 24, 28, 32]
-DEFAULT_BRANCHING_FACTORS = [8, 10, 12]     # low / default ★ / high
+# Focus on WIN regime for initial E2E confirmation — once we beat vanilla
+# at any point we can expand the grid back to the full sweep.
+# Previous runs showed d≤12 was LOSS at all b (0.53–0.57×) due to:
+#   1. Overhead in prefix flash + reshape + LSE merge dominates small trees
+#   2. Correctness gap (acceptance rate drop) inflates step count
+#
+# d≥16 is where the micro-benchmark shows clear kernel wins (N≥137).
+DEFAULT_DEPTH_SWEEP       = [16, 20, 24, 28, 32]
+DEFAULT_BRANCHING_FACTORS = [10]            # EAGLE-3 default ★ only for now
 
 
 def _default_total_token(b: int, d: int) -> int:
@@ -558,6 +682,7 @@ def run_generation(
     use_ragged: bool = False,
     branching_factor: int = 4,
     max_depth: int = 7,
+    profile: bool = False,
 ) -> List[GenerationRecord]:
     """
     Run Eagle-3 generation on every prompt by calling model.eagenerate() directly
@@ -572,6 +697,13 @@ def run_generation(
     prefill_device = next(model.base_model.parameters()).device
     total_token    = model.ea_layer.total_tokens
     records: List[GenerationRecord] = []
+
+    # ── profiler setup ──────────────────────────────────────────────────────
+    global _ACTIVE_PROFILER
+    _profiler: Optional[_RaggedProfiler] = None
+    if profile and use_ragged:
+        _profiler = _RaggedProfiler()
+        _ACTIVE_PROFILER = _profiler
 
     # ── per-call timing state (shared across the monkey-patch closure) ───────
     _state: Dict[str, object] = {
@@ -658,6 +790,8 @@ def run_generation(
             _state["verify_ms"]    = []
             _state["accepted"]     = []
             _state["prev_new_tok"] = 0
+            if _profiler is not None:
+                _profiler.reset()
 
             torch.cuda.synchronize()
             wall_t0 = time.perf_counter()
@@ -731,10 +865,19 @@ def run_generation(
                 + (f"[hook={_hook_fires}×]  " if use_ragged and _hook_fires else "")
                 + f"→ \"{snippet[:60]}...\""
             )
+
+            # ── profiler summary per prompt ──────────────────────────────────
+            if _profiler is not None and _profiler.entries:
+                # Events already synced from wall_ms measurement
+                print(_profiler.summary())
+
     finally:
         # Always restore originals even if an exception occurs.
         _eagle_ea.tree_decoding           = _orig_tree_decoding
         _eagle_ea.update_inference_inputs = _orig_update
+        # Clear module-level profiler reference
+        if _profiler is not None:
+            _ACTIVE_PROFILER = None
 
     return records
 
@@ -756,17 +899,32 @@ def _ragged_tree_attn(
     Splits K/V into prefix (dense causal) and tree (sparse ancestor) parts,
     runs flash attention over the prefix and the ragged Triton kernel over
     the tree, then merges via online-softmax LSE combination.
+
+    When ``_ACTIVE_PROFILER`` is set, records 7 CUDA events per call
+    (one at each phase boundary) for zero-overhead timing.
     """
+    prof = _ACTIVE_PROFILER  # read module-level profiler
+
     B, H, N_q, D = Q.shape
     N_kv         = K.shape[2]
     N_prefix     = N_kv - N_q
     scale_v      = 1.0 / math.sqrt(D)
     dtype        = Q.dtype
 
+    if prof is not None:
+        evts = [torch.cuda.Event(enable_timing=True) for _ in range(7)]
+        evts[0].record()                                        # ── [0] START
+        prof.record_shapes(Q, K, N_prefix, N_q)
+
     # ── Part 1: dense prefix attention ──────────────────────────────────────
     if N_prefix > 0:
         K_pre = K[:, :, :N_prefix, :].contiguous()   # [B, H, N_prefix, D]
         V_pre = V[:, :, :N_prefix, :].contiguous()
+
+    if prof is not None:
+        evts[1].record()                                        # ── [1] prefix_split done
+
+    if N_prefix > 0:
         try:
             out_pre, lse_pre, *_ = torch.ops.aten._scaled_dot_product_flash_attention(
                 Q.contiguous(), K_pre, V_pre,
@@ -778,6 +936,9 @@ def _ragged_tree_attn(
             lse_pre  = torch.logsumexp(sc.float(), dim=-1)     # [B, H, N_q]
             out_pre  = torch.softmax(sc, dim=-1) @ V_pre       # [B, H, N_q, D]
 
+    if prof is not None:
+        evts[2].record()                                        # ── [2] flash_prefix done
+
     # ── Part 2: ragged intra-tree attention ─────────────────────────────────
     K_tree = K[:, :, N_prefix:, :].contiguous()   # [B, H, N_q, D]
     V_tree = V[:, :, N_prefix:, :].contiguous()
@@ -788,24 +949,39 @@ def _ragged_tree_attn(
     V_r = V_tree.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
     cu  = torch.arange(0, (B + 1) * N_q, N_q, dtype=torch.int32, device=Q.device)
 
+    if prof is not None:
+        evts[3].record()                                        # ── [3] tree_reshape done
+
     out_tree_r, lse_tree_r = ragged_attention_with_lse(Q_r, K_r, V_r, cu,
                                                         branching_factor, max_depth)
+
+    if prof is not None:
+        evts[4].record()                                        # ── [4] ragged_kernel done
+
     out_tree = out_tree_r.view(B, N_q, H, D).permute(0, 2, 1, 3)   # [B…]
     lse_tree = lse_tree_r.view(B, N_q, H).permute(0, 2, 1)          # [B, H, N_q]
 
+    if prof is not None:
+        evts[5].record()                                        # ── [5] out_reshape done
+
     # ── Part 3: online-softmax merge ────────────────────────────────────────
     if N_prefix == 0:
-        return out_tree.to(dtype)
+        result = out_tree.to(dtype)
+    else:
+        lse_p   = lse_pre.float()
+        lse_t   = lse_tree.float()
+        lse_max = torch.maximum(lse_p, lse_t)
+        w_p     = torch.exp(lse_p - lse_max)
+        w_t     = torch.exp(lse_t - lse_max)
+        w_sum   = (w_p + w_t).clamp_min(1e-8).unsqueeze(-1)
+        result  = ((w_p.unsqueeze(-1) * out_pre.float()
+                    + w_t.unsqueeze(-1) * out_tree.float()) / w_sum).to(dtype)
 
-    lse_p   = lse_pre.float()
-    lse_t   = lse_tree.float()
-    lse_max = torch.maximum(lse_p, lse_t)
-    w_p     = torch.exp(lse_p - lse_max)
-    w_t     = torch.exp(lse_t - lse_max)
-    w_sum   = (w_p + w_t).clamp_min(1e-8).unsqueeze(-1)
-    out     = (w_p.unsqueeze(-1) * out_pre.float()
-               + w_t.unsqueeze(-1) * out_tree.float()) / w_sum
-    return out.to(dtype)
+    if prof is not None:
+        evts[6].record()                                        # ── [6] lse_merge done
+        prof.entries.append(evts)
+
+    return result
 
 
 @contextlib.contextmanager
@@ -868,17 +1044,28 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
     _s: Dict[str, object] = {"q": None, "kt": None, "n": 0, "inside": False}
 
     def _patched_matmul(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        _prof = _ACTIVE_PROFILER  # read once
+
         # Gate 1: only intercept when we're inside tree_decoding().
         # Without this, the hook fires during initialize_tree's backbone call
         # on newly-accepted tokens (q_len=2–4, kv_len>>q_len), routing
         # non-tree Q/K/V through the ragged kernel and crashing when seq_len
         # is not a power of 2 for Triton's tl.arange.
         if verify_flag is not None and not verify_flag["in_tree_verify"]:
+            if _prof is not None:
+                _prof.hook_total += 1
+                _prof.hook_skip_verify += 1
             return _orig_mm(A, B)
 
         # Gate 2: re-entrancy guard — calls from inside _ragged_tree_attn bypass us.
         if _s["inside"]:
+            if _prof is not None:
+                _prof.hook_total += 1
+                _prof.hook_skip_inside += 1
             return _orig_mm(A, B)
+
+        if _prof is not None:
+            _prof.hook_total += 1
 
         if A.dim() == 4 and B.dim() == 4:
             q_len  = A.shape[2]
@@ -890,6 +1077,8 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
                 # that we discard at the AV step.
                 _s["q"]  = A
                 _s["kt"] = B
+                if _prof is not None:
+                    _prof.hook_intercept += 1
                 return torch.zeros(A.shape[0], A.shape[1], q_len, kv_len,
                                    device=A.device, dtype=A.dtype)
 
@@ -900,12 +1089,16 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
                 V  = B                          # [B, H, kv_len, D]
                 _s["q"] = _s["kt"] = None
                 _s["n"] = _s["n"] + 1           # type: ignore[assignment]
+                if _prof is not None:
+                    _prof.hook_intercept += 1
                 _s["inside"] = True
                 try:
                     return _ragged_tree_attn(Q, K, V, branching_factor, max_depth)
                 finally:
                     _s["inside"] = False
 
+        if _prof is not None:
+            _prof.hook_skip_shape += 1
         return _orig_mm(A, B)
 
     torch.matmul = _patched_matmul          # type: ignore[assignment]
@@ -968,6 +1161,11 @@ def main() -> None:
     parser.add_argument("--prompt-seed", type=int, default=42)
     parser.add_argument("--hf-token", default=None,
                         help="HuggingFace API token (overrides $HF_TOKEN)")
+    parser.add_argument("--profile", action="store_true",
+                        help="Enable per-component profiling in _ragged_tree_attn. "
+                             "Prints a breakdown of prefix_split / flash_prefix / "
+                             "tree_reshape / ragged_kernel / out_reshape / lse_merge "
+                             "timing per prompt, plus hook dispatch stats.")
     args = parser.parse_args()
 
     # ── HF token propagation ─────────────────────────────────────────────────
@@ -1052,6 +1250,8 @@ def main() -> None:
     p = torch.cuda.get_device_properties(0)
     print(f"  GPU:              {p.name}  SM {p.major}.{p.minor}  "
           f"{p.total_memory // 1024**3} GB")
+    if args.profile:
+        print(f"  PROFILE MODE:     ON  (per-component timing in ragged path)")
     print("=" * 72)
 
     # ── Load model once at the deepest config ────────────────────────────────
@@ -1090,6 +1290,7 @@ def main() -> None:
                 max_new_tokens=args.max_new_tokens,
                 is_llama3=is_llama3,
                 use_ragged=False,
+                profile=args.profile,
             )
             if v_records:
                 v_tok = np.mean([r.tok_per_sec for r in v_records])
@@ -1109,6 +1310,7 @@ def main() -> None:
                 use_ragged=True,
                 branching_factor=cfg.top_k,
                 max_depth=cfg.depth,
+                profile=args.profile,
             )
             if r_records:
                 r_tok = np.mean([r.tok_per_sec for r in r_records])
