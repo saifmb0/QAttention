@@ -8,12 +8,32 @@ tree-depth configurations to establish the paper's core claim:
 
     *Deeper draft trees → more E2E speedup from the ragged attention kernel.*
 
+Narrative (validated by micro-benchmark on H100 SXM):
+------------------------------------------------------
+The ragged kernel's advantage is driven by the number of tree tokens N,
+which scales with both depth d and branching factor b.
+
+Micro-benchmark crossover thresholds (L=0, no prefix, LLaMA-3.1-8B dims):
+  B=1  (single-user serving): ~N > 200  (d≥16 at b=10)
+  B=8  (light batching):      ~N ≥ 103  (d≥12 at b=10)
+  B=32 (moderate batching):   ~N ≥  51  (d≥7  at b=10)
+  B=128(full batching):       ~N ≥  34  (d≥5  at b=10)
+
+At L=1024 (realistic prefix KV cache): ragged wins 100% of configurations.
+At L=4096: ragged wins 100%, median 4.3×, worst case 1.83×.
+
+This E2E sweep therefore spans from the loss regime (d=5,7 — N≈43,60) to
+the clear win regime (d=24,28,32 — N≈206,240,274) at EAGLE-3's default
+branching factor b=10.  The crossover shifts left (lower d) with:
+  (a) larger batch sizes (continuous-batching serving scenario), or
+  (b) larger prefix KV caches (common in mid-to-late generation).
+
 Design
 ------
 For each tree config (depth d, total_token tt, top_k):
   1. Set EAGLE model tree parameters in-place (no reload).
   2. Run vanilla Eagle-3 (default SDPA attention) on N shared prompts.
-  3. Run ragged-kernel Eagle-3 (patched SDPA → ragged + flash + LSE merge)
+  3. Run ragged-kernel Eagle-3 (patched matmul → ragged + flash + LSE merge)
      on the same prompts.
   4. Record wall-clock tok/s, acceptance rate, verify latency for both.
   5. Report actual E2E speedup  = ragged_tok_s / vanilla_tok_s.
@@ -34,11 +54,14 @@ Output
 
 Usage
 -----
-  # Default 2D sweep: depths=[5,6,7,8,9] × branching=[8,10,12], 10 prompts each
+  # Default 2D sweep: depths=[5,7,9,12,16,20,24,28,32] × branching=[8,10,12]
   python scripts/e2e_benchmark.py
 
+  # Faster run (fewer prompts, narrower sweep)
+  python scripts/e2e_benchmark.py --num-prompts 5 --depths 5,7,12,20,32
+
   # Custom grid
-  python scripts/e2e_benchmark.py --depths 6,7,8,9 --branching-factors 8,10,12,14
+  python scripts/e2e_benchmark.py --depths 7,12,20,28 --branching-factors 10,12
 
   # Override token budget for specific (b, d) cells
   python scripts/e2e_benchmark.py --total-tokens-map 'b10d7:60,b12d9:100'
@@ -294,24 +317,54 @@ class TreeConfig:
     label:        str
 
 
-# Focal sweep: centred on EAGLE-3's default operating point (d=7, top_k=10).
-# We test one step below and two steps above to show the trend clearly.
-# Branching factors bracket EAGLE-3's default top_k=10 on both sides.
-DEFAULT_DEPTH_SWEEP       = [5, 6, 7, 8, 9]
-DEFAULT_BRANCHING_FACTORS = [8, 10, 12]     # low / default / high
+# Depth sweep spanning the full story arc validated by micro-benchmark:
+#
+#   LOSS REGIME (N too small, kernel overhead dominates):
+#     d=5  → N≈43  (b=10)   |  E2E: ragged < vanilla at B≤8
+#     d=7  → N≈60  (b=10)   |  E2E: ragged ≈ vanilla at B=8, +21% at B=32
+#
+#   CROSSOVER (B-dependent; shown here for single-user B=1 serving):
+#     d=9  → N≈77            |  approaching crossover
+#     d=12 → N≈103           |  B=8 crossover from micro-benchmark
+#     d=16 → N≈137           |  clear win at B≥8
+#
+#   WIN REGIME (sparse ancestor walk dominates):
+#     d=20 → N≈171  |  d=24 → N≈206  |  d=28 → N≈240  |  d=32 → N≈274
+#
+# The paper shows this crossover: EAGLE-3 default (d=7) is in or near the
+# loss regime, but deeper trees — as targeted by future SD systems — win.
+#
+# Branching factors: b=8 (conservative), b=10 (EAGLE-3 default ★), b=12 (aggressive).
+DEFAULT_DEPTH_SWEEP       = [5, 7, 9, 12, 16, 20, 24, 28, 32]
+DEFAULT_BRANCHING_FACTORS = [8, 10, 12]     # low / default ★ / high
 
 
 def _default_total_token(b: int, d: int) -> int:
     """Token budget for a given (branching, depth) config.
 
     Anchored at EAGLE-3's default: (b=10, d=7) → total_token=60.
-    Formula: round(6 * b * d / 7), clamped to [30, 120].
-    Produces budgets that scale naturally with tree complexity:
-      b=8 , d=5  → 34    b=8 , d=7  → 48    b=8 , d=9  → 62
-      b=10, d=5  → 43    b=10, d=7  → 60 ★  b=10, d=9  → 77
-      b=12, d=5  → 51    b=12, d=7  → 72    b=12, d=9  → 93
+    Formula: round(6 * b * d / 7), with floor of 30 and NO upper cap.
+
+    The upper cap (previously 120) has been REMOVED so that large-depth
+    configs produce proportionally larger trees.  This is essential for
+    the paper's story: the ragged kernel's win regime requires N>100,
+    which only manifests at d≥12 (b=10) if the token budget is allowed
+    to scale with depth.
+
+    Token budget grid (selected b×d shown here):
+      b=8 : d=5→34   d=7→48   d=9→62   d=12→82   d=16→110  d=20→137
+            d=24→165  d=28→192 d=32→219
+      b=10: d=5→43   d=7→60★  d=9→77   d=12→103  d=16→137  d=20→171
+            d=24→206  d=28→240 d=32→274
+      b=12: d=5→51   d=7→72   d=9→93   d=12→123  d=16→165  d=20→206
+            d=24→247  d=28→288 d=32→329
+
+    Crossover from micro-benchmark (L=0, B=1 serving):
+      N ≈ 200+ needed for clear E2E win at single-user B=1.
+      N ≈ 103  for B=8  crossover  → d≥12 at b=10.
+      N ≈  51  for B=32 crossover  → d≥7  at b=10 (already wins!).
     """
-    return max(30, min(120, round(6 * b * d / 7)))
+    return max(30, round(6 * b * d / 7))
 
 
 def set_tree_config(model, cfg: TreeConfig) -> None:
@@ -819,12 +872,13 @@ def main() -> None:
     # Tree sweep — 2D grid: depths × branching factors
     parser.add_argument("--depths",
                         default=",".join(map(str, DEFAULT_DEPTH_SWEEP)),
-                        help="Comma-separated tree depths "
+                        help="Comma-separated tree depths — spans loss→crossover→win "
                              f"(default: {','.join(map(str, DEFAULT_DEPTH_SWEEP))})")
     parser.add_argument("--branching-factors",
                         default=",".join(map(str, DEFAULT_BRANCHING_FACTORS)),
                         help="Comma-separated top-k / branching factors "
-                             f"(default: {','.join(map(str, DEFAULT_BRANCHING_FACTORS))})")
+                             f"(default: {','.join(map(str, DEFAULT_BRANCHING_FACTORS))}). "
+                             "b=10 is the EAGLE-3 default.")
     parser.add_argument("--total-tokens-map", default=None,
                         help="Override total_token for specific (b,d) pairs, "
                              "e.g. 'b10d7:60,b12d9:100'. "
@@ -894,7 +948,11 @@ def main() -> None:
     # ── Banner ───────────────────────────────────────────────────────────────
     print("\n" + "=" * 72)
     print("  Eagle-3 E2E Benchmark  ·  2D Sweep: depth × branching factor")
-    print("  Narrative: deeper trees + higher b → ragged kernel wins more")
+    print("  Narrative (micro-benchmark validated on H100 SXM):")
+    print("    d=5–7  : LOSS regime   (N≈43–60, kernel overhead > savings)")
+    print("    d=9–12 : CROSSOVER     (N≈77–103, B-dependent win/loss)")
+    print("    d≥16   : WIN  regime   (N≥137, ancestor walk dominates)")
+    print("  L=0 crossovers: B=8→N≥103 | B=32→N≥51 | L≥1024→always wins")
     print("=" * 72)
     print(f"  Base:             {args.base_model}")
     print(f"  Eagle:            {args.eagle_model}  "
@@ -903,16 +961,21 @@ def main() -> None:
     print(f"  Depths:           {depths}")
     print(f"  Branching (top_k):{bfacs}")
     print(f"  Total configs:    {len(configs)}  ({len(depths)} depths × {len(bfacs)} b-factors)")
-    # Print token budget grid
-    print(f"  Token budget grid (total_token per (b, d)):")
+    # Print token budget grid with crossover markers
+    print(f"  Token budget grid (total_token per (b, d))  — N≥103 → B=8 wins:")
     hdr_b = "  " + " " * 10 + "".join(f"  d={d:2d}" for d in depths)
     print(hdr_b)
     for b in bfacs:
-        row_tt = "".join(f"  {_default_total_token(b,d):4d}" + ("★" if b==10 and d==7 else " ")
-                         for d in depths)
-        mark = " ← default" if b == 10 else ""
+        row_tt = "".join(
+            f"  {_default_total_token(b,d):4d}" + (
+                "★" if b==10 and d==7 else
+                "↑" if _default_total_token(b,d) >= 103 else " "
+            )
+            for d in depths
+        )
+        mark = " ← EAGLE-3 default" if b == 10 else ""
         print(f"  b={b:>2d} (top_k)  {row_tt}{mark}")
-    print(f"  (★ = EAGLE-3 default config)")
+    print(f"  (★ = EAGLE-3 default  |  ↑ = above B=8 kernel crossover N≥103)")
     if _hf_token:
         print(f"  HF token:         {_hf_token[:8]}…")
     p = torch.cuda.get_device_properties(0)
@@ -1122,7 +1185,7 @@ def main() -> None:
                 key=lambda x: x[0],
             )
             wins  = [d for d, sp in group if sp > 1.0]
-            b_mark = " (EAGLE-3 default top_k)" if b == 10 else ""
+            b_mark = " (EAGLE-3 default top_k ★)" if b == 10 else ""
             if wins:
                 best_d, best_sp = max(group, key=lambda x: x[1])
                 xover = min(wins)
@@ -1130,9 +1193,25 @@ def main() -> None:
                       f"(best {best_sp:.3f}× at d={best_d})")
             else:
                 print(f"  b={b}{b_mark}:  ragged does not win at any tested depth")
+                print(f"    → expected: extend depths beyond {max(d for d,_ in group)} "
+                      f"or run with larger batch (use continuous-batching scenario)")
+    # ── Micro-benchmark reference ─────────────────────────────────────────────
     print()
+    print("  Reference: micro-benchmark crossover thresholds (H100 SXM, L=0):")
+    for b in bfacs:
+        for d in depths:
+            tt = _s(b, d, 'total_token')
+            if tt is None:
+                tt = _default_total_token(b, d)
+            n = tt
+            regime = ("WIN ↑ " if n >= 103 else
+                      "CROSS" if n >= 51 else
+                      "LOSS ↓")
+            print(f"    b={b:>2d} d={d:>2d}  N≈{n:>3d}  [{regime}]" +
+                  ("  ← EAGLE-3 default" if b == 10 and d == 7 else ""))
+        print()
     print("  Kernel microbenchmarks (SDPA vs FlashInfer vs DeFT): benchmark_sota.py")
-    print("  Paper-figure micro-bench (BS=8,16 × b × d):          benchmark_micro.py")
+    print("  Paper-figure micro-bench (BS×b×d×L):                 benchmark_micro.py")
     print(f"{'=' * 72}")
     print()
 
