@@ -59,7 +59,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.ragged_attn import ragged_attention
+from src.ragged_attn import ragged_attention, ragged_attention_with_lse
 from src.tree_mask import tree_attention_mask_n
 
 
@@ -83,6 +83,7 @@ def _tree_n(b: int, d: int, token_cap: int = 0) -> int:
 DEFAULT_BATCH_SIZES       = [8, 16, 32, 64, 128]
 DEFAULT_BRANCHING_FACTORS = [8, 10, 12, 14, 16, 18, 20]
 DEFAULT_DEPTHS            = [5, 7, 9, 12, 14, 16, 20, 24, 28, 32]
+DEFAULT_PREFIX_LENGTHS    = [0, 1024, 4096]
 DEFAULT_TOKEN_CAP         = 0     # 0 = no cap; E2E benchmark uses 120
 DEFAULT_NUM_HEADS         = 32    # LLaMA-3.1-8B
 DEFAULT_HEAD_DIM          = 128   # LLaMA-3.1-8B
@@ -122,13 +123,14 @@ def _cuda_median_ms(fn, warmup: int, iters: int) -> float:
 @dataclass
 class MicroRow:
     batch_size:       int
+    prefix_length:    int       # L — simulated past KV-cache length (0 = tree-only)
     branching_factor: int
     depth:            int
     num_tree_nodes:   int
     num_heads:        int
     head_dim:         int
     eagle_tree_ms:    float     # Eagle manual matmul+mask+softmax (modeling_llama_kv.py)
-    ragged_ms:        float     # our ragged kernel
+    ragged_ms:        float     # our ragged kernel (+ flash prefix + LSE merge when L>0)
     speedup:          float     # eagle_tree_ms / ragged_ms  (>1 → ragged wins)
 
 
@@ -137,85 +139,146 @@ class MicroRow:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def benchmark_one(
-    B: int, b: int, d: int,
+    B: int, b: int, d: int, L: int,
     H: int, D: int,
     warmup: int, iters: int,
     device: torch.device,
     token_cap: int = 0,
 ) -> MicroRow:
-    """Benchmark one (B, b, d) configuration.  Returns a MicroRow.
+    """Benchmark one (B, b, d, L) configuration.  Returns a MicroRow.
 
-    N = _tree_n(b, d, token_cap) — uncapped by default in the micro-bench so
-    we can probe larger trees than Eagle-3 uses at runtime, locating the exact
-    crossover depth where the ragged kernel overtakes manual matmul.
+    Parameters
+    ----------
+    L : int
+        Simulated prefix KV-cache length.  L=0 benchmarks tree-only attention.
+        L>0 means each of the N tree tokens also attends to L prefix tokens,
+        simulating real speculative-decoding verify where the past KV cache
+        already contains L committed tokens.
+
+    The Eagle baseline uses manual matmul over the full [L+N] KV, materialising
+    the [B, H, N, L+N] attention-weight matrix.  The ragged approach uses flash
+    attention for the prefix and the Triton kernel for the tree, merging via
+    online-softmax (no large matrix materialised).
     """
     N   = _tree_n(b, d, token_cap)
     tot = B * N
     nan = float("nan")
 
     if tot > MAX_BATCH_TOKENS:
-        return MicroRow(B, b, d, N, H, D, nan, nan, nan)
+        return MicroRow(B, L, b, d, N, H, D, nan, nan, nan)
 
     torch.manual_seed(B * 10000 + b * 100 + d)
 
-    # ── Ragged tensors: [B*N, H, D] — always allocated ──────────────────────
+    # ── Ragged-layout tensors: [B*N, H, D] — always needed ──────────────────
     Q_r = torch.randn(tot, H, D, device=device, dtype=torch.float16)
     K_r = torch.randn(tot, H, D, device=device, dtype=torch.float16)
     V_r = torch.randn(tot, H, D, device=device, dtype=torch.float16)
     cu  = torch.arange(0, (B + 1) * N, N, dtype=torch.int32, device=device)
+
+    # ── Standard-layout views [B, H, N, D] — shared by Eagle & flash prefix ─
+    Q_s = Q_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+    K_s = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+    V_s = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
+
+    scale = 1.0 / math.sqrt(D)
+
+    # ── Prefix KV (simulated past cache) ────────────────────────────────────
+    K_prefix = V_prefix = None
+    if L > 0:
+        K_prefix = torch.randn(B, H, L, D, device=device, dtype=torch.float16)
+        V_prefix = torch.randn(B, H, L, D, device=device, dtype=torch.float16)
+
+    # ── Tree mask: [N, N] bool → additive bias ──────────────────────────────
+    mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
+    mask_t  = torch.from_numpy(mask_np).to(device)
+    tree_bias = torch.where(
+        mask_t,
+        torch.zeros(1, device=device, dtype=torch.float16),
+        torch.full((1,), float("-inf"), device=device, dtype=torch.float16),
+    )   # [N, N]
+    del mask_t
+
+    if L > 0:
+        # Prefix columns: all-attend (0);  tree columns: ancestor mask
+        prefix_zeros = torch.zeros(N, L, device=device, dtype=torch.float16)
+        full_bias = torch.cat([prefix_zeros, tree_bias], dim=1)  # [N, L+N]
+        bias4d = full_bias.unsqueeze(0).unsqueeze(0)             # [1,1,N,L+N]
+        del prefix_zeros, full_bias
+    else:
+        bias4d = tree_bias.unsqueeze(0).unsqueeze(0)             # [1,1,N,N]
+    del tree_bias
 
     t_eagle  = nan
     t_ragged = nan
 
     # ── Eagle manual matmul attention (the actual baseline) ──────────────────
     # Replicates modeling_llama_kv.py exactly:
-    #   attn_weights = matmul(Q, K^T) / sqrt(D) + bias_mask
+    #   attn_weights = matmul(Q, K_full^T) / sqrt(D) + bias_mask
     #   attn_weights = softmax(attn_weights, dim=-1, dtype=float32).to(fp16)
-    #   attn_output  = matmul(attn_weights, V)
-    # This is what we replace with the ragged kernel at tree_decoding time.
+    #   attn_output  = matmul(attn_weights, V_full)
+    # This materialises [B, H, N, L+N] — OOMs at large B×L.
     try:
-        # [B, H, N, D] layout expected by modeling_llama_kv.py
-        Q_s = Q_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-        K_s = K_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-        V_s = V_r.view(B, N, H, D).permute(0, 2, 1, 3).contiguous()
-
-        # Build additive bias mask [1, 1, N, N]: 0 for ancestors, -inf otherwise
-        mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
-        mask_t  = torch.from_numpy(mask_np).to(device)
-        bias4d  = torch.where(
-            mask_t,
-            torch.zeros(1, device=device, dtype=torch.float16),
-            torch.full((1,), float("-inf"), device=device, dtype=torch.float16),
-        ).unsqueeze(0).unsqueeze(0)   # [1, 1, N, N] — broadcast over B and H
-        del mask_t
-
-        scale = 1.0 / math.sqrt(D)
+        if L > 0:
+            K_eagle = torch.cat([K_prefix, K_s], dim=2)  # [B,H,L+N,D]
+            V_eagle = torch.cat([V_prefix, V_s], dim=2)  # [B,H,L+N,D]
+        else:
+            K_eagle = K_s
+            V_eagle = V_s
 
         def eagle_fn():
-            # Exact replica of EAGLE's LlamaAttention.forward() tree-verify path
-            w = torch.matmul(Q_s, K_s.transpose(-2, -1)) * scale  # [B,H,N,N]
+            w = torch.matmul(Q_s, K_eagle.transpose(-2, -1)) * scale
             w = w + bias4d
             w = torch.softmax(w, dim=-1, dtype=torch.float32).to(Q_s.dtype)
-            return torch.matmul(w, V_s)                            # [B,H,N,D]
+            return torch.matmul(w, V_eagle)
 
         t_eagle = _cuda_median_ms(eagle_fn, warmup, iters)
-        del Q_s, K_s, V_s, bias4d
+        if L > 0:
+            del K_eagle, V_eagle
     except (RuntimeError, torch.OutOfMemoryError) as exc:
         if "out of memory" not in str(exc).lower():
             raise
-        print(f"    [OOM] Eagle matmul skipped for B={B} b={b} d={d} N={N}")
+        print(f"    [OOM] Eagle matmul skipped for B={B} b={b} d={d} L={L} N={N}")
     finally:
         torch.cuda.empty_cache()
 
     # ── Ragged kernel ─────────────────────────────────────────────────────────
-    def ragged_fn():
-        return ragged_attention(Q_r, K_r, V_r, cu, b, d)
-
     try:
+        if L > 0:
+            # Flash prefix + ragged tree + online-softmax merge
+            def ragged_fn():
+                # Part 1: flash attention over prefix KV
+                out_pre, lse_pre, *_ = (
+                    torch.ops.aten._scaled_dot_product_flash_attention(
+                        Q_s.contiguous(), K_prefix, V_prefix,
+                        dropout_p=0.0, is_causal=False, scale=scale,
+                        return_debug_mask=False,
+                    )
+                )
+                # Part 2: ragged tree kernel (returns LSE for merge)
+                o_tr, lse_tr = ragged_attention_with_lse(
+                    Q_r, K_r, V_r, cu, b, d)
+                o_tree = o_tr.view(B, N, H, D).permute(0, 2, 1, 3)
+                lse_tree = lse_tr.view(B, N, H).permute(0, 2, 1)   # [B,H,N]
+                # Part 3: online-softmax merge
+                lse_p   = lse_pre.float()
+                lse_t   = lse_tree.float()
+                lse_max = torch.maximum(lse_p, lse_t)
+                w_p     = torch.exp(lse_p - lse_max)
+                w_t     = torch.exp(lse_t - lse_max)
+                w_sum   = (w_p + w_t).clamp_min(1e-8).unsqueeze(-1)
+                return ((w_p.unsqueeze(-1) * out_pre.float()
+                         + w_t.unsqueeze(-1) * o_tree.float())
+                        / w_sum).to(Q_s.dtype)
+        else:
+            def ragged_fn():
+                return ragged_attention(Q_r, K_r, V_r, cu, b, d)
+
         t_ragged = _cuda_median_ms(ragged_fn, warmup, iters)
     except (RuntimeError, torch.OutOfMemoryError) as exc:
         if "out of memory" not in str(exc).lower():
             raise
+        print(f"    [OOM] Ragged skipped for B={B} b={b} d={d} L={L} N={N}")
+    finally:
         torch.cuda.empty_cache()
 
     speedup = nan
@@ -223,10 +286,12 @@ def benchmark_one(
         speedup = t_eagle / t_ragged
 
     # Cleanup
-    del Q_r, K_r, V_r, cu
+    del Q_r, K_r, V_r, cu, Q_s, K_s, V_s, bias4d
+    if K_prefix is not None:
+        del K_prefix, V_prefix
     torch.cuda.empty_cache()
 
-    return MicroRow(B, b, d, N, H, D,
+    return MicroRow(B, L, b, d, N, H, D,
                     round(t_eagle,  4) if not math.isnan(t_eagle)  else nan,
                     round(t_ragged, 4) if not math.isnan(t_ragged) else nan,
                     round(speedup,  4) if not math.isnan(speedup)  else nan)
@@ -244,6 +309,9 @@ def main() -> None:
     parser.add_argument("--batch-sizes",       default=",".join(map(str, DEFAULT_BATCH_SIZES)))
     parser.add_argument("--branching-factors", default=",".join(map(str, DEFAULT_BRANCHING_FACTORS)))
     parser.add_argument("--depths",            default=",".join(map(str, DEFAULT_DEPTHS)))
+    parser.add_argument("--prefix-lengths",    default=",".join(map(str, DEFAULT_PREFIX_LENGTHS)),
+                        help="Simulated past KV-cache lengths. 0 = tree-only; "
+                             "1024/4096 = realistic verify-step context lengths.")
     parser.add_argument("--token-cap",  type=int, default=DEFAULT_TOKEN_CAP,
                         help="Cap N from above (0 = no cap, default). "
                              "Set to 120 to match Eagle-3 E2E configs.")
@@ -259,12 +327,13 @@ def main() -> None:
         print("[ERROR]  CUDA required.")
         sys.exit(1)
 
-    batch_sizes = [int(x) for x in args.batch_sizes.split(",")]
-    bfs         = [int(x) for x in args.branching_factors.split(",")]
-    depths      = [int(x) for x in args.depths.split(",")]
-    H, D        = args.num_heads, args.head_dim
-    device      = torch.device("cuda:0")
-    token_cap   = args.token_cap
+    batch_sizes    = [int(x) for x in args.batch_sizes.split(",")]
+    bfs            = [int(x) for x in args.branching_factors.split(",")]
+    depths         = [int(x) for x in args.depths.split(",")]
+    prefix_lengths = [int(x) for x in args.prefix_lengths.split(",")]
+    H, D           = args.num_heads, args.head_dim
+    device         = torch.device("cuda:0")
+    token_cap      = args.token_cap
 
     p = torch.cuda.get_device_properties(0)
     print("=" * 72)
@@ -275,6 +344,8 @@ def main() -> None:
     print(f"  Dims:     H={H}, D={D}  (fp16)")
     print(f"  Grid:     BS∈{batch_sizes}  b∈{bfs}  d∈{depths}"
           + (f"  N_cap={token_cap}" if token_cap else "  N_cap=none"))
+    print(f"  Prefix:   L∈{prefix_lengths}  "
+          "(0 = tree-only, >0 = flash prefix + ragged tree + LSE merge)")
     print(f"  N range:  "
           + "  ".join(f"b={b},d={depths[0]}→{_tree_n(b,depths[0],token_cap)}"
                        f"/d={depths[-1]}→{_tree_n(b,depths[-1],token_cap)}"
@@ -282,12 +353,17 @@ def main() -> None:
     print(f"  Timing:   {args.warmup} warmup + {args.iters} iters (median)")
     print("=" * 72)
 
-    configs = [(B, b, d) for B in batch_sizes for b in bfs for d in depths]
+    configs = [(B, b, d, L)
+               for L in prefix_lengths
+               for B in batch_sizes
+               for b in bfs
+               for d in depths]
     rows: List[MicroRow] = []
 
-    for ci, (B, b, d) in enumerate(configs):
+    for ci, (B, b, d, L) in enumerate(configs):
         N = _tree_n(b, d, token_cap)
-        row = benchmark_one(B, b, d, H, D, args.warmup, args.iters, device, token_cap)
+        row = benchmark_one(B, b, d, L, H, D,
+                            args.warmup, args.iters, device, token_cap)
         rows.append(row)
 
         def _f(v):
@@ -295,7 +371,7 @@ def main() -> None:
 
         spd_s = f"{row.speedup:.2f}×" if not math.isnan(row.speedup) else "  n/a"
         print(f"  [{ci+1:3d}/{len(configs)}]  "
-              f"B={B:3d} b={b} d={d} N={N:3d}  "
+              f"B={B:3d} b={b} d={d:>2d} L={L:>4d} N={N:3d}  "
               f"eagle={_f(row.eagle_tree_ms):>8s} ms  "
               f"ragged={_f(row.ragged_ms):>8s} ms  "
               f"speedup={spd_s:>7s}")
@@ -312,34 +388,39 @@ def main() -> None:
     print(f"\n  Saved: {csv_path}")
 
     # ── Pivot: speedup table ─────────────────────────────────────────────────
-    # Group by (B, b) and show speedup at each depth.
-    print()
-    print("  Speedup table  (eagle_tree / ragged — >1 means ragged is faster)")
-    print("  " + "─" * 68)
+    # Group by (B, b, L) and show speedup at each depth.
+    for L in prefix_lengths:
+        print()
+        label = "tree-only" if L == 0 else f"prefix L={L}"
+        print(f"  Speedup table [{label}]  "
+              "(eagle / ragged — >1 means ragged is faster)")
+        print("  " + "─" * 68)
 
-    for B in batch_sizes:
-        for b in bfs:
-            subset = [r for r in rows if r.batch_size == B and r.branching_factor == b]
-            if not subset:
-                continue
-            d_vals = sorted(set(r.depth for r in subset))
-            hdr = f"  B={B:>3d} b={b}  │ " + "  ".join(f"d={d:>2d}" for d in d_vals)
-            print(hdr)
-            vals = []
-            for d in d_vals:
-                match = [r for r in subset if r.depth == d]
-                if match and not math.isnan(match[0].speedup):
-                    vals.append(f"{match[0].speedup:5.2f}×")
-                else:
-                    vals.append("  n/a ")
-            print(f"{'':>15s} │ " + "  ".join(f"{v:>5s}" for v in vals))
+        for B in batch_sizes:
+            for b in bfs:
+                subset = [r for r in rows
+                          if r.batch_size == B and r.branching_factor == b
+                          and r.prefix_length == L]
+                if not subset:
+                    continue
+                d_vals = sorted(set(r.depth for r in subset))
+                hdr = (f"  B={B:>3d} b={b:>2d} │ "
+                       + "  ".join(f"d={d:>2d}" for d in d_vals))
+                print(hdr)
+                vals = []
+                for d in d_vals:
+                    match = [r for r in subset if r.depth == d]
+                    if match and not math.isnan(match[0].speedup):
+                        vals.append(f"{match[0].speedup:5.2f}×")
+                    else:
+                        vals.append("  n/a ")
+                print(f"{'':>17s} │ " + "  ".join(f"{v:>5s}" for v in vals))
     print()
 
     # ── Summary ──────────────────────────────────────────────────────────────
     valid = [r for r in rows if not math.isnan(r.speedup)]
     if valid:
         wins  = [r for r in valid if r.speedup > 1.0]
-        loses = [r for r in valid if r.speedup <= 1.0]
         best  = max(valid, key=lambda r: r.speedup)
         worst = min(valid, key=lambda r: r.speedup)
         med   = float(np.median([r.speedup for r in valid]))
@@ -353,23 +434,47 @@ def main() -> None:
               f"({100*len(wins)/len(valid):.0f}%)")
         print(f"  Median speedup:   {med:.2f}×")
         print(f"  Best speedup:     {best.speedup:.2f}×  "
-              f"(B={best.batch_size}, b={best.branching_factor}, d={best.depth})")
+              f"(B={best.batch_size}, b={best.branching_factor}, "
+              f"d={best.depth}, L={best.prefix_length})")
         print(f"  Worst speedup:    {worst.speedup:.2f}×  "
-              f"(B={worst.batch_size}, b={worst.branching_factor}, d={worst.depth})")
+              f"(B={worst.batch_size}, b={worst.branching_factor}, "
+              f"d={worst.depth}, L={worst.prefix_length})")
 
-        # Identify crossover per (B, b) group
+        # Per-prefix-length breakdown
+        for L in prefix_lengths:
+            sub = [r for r in valid if r.prefix_length == L]
+            if not sub:
+                continue
+            label = "tree-only" if L == 0 else f"L={L}"
+            sub_wins = [r for r in sub if r.speedup > 1.0]
+            sub_med  = float(np.median([r.speedup for r in sub]))
+            sub_best = max(sub, key=lambda r: r.speedup)
+            print(f"\n  [{label}]  wins {len(sub_wins)}/{len(sub)}  "
+                  f"median {sub_med:.2f}×  "
+                  f"best {sub_best.speedup:.2f}× "
+                  f"(B={sub_best.batch_size}, b={sub_best.branching_factor}, "
+                  f"d={sub_best.depth})")
+
+        # Identify crossover per (B, b, L) group
         print()
-        print("  Crossover analysis  (min depth where ragged wins, per B×b):")
-        for B in batch_sizes:
-            for b in bfs:
-                group = [r for r in valid if r.batch_size == B and r.branching_factor == b]
-                group.sort(key=lambda r: r.depth)
-                winning_depths = [r.depth for r in group if r.speedup > 1.0]
-                if winning_depths:
-                    print(f"    B={B:>3d}, b={b}:  wins at d ≥ {min(winning_depths)}  "
-                          f"(max {max(r.speedup for r in group if r.speedup > 1.0):.2f}×)")
-                else:
-                    print(f"    B={B:>3d}, b={b}:  ragged does not win at any tested depth")
+        print("  Crossover analysis  (min depth where ragged wins, per B×b×L):")
+        for L in prefix_lengths:
+            label = "tree-only" if L == 0 else f"L={L}"
+            print(f"    ── {label} ──")
+            for B in batch_sizes:
+                for b in bfs:
+                    group = [r for r in valid
+                             if r.batch_size == B and r.branching_factor == b
+                             and r.prefix_length == L]
+                    group.sort(key=lambda r: r.depth)
+                    winning_depths = [r.depth for r in group if r.speedup > 1.0]
+                    if winning_depths:
+                        print(f"      B={B:>3d}, b={b:>2d}:  wins at d ≥ "
+                              f"{min(winning_depths)}  "
+                              f"(max {max(r.speedup for r in group if r.speedup > 1.0):.2f}×)")
+                    else:
+                        print(f"      B={B:>3d}, b={b:>2d}:  ragged does not win "
+                              "at any tested depth")
         print("=" * 72)
     print()
 
