@@ -575,9 +575,16 @@ def run_generation(
 
     # ── per-call timing state (shared across the monkey-patch closure) ───────
     _state: Dict[str, object] = {
-        "verify_ms":    [],   # List[float]
-        "accepted":     [],   # List[int]  (accept_length + 1 per step)
-        "prev_new_tok": 0,    # int – new_token value before this step
+        "verify_ms":      [],    # List[float]
+        "accepted":       [],    # List[int]  (accept_length + 1 per step)
+        "prev_new_tok":   0,     # int – new_token value before this step
+        "in_tree_verify": False, # True only while inside _orig_tree_decoding
+        # ^^^ guards the matmul hook against firing during:
+        #   • initialize_tree backbone prefill (all tokens, q_len=63)
+        #   • initialize_tree incremental decode of accepted tokens (q_len=2-4)
+        #   • draft-model cnets forward (unrelated matmuls)
+        # The hook must ONLY run during tree_decoding(), where Q is the full
+        # draft tree and the attention really is the sparse ancestor attention.
     }
 
     # ea_model.py uses `from .utils import *` so eagenerate() calls the names
@@ -590,14 +597,20 @@ def run_generation(
         e0 = torch.cuda.Event(enable_timing=True)
         e1 = torch.cuda.Event(enable_timing=True)
         e0.record()
-        # NOTE: when use_ragged=True, torch.matmul is already patched at the
-        # eagenerate() level (once per prompt, via ragged_eagle_context).
-        # Do NOT wrap individual tree_decoding calls with the context — that
-        # would patch/unpatch and print on every verify step (~75×/prompt).
-        result = _orig_tree_decoding(
-            mdl, tree_candidates, past_key_values,
-            tree_position_ids, input_ids, retrieve_indices,
-        )
+        # Raise the flag so the matmul hook knows we are inside tree_decoding.
+        # This is the ONLY window where the hook should intercept matmuls.
+        # Without this guard the hook fires during initialize_tree's backbone
+        # call on the newly-accepted tokens (q_len=2–4, kv_len >> q_len),
+        # routing non-tree Q/K/V through the ragged kernel and crashing when
+        # seq_len is not a power of 2.
+        _state["in_tree_verify"] = True
+        try:
+            result = _orig_tree_decoding(
+                mdl, tree_candidates, past_key_values,
+                tree_position_ids, input_ids, retrieve_indices,
+            )
+        finally:
+            _state["in_tree_verify"] = False
         e1.record()
         torch.cuda.synchronize()
         _state["verify_ms"].append(e0.elapsed_time(e1))  # type: ignore[attr-defined]
@@ -658,7 +671,8 @@ def run_generation(
             # the autoregressive backbone forward pass (q_len=1 always).
             if use_ragged:
                 with ragged_eagle_context(branching_factor, max_depth,
-                                          silent=True) as _hook_state:
+                                          silent=True,
+                                          verify_flag=_state) as _hook_state:
                     out_ids, new_token, n_steps_idx = model.eagenerate(
                         input_ids,
                         temperature=0.0,
@@ -796,7 +810,8 @@ def _ragged_tree_attn(
 
 @contextlib.contextmanager
 def ragged_eagle_context(branching_factor: int, max_depth: int,
-                         silent: bool = False):
+                         silent: bool = False,
+                         verify_flag: Optional[Dict[str, object]] = None):
     """
     Context manager that replaces Eagle-3's tree-verification attention
     (the dense QK-softmax-AV triple) with the ragged Triton kernel.
@@ -825,9 +840,14 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
                   return the correct ragged output.
 
     Safety:
-      • The autoregressive backbone processes q_len=1 tokens — the ``q_len>1``
-        guard means the hook never fires for backbone attention matmuls.  It is
-        safe to keep the patch active for the full duration of eagenerate().
+      • ``verify_flag`` is a dict from ``run_generation``'s ``_state`` containing
+        ``in_tree_verify: bool``.  ``_timed_tree_decoding`` sets it True only
+        for the duration of the actual verify call, and the hook is a no-op
+        outside that window.  This prevents false positives during:
+          - initialize_tree backbone prefill (input tokens, q_len=63)
+          - initialize_tree incremental decode (accepted tokens, q_len=2–4
+            with kv_len >> q_len — would otherwise satisfy the shape guard)
+          - draft-model cnets forward pass
       • Re-entrancy guard (``_inside`` flag) prevents the prefix-flash fallback
         inside ``_ragged_tree_attn`` from re-triggering the state machine.
 
@@ -838,6 +858,9 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
         branching_factor: tree branching factor (= EAGLE top_k).
         max_depth:        maximum tree depth.
         silent:           if True, suppress the summary print on exit.
+        verify_flag:      dict with key ``"in_tree_verify"`` (bool) shared
+                          with ``_timed_tree_decoding``.  When provided, the
+                          hook is a no-op unless the flag is True.
     """
     _orig_mm = torch.matmul
 
@@ -845,7 +868,15 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
     _s: Dict[str, object] = {"q": None, "kt": None, "n": 0, "inside": False}
 
     def _patched_matmul(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
-        # Re-entrancy guard — calls from inside _ragged_tree_attn bypass us.
+        # Gate 1: only intercept when we're inside tree_decoding().
+        # Without this, the hook fires during initialize_tree's backbone call
+        # on newly-accepted tokens (q_len=2–4, kv_len>>q_len), routing
+        # non-tree Q/K/V through the ragged kernel and crashing when seq_len
+        # is not a power of 2 for Triton's tl.arange.
+        if verify_flag is not None and not verify_flag["in_tree_verify"]:
+            return _orig_mm(A, B)
+
+        # Gate 2: re-entrancy guard — calls from inside _ragged_tree_attn bypass us.
         if _s["inside"]:
             return _orig_mm(A, B)
 
