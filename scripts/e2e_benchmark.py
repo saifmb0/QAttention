@@ -590,17 +590,14 @@ def run_generation(
         e0 = torch.cuda.Event(enable_timing=True)
         e1 = torch.cuda.Event(enable_timing=True)
         e0.record()
-        if use_ragged:
-            with ragged_eagle_context(branching_factor, max_depth):
-                result = _orig_tree_decoding(
-                    mdl, tree_candidates, past_key_values,
-                    tree_position_ids, input_ids, retrieve_indices,
-                )
-        else:
-            result = _orig_tree_decoding(
-                mdl, tree_candidates, past_key_values,
-                tree_position_ids, input_ids, retrieve_indices,
-            )
+        # NOTE: when use_ragged=True, torch.matmul is already patched at the
+        # eagenerate() level (once per prompt, via ragged_eagle_context).
+        # Do NOT wrap individual tree_decoding calls with the context — that
+        # would patch/unpatch and print on every verify step (~75×/prompt).
+        result = _orig_tree_decoding(
+            mdl, tree_candidates, past_key_values,
+            tree_position_ids, input_ids, retrieve_indices,
+        )
         e1.record()
         torch.cuda.synchronize()
         _state["verify_ms"].append(e0.elapsed_time(e1))  # type: ignore[attr-defined]
@@ -653,13 +650,32 @@ def run_generation(
             wall_t0 = time.perf_counter()
 
             # ── run generation via EAGLE's own loop (no reimplementation) ─────
-            out_ids, new_token, n_steps_idx = model.eagenerate(
-                input_ids,
-                temperature=0.0,
-                max_new_tokens=max_new_tokens,
-                is_llama3=is_llama3,
-                log=True,
-            )
+            # When use_ragged=True, wrap the ENTIRE eagenerate() call with
+            # ragged_eagle_context so torch.matmul is patched once for all
+            # verify steps in this generation, not re-patched per step.
+            # The q_len>1 guard in the state machine ensures the hook only
+            # fires during tree verification (q_len=N_tree > 1), never during
+            # the autoregressive backbone forward pass (q_len=1 always).
+            if use_ragged:
+                with ragged_eagle_context(branching_factor, max_depth,
+                                          silent=True) as _hook_state:
+                    out_ids, new_token, n_steps_idx = model.eagenerate(
+                        input_ids,
+                        temperature=0.0,
+                        max_new_tokens=max_new_tokens,
+                        is_llama3=is_llama3,
+                        log=True,
+                    )
+                _hook_fires = int(_hook_state["n"])  # type: ignore[arg-type]
+            else:
+                out_ids, new_token, n_steps_idx = model.eagenerate(
+                    input_ids,
+                    temperature=0.0,
+                    max_new_tokens=max_new_tokens,
+                    is_llama3=is_llama3,
+                    log=True,
+                )
+                _hook_fires = 0
 
             torch.cuda.synchronize()
             wall_ms = (time.perf_counter() - wall_t0) * 1000
@@ -698,7 +714,8 @@ def run_generation(
                 f"accept={mean_a:.2f}/step ({acc_rate:.1%})  "
                 f"{rec.tok_per_sec:.1f} tok/s  "
                 f"verify={mean_vms:.1f} ms/step ({vfrac:.0%} of time)  "
-                f"→ \"{snippet[:60]}...\""
+                + (f"[hook={_hook_fires}×]  " if use_ragged and _hook_fires else "")
+                + f"→ \"{snippet[:60]}...\""
             )
     finally:
         # Always restore originals even if an exception occurs.
@@ -778,10 +795,17 @@ def _ragged_tree_attn(
 
 
 @contextlib.contextmanager
-def ragged_eagle_context(branching_factor: int, max_depth: int):
+def ragged_eagle_context(branching_factor: int, max_depth: int,
+                         silent: bool = False):
     """
     Context manager that replaces Eagle-3's tree-verification attention
     (the dense QK-softmax-AV triple) with the ragged Triton kernel.
+
+    IMPORTANT — apply this ONCE per eagenerate() call, NOT per verify step.
+    Entering/exiting this context patches and unpatches ``torch.matmul``
+    globally.  Wrapping individual tree_decoding steps instead would add
+    Python patch/unpatch + print overhead on every step (~75× per prompt),
+    easily negating any kernel speedup.
 
     Root cause of previous SDPA-patch failure:
       EAGLE's modeling_llama_kv.py and cnets.py both implement attention via
@@ -800,8 +824,20 @@ def ragged_eagle_context(branching_factor: int, max_depth: int):
                   use saved Q, K and current V to run _ragged_tree_attn;
                   return the correct ragged output.
 
-    Re-entrancy guard (``_inside`` flag) prevents the prefix-flash fallback
-    inside ``_ragged_tree_attn`` from re-triggering the state machine.
+    Safety:
+      • The autoregressive backbone processes q_len=1 tokens — the ``q_len>1``
+        guard means the hook never fires for backbone attention matmuls.  It is
+        safe to keep the patch active for the full duration of eagenerate().
+      • Re-entrancy guard (``_inside`` flag) prevents the prefix-flash fallback
+        inside ``_ragged_tree_attn`` from re-triggering the state machine.
+
+    Yields the internal state dict so callers can read ``state["n"]`` (total
+    hook fires = layers × steps) after the context exits.
+
+    Args:
+        branching_factor: tree branching factor (= EAGLE top_k).
+        max_depth:        maximum tree depth.
+        silent:           if True, suppress the summary print on exit.
     """
     _orig_mm = torch.matmul
 
@@ -843,11 +879,15 @@ def ragged_eagle_context(branching_factor: int, max_depth: int):
 
     torch.matmul = _patched_matmul          # type: ignore[assignment]
     try:
-        yield
+        yield _s                            # caller can inspect _s["n"]
     finally:
         torch.matmul = _orig_mm             # type: ignore[assignment]
-        print(f"  [ragged] matmul hook fired {_s['n']} times "
-              f"(~{int(_s['n']) // max(1, max_depth)} layer-steps)")
+        if not silent:
+            n_fires = int(_s["n"])          # type: ignore[arg-type]
+            n_layers = 32                   # LLaMA-3.1-8B
+            n_steps = n_fires // max(1, n_layers)
+            print(f"  [ragged] hook fired {n_fires}× total  "
+                  f"({n_layers} layers × {n_steps} verify steps)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
