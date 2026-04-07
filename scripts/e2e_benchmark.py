@@ -1476,16 +1476,21 @@ def main() -> None:
         for _wd in unique_depths:
             _wcfg = next(c for c in configs if c.depth == _wd)
             set_tree_config(model, _wcfg)
-            _warmup = run_generation(
-                model, warmup_prompts, args.model_type,
-                max_new_tokens=32,
-                is_llama3=is_llama3,
-                use_ragged=True,
-                branching_factor=_wcfg.top_k,
-                max_depth=_wcfg.depth,
-                profile=False,
-                max_length=_kv_max_length,
-            )
+            try:
+                _warmup = run_generation(
+                    model, warmup_prompts, args.model_type,
+                    max_new_tokens=32,
+                    is_llama3=is_llama3,
+                    use_ragged=True,
+                    branching_factor=_wcfg.top_k,
+                    max_depth=_wcfg.depth,
+                    profile=False,
+                    max_length=_kv_max_length,
+                )
+            except torch.cuda.OutOfMemoryError as _oom:
+                print(f"  [OOM] warmup d={_wd} skipped — {_oom}")
+                torch.cuda.empty_cache()
+                continue
             if _warmup:
                 print(f"  [warmup d={_wd}]  done ({_warmup[0].tok_per_sec:.1f} tok/s, "
                       f"accept={_warmup[0].mean_accepted_per_step:.2f}/step)")
@@ -1535,15 +1540,19 @@ def main() -> None:
             if not args.skip_vanilla:
                 print(f"\n  [vanilla]  depth={cfg.depth}  total_token={cfg.total_token}"
                       + (f"  L={ctx_len}" if ctx_len > 0 else ""))
-                v_records = run_generation(
-                    model, prompts, args.model_type,
-                    max_new_tokens=args.max_new_tokens,
-                    is_llama3=is_llama3,
-                    use_ragged=False,
-                    profile=args.profile,
-                    extra_prefix_ids=extra_prefix,
-                    max_length=_kv_max_length,
-                )
+                try:
+                    v_records = run_generation(
+                        model, prompts, args.model_type,
+                        max_new_tokens=args.max_new_tokens,
+                        is_llama3=is_llama3,
+                        use_ragged=False,
+                        profile=args.profile,
+                        extra_prefix_ids=extra_prefix,
+                        max_length=_kv_max_length,
+                    )
+                except torch.cuda.OutOfMemoryError as _oom:
+                    print(f"  [OOM] vanilla skipped — {_oom}")
+                    torch.cuda.empty_cache()
                 if v_records:
                     v_tok = np.mean([r.tok_per_sec for r in v_records])
                     v_acc = np.mean([r.mean_accepted_per_step for r in v_records])
@@ -1556,17 +1565,21 @@ def main() -> None:
             if not args.skip_ragged:
                 print(f"\n  [ragged]   depth={cfg.depth}  total_token={cfg.total_token}"
                       + (f"  L={ctx_len}" if ctx_len > 0 else ""))
-                r_records = run_generation(
-                    model, prompts, args.model_type,
-                    max_new_tokens=args.max_new_tokens,
-                    is_llama3=is_llama3,
-                    use_ragged=True,
-                    branching_factor=cfg.top_k,
-                    max_depth=cfg.depth,
-                    profile=args.profile,
-                    extra_prefix_ids=extra_prefix,
-                    max_length=_kv_max_length,
-                )
+                try:
+                    r_records = run_generation(
+                        model, prompts, args.model_type,
+                        max_new_tokens=args.max_new_tokens,
+                        is_llama3=is_llama3,
+                        use_ragged=True,
+                        branching_factor=cfg.top_k,
+                        max_depth=cfg.depth,
+                        profile=args.profile,
+                        extra_prefix_ids=extra_prefix,
+                        max_length=_kv_max_length,
+                    )
+                except torch.cuda.OutOfMemoryError as _oom:
+                    print(f"  [OOM] ragged skipped — {_oom}")
+                    torch.cuda.empty_cache()
                 if r_records:
                     r_tok = np.mean([r.tok_per_sec for r in r_records])
                     r_acc = np.mean([r.mean_accepted_per_step for r in r_records])
