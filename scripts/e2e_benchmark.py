@@ -769,6 +769,7 @@ def run_generation(
     max_depth: int = 7,
     profile: bool = False,
     extra_prefix_ids: Optional[torch.Tensor] = None,
+    max_length: int = 2048,
 ) -> List[GenerationRecord]:
     """
     extra_prefix_ids: optional [1, L] int64 tensor prepended to each prompt's
@@ -789,6 +790,19 @@ def run_generation(
     prefill_device = next(model.base_model.parameters()).device
     total_token    = model.ea_layer.total_tokens
     records: List[GenerationRecord] = []
+
+    # Evict stale KV cache if it was allocated at a smaller max_length than what
+    # this run requires (happens after warmup or after a shorter-context run).
+    # eagenerate() caches past_key_values on the model object and reuses them
+    # on the next call WITHOUT checking whether the tensor is large enough.
+    # Deleting them here forces a fresh allocation at the correct size.
+    _existing_kv = getattr(model, 'past_key_values', None)
+    if _existing_kv is not None:
+        _existing_kv_size = _existing_kv[0][0].data.shape[2]  # [H_kv, max_len, D]
+        if _existing_kv_size < max_length:
+            for _attr in ('past_key_values', 'past_key_values_data', 'current_length_data'):
+                if hasattr(model, _attr):
+                    delattr(model, _attr)
 
     # ── profiler setup ──────────────────────────────────────────────────────
     global _ACTIVE_PROFILER
@@ -951,6 +965,7 @@ def run_generation(
                         input_ids,
                         temperature=0.0,
                         max_new_tokens=max_new_tokens,
+                        max_length=max_length,
                         is_llama3=is_llama3,
                         log=True,
                     )
@@ -960,6 +975,7 @@ def run_generation(
                     input_ids,
                     temperature=0.0,
                     max_new_tokens=max_new_tokens,
+                    max_length=max_length,
                     is_llama3=is_llama3,
                     log=True,
                 )
@@ -1468,6 +1484,7 @@ def main() -> None:
                 branching_factor=_wcfg.top_k,
                 max_depth=_wcfg.depth,
                 profile=False,
+                max_length=_kv_max_length,
             )
             if _warmup:
                 print(f"  [warmup d={_wd}]  done ({_warmup[0].tok_per_sec:.1f} tok/s, "
@@ -1525,6 +1542,7 @@ def main() -> None:
                     use_ragged=False,
                     profile=args.profile,
                     extra_prefix_ids=extra_prefix,
+                    max_length=_kv_max_length,
                 )
                 if v_records:
                     v_tok = np.mean([r.tok_per_sec for r in v_records])
@@ -1547,6 +1565,7 @@ def main() -> None:
                     max_depth=cfg.depth,
                     profile=args.profile,
                     extra_prefix_ids=extra_prefix,
+                    max_length=_kv_max_length,
                 )
                 if r_records:
                     r_tok = np.mean([r.tok_per_sec for r in r_records])
