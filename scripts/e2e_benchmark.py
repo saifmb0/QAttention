@@ -431,6 +431,59 @@ def _load_sharegpt_prompts(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Context-length padding (growing-context simulation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Realistic filler paragraph (~150 words / ~200 tokens per repetition).
+# Represents a prior assistant response in the conversation context — the
+# setting where a user has already exchanged several turns and the KV cache
+# contains a long history when new speculation begins.
+_CONTEXT_FILLER_PARA = (
+    "Large language models such as LLaMA, GPT, and Gemini have demonstrated "
+    "remarkable capabilities across a wide range of natural language processing "
+    "tasks including question answering, summarisation, code generation, and "
+    "mathematical reasoning. These models are trained on large corpora of text "
+    "using the next-token prediction objective, which encourages the model to "
+    "learn rich representations of language structure, world knowledge, and "
+    "logical reasoning patterns. During inference, the model generates text "
+    "autoregressively, one token at a time, using the key-value cache to avoid "
+    "recomputing attention over previously processed tokens. Speculative decoding "
+    "accelerates this process by drafting multiple candidate tokens ahead of the "
+    "target model and verifying them in parallel, achieving super-linear speedups "
+    "when the draft model has a high acceptance rate. The verification step "
+    "requires attention over both the committed prefix tokens in the KV cache and "
+    "the newly drafted tree tokens, making the efficiency of the verification "
+    "attention kernel a critical determinant of end-to-end throughput. "
+)
+
+
+def _build_prefix_ids(
+    target_len: int,
+    tokenizer,
+    device: torch.device,
+) -> torch.Tensor:
+    """Build a [1, target_len] int64 tensor of filler tokens.
+
+    Tokenises _CONTEXT_FILLER_PARA, repeats until long enough, truncates
+    to exactly *target_len* tokens.  The result is a real-text token
+    sequence that will be prefilled into the KV cache before speculation,
+    simulating a mid-conversation context of the given length.
+    """
+    # Tokenise one paragraph (no special tokens — we want raw body tokens)
+    para_ids: List[int] = tokenizer.encode(
+        _CONTEXT_FILLER_PARA, add_special_tokens=False
+    )
+    if not para_ids:
+        # Fallback: use id 13 (newline equivalent in most tokenizers)
+        para_ids = [13] * 50
+
+    # Repeat until we have enough tokens, then truncate
+    reps = math.ceil(target_len / len(para_ids)) + 1
+    long_ids = (para_ids * reps)[:target_len]
+    return torch.tensor([long_ids], dtype=torch.long, device=device)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Data classes
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -712,7 +765,14 @@ def run_generation(
     branching_factor: int = 4,
     max_depth: int = 7,
     profile: bool = False,
+    extra_prefix_ids: Optional[torch.Tensor] = None,
 ) -> List[GenerationRecord]:
+    """
+    extra_prefix_ids: optional [1, L] int64 tensor prepended to each prompt's
+      input_ids before eagenerate().  Set by the context-length sweep to
+      simulate a mid-conversation KV cache of exactly L tokens.  The prefix is
+      real filler text so attention entropy is representative of actual usage.
+    """
     """
     Run Eagle-3 generation on every prompt by calling model.eagenerate() directly
     (no reimplemented loop) and monkey-patching tree_decoding for per-step timing.
@@ -842,12 +902,24 @@ def run_generation(
                 prompt    = _get_prompt(model_type, raw)
                 input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(prefill_device)
 
+            # ── Prepend context-length filler ─────────────────────────────────
+            # extra_prefix_ids is a [1, L] tensor of filler tokens that models
+            # a mid-conversation KV cache of L tokens (growing-context sweep).
+            # We prepend them so the model prefills L tokens before speculation,
+            # giving the ragged kernel its realistic prefix advantage.
+            if extra_prefix_ids is not None and extra_prefix_ids.shape[1] > 0:
+                input_ids = torch.cat(
+                    [extra_prefix_ids.to(prefill_device), input_ids], dim=1
+                )
+
             # Diagnostic on first prompt.
             if pi == 0:
+                ctx_len = extra_prefix_ids.shape[1] if extra_prefix_ids is not None else 0
                 decoded_head = model.tokenizer.decode(input_ids[0, :16], skip_special_tokens=False)
                 print(f"  [diag] input_ids shape={tuple(input_ids.shape)} "
                       f"device={input_ids.device}  "
-                      f"head tokens: {decoded_head!r}")
+                      + (f"prefix={ctx_len} + " if ctx_len else "")
+                      + f"head tokens: {decoded_head!r}")
 
             input_len = input_ids.shape[1]
 
@@ -1246,6 +1318,16 @@ def main() -> None:
                              "Prints a breakdown of prefix_split / flash_prefix / "
                              "tree_reshape / ragged_kernel / out_reshape / lse_merge "
                              "timing per prompt, plus hook dispatch stats.")
+    parser.add_argument(
+        "--context-lengths",
+        default="0",
+        help="Comma-separated list of context-prefix lengths L (tokens) to sweep over. "
+             "For each L>0, exactly L filler tokens are prepended to every prompt before "
+             "eagenerate(), simulating a mid-conversation KV cache of that size. "
+             "Micro-benchmarks show ragged wins 100%% of configs at L≥1024; this flag "
+             "validates that result end-to-end. "
+             "Example: --context-lengths 0,1024,4096  (default: 0)",
+    )
     args = parser.parse_args()
 
     # ── HF token propagation ─────────────────────────────────────────────────
@@ -1268,8 +1350,9 @@ def main() -> None:
     is_llama3 = args.model_type in ("llama3", "llama-3-instruct")
 
     # ── Build 2D tree-config sweep (depths × branching factors) ────────────
-    depths  = [int(x) for x in args.depths.split(",")]
-    bfacs   = [int(x) for x in args.branching_factors.split(",")]
+    depths         = [int(x) for x in args.depths.split(",")]
+    bfacs          = [int(x) for x in args.branching_factors.split(",")]
+    context_lengths = [int(x) for x in args.context_lengths.split(",")]
 
     # Parse optional per-cell total-token overrides: 'b10d7:60,b12d9:100'
     tt_overrides: dict = {}
@@ -1309,7 +1392,9 @@ def main() -> None:
     print(f"  Prompts:          {args.num_prompts} per config (seed={args.prompt_seed})")
     print(f"  Depths:           {depths}")
     print(f"  Branching (top_k):{bfacs}")
-    print(f"  Total configs:    {len(configs)}  ({len(depths)} depths × {len(bfacs)} b-factors)")
+    print(f"  Context lengths:  {context_lengths}")
+    print(f"  Total configs:    {len(configs) * len(context_lengths)}  "
+          f"({len(depths)} depths × {len(bfacs)} b-factors × {len(context_lengths)} ctx-lengths)")
     # Print token budget grid with crossover markers
     print(f"  Token budget grid (total_token per (b, d))  — N≥103 → B=8 wins:")
     hdr_b = "  " + " " * 10 + "".join(f"  d={d:2d}" for d in depths)
@@ -1378,102 +1463,129 @@ def main() -> None:
     # Per-config aggregated results:
     #   config_results[i] = { "vanilla": List[GenRecord], "ragged": List[GenRecord] }
     all_rows: List[dict] = []
-    summary_rows: List[dict] = []   # one row per config for the final table
+    summary_rows: List[dict] = []   # one row per (ctx_len, b, d) config
 
-    for ci, cfg in enumerate(configs):
-        print(f"\n{'━' * 72}")
-        print(f"  CONFIG {ci+1}/{len(configs)}  —  {cfg.label}")
-        print(f"    depth={cfg.depth}  total_token={cfg.total_token}  top_k={cfg.top_k}")
-        print(f"{'━' * 72}")
+    # Pre-build prefix tensors for each context length (tokenise filler once)
+    _prefix_cache: dict = {}
+    if not args.skip_vanilla or not args.skip_ragged:
+        prefill_dev = next(model.base_model.parameters()).device
+        for ctx_len in context_lengths:
+            if ctx_len > 0:
+                _prefix_cache[ctx_len] = _build_prefix_ids(
+                    ctx_len, model.tokenizer, prefill_dev
+                )
+                actual = _prefix_cache[ctx_len].shape[1]
+                print(f"  [ctx] Built prefix tensor: L={ctx_len} tokens  "
+                      f"(actual={actual}, device={prefill_dev})")
+            else:
+                _prefix_cache[0] = None
 
-        set_tree_config(model, cfg)
+    for ctx_len in context_lengths:
+        extra_prefix = _prefix_cache.get(ctx_len, None)
+        ctx_tag = f"  L={ctx_len}" if ctx_len > 0 else ""
 
-        v_records: List[GenerationRecord] = []
-        r_records: List[GenerationRecord] = []
+        for ci, cfg in enumerate(configs):
+            print(f"\n{'━' * 72}")
+            print(f"  CONFIG {ci+1}/{len(configs)}  —  {cfg.label}{ctx_tag}")
+            print(f"    depth={cfg.depth}  total_token={cfg.total_token}  "
+                  f"top_k={cfg.top_k}  context_length={ctx_len}")
+            print(f"{'━' * 72}")
 
-        # ── Vanilla Eagle-3 ──────────────────────────────────────────────────
-        if not args.skip_vanilla:
-            print(f"\n  [vanilla]  depth={cfg.depth}  total_token={cfg.total_token}")
-            v_records = run_generation(
-                model, prompts, args.model_type,
-                max_new_tokens=args.max_new_tokens,
-                is_llama3=is_llama3,
-                use_ragged=False,
-                profile=args.profile,
-            )
+            set_tree_config(model, cfg)
+
+            v_records: List[GenerationRecord] = []
+            r_records: List[GenerationRecord] = []
+
+            # ── Vanilla Eagle-3 ──────────────────────────────────────────────────
+            if not args.skip_vanilla:
+                print(f"\n  [vanilla]  depth={cfg.depth}  total_token={cfg.total_token}"
+                      + (f"  L={ctx_len}" if ctx_len > 0 else ""))
+                v_records = run_generation(
+                    model, prompts, args.model_type,
+                    max_new_tokens=args.max_new_tokens,
+                    is_llama3=is_llama3,
+                    use_ragged=False,
+                    profile=args.profile,
+                    extra_prefix_ids=extra_prefix,
+                )
+                if v_records:
+                    v_tok = np.mean([r.tok_per_sec for r in v_records])
+                    v_acc = np.mean([r.mean_accepted_per_step for r in v_records])
+                    v_vms = np.mean([r.mean_verify_ms for r in v_records])
+                    v_vfr = np.mean([r.verify_fraction for r in v_records])
+                    print(f"    → {v_tok:.1f} tok/s   {v_acc:.2f} acc/step   "
+                          f"verify={v_vms:.1f} ms ({v_vfr:.0%})")
+
+            # ── Ragged-kernel Eagle-3 ────────────────────────────────────────────
+            if not args.skip_ragged:
+                print(f"\n  [ragged]   depth={cfg.depth}  total_token={cfg.total_token}"
+                      + (f"  L={ctx_len}" if ctx_len > 0 else ""))
+                r_records = run_generation(
+                    model, prompts, args.model_type,
+                    max_new_tokens=args.max_new_tokens,
+                    is_llama3=is_llama3,
+                    use_ragged=True,
+                    branching_factor=cfg.top_k,
+                    max_depth=cfg.depth,
+                    profile=args.profile,
+                    extra_prefix_ids=extra_prefix,
+                )
+                if r_records:
+                    r_tok = np.mean([r.tok_per_sec for r in r_records])
+                    r_acc = np.mean([r.mean_accepted_per_step for r in r_records])
+                    r_vms = np.mean([r.mean_verify_ms for r in r_records])
+                    r_vfr = np.mean([r.verify_fraction for r in r_records])
+                    print(f"    → {r_tok:.1f} tok/s   {r_acc:.2f} acc/step   "
+                          f"verify={r_vms:.1f} ms ({r_vfr:.0%})")
+
+            # ── Per-config speedup ───────────────────────────────────────────────
+            if v_records and r_records:
+                v_mean = np.mean([r.tok_per_sec for r in v_records])
+                r_mean = np.mean([r.tok_per_sec for r in r_records])
+                speedup = r_mean / v_mean if v_mean > 0 else float("nan")
+                ctx_note = f" L={ctx_len}" if ctx_len > 0 else ""
+                print(f"\n  ▸ E2E speedup at d={cfg.depth}{ctx_note}:  {speedup:.3f}×  "
+                      f"({v_mean:.1f} → {r_mean:.1f} tok/s)")
+
+            # ── Collect CSV rows ─────────────────────────────────────────────────
+            for mode_label, recs in [("vanilla", v_records), ("ragged", r_records)]:
+                for r in recs:
+                    all_rows.append({
+                        "context_length":            ctx_len,
+                        "depth":                     cfg.depth,
+                        "total_token":               cfg.total_token,
+                        "top_k":                     cfg.top_k,
+                        "config_label":              cfg.label,
+                        "mode":                      mode_label,
+                        "model":                     args.base_model,
+                        "eagle_model":               args.eagle_model,
+                        "prompt":                    r.prompt,
+                        "num_tokens":                r.num_tokens,
+                        "num_steps":                 r.num_steps,
+                        "wall_ms":                   round(r.wall_ms, 1),
+                        "tok_per_sec":               round(r.tok_per_sec, 1),
+                        "mean_accepted_per_step":    round(r.mean_accepted_per_step, 3),
+                        "acceptance_rate":           round(r.acceptance_rate, 4),
+                        "mean_verify_ms":            round(r.mean_verify_ms, 3),
+                        "verify_fraction":           round(r.verify_fraction, 4),
+                    })
+
+            # ── Summary row ──────────────────────────────────────────────────────
+            s = {"context_length": ctx_len, "depth": cfg.depth,
+                 "total_token": cfg.total_token, "top_k": cfg.top_k,
+                 "label": cfg.label}
             if v_records:
-                v_tok = np.mean([r.tok_per_sec for r in v_records])
-                v_acc = np.mean([r.mean_accepted_per_step for r in v_records])
-                v_vms = np.mean([r.mean_verify_ms for r in v_records])
-                v_vfr = np.mean([r.verify_fraction for r in v_records])
-                print(f"    → {v_tok:.1f} tok/s   {v_acc:.2f} acc/step   "
-                      f"verify={v_vms:.1f} ms ({v_vfr:.0%})")
-
-        # ── Ragged-kernel Eagle-3 ────────────────────────────────────────────
-        if not args.skip_ragged:
-            print(f"\n  [ragged]   depth={cfg.depth}  total_token={cfg.total_token}")
-            r_records = run_generation(
-                model, prompts, args.model_type,
-                max_new_tokens=args.max_new_tokens,
-                is_llama3=is_llama3,
-                use_ragged=True,
-                branching_factor=cfg.top_k,
-                max_depth=cfg.depth,
-                profile=args.profile,
-            )
+                s["vanilla_tok_s"]   = round(float(np.mean([r.tok_per_sec for r in v_records])), 1)
+                s["vanilla_acc"]     = round(float(np.mean([r.mean_accepted_per_step for r in v_records])), 3)
+                s["vanilla_verify"]  = round(float(np.mean([r.verify_fraction for r in v_records])), 4)
             if r_records:
-                r_tok = np.mean([r.tok_per_sec for r in r_records])
-                r_acc = np.mean([r.mean_accepted_per_step for r in r_records])
-                r_vms = np.mean([r.mean_verify_ms for r in r_records])
-                r_vfr = np.mean([r.verify_fraction for r in r_records])
-                print(f"    → {r_tok:.1f} tok/s   {r_acc:.2f} acc/step   "
-                      f"verify={r_vms:.1f} ms ({r_vfr:.0%})")
-
-        # ── Per-config speedup ───────────────────────────────────────────────
-        if v_records and r_records:
-            v_mean = np.mean([r.tok_per_sec for r in v_records])
-            r_mean = np.mean([r.tok_per_sec for r in r_records])
-            speedup = r_mean / v_mean if v_mean > 0 else float("nan")
-            print(f"\n  ▸ E2E speedup at d={cfg.depth}:  {speedup:.3f}×  "
-                  f"({v_mean:.1f} → {r_mean:.1f} tok/s)")
-
-        # ── Collect CSV rows ─────────────────────────────────────────────────
-        for mode_label, recs in [("vanilla", v_records), ("ragged", r_records)]:
-            for r in recs:
-                all_rows.append({
-                    "depth":                    cfg.depth,
-                    "total_token":              cfg.total_token,
-                    "top_k":                    cfg.top_k,
-                    "config_label":             cfg.label,
-                    "mode":                     mode_label,
-                    "model":                    args.base_model,
-                    "eagle_model":              args.eagle_model,
-                    "prompt":                   r.prompt,
-                    "num_tokens":               r.num_tokens,
-                    "num_steps":                r.num_steps,
-                    "wall_ms":                  round(r.wall_ms, 1),
-                    "tok_per_sec":              round(r.tok_per_sec, 1),
-                    "mean_accepted_per_step":   round(r.mean_accepted_per_step, 3),
-                    "acceptance_rate":          round(r.acceptance_rate, 4),
-                    "mean_verify_ms":           round(r.mean_verify_ms, 3),
-                    "verify_fraction":          round(r.verify_fraction, 4),
-                })
-
-        # ── Summary row ──────────────────────────────────────────────────────
-        s = {"depth": cfg.depth, "total_token": cfg.total_token, "top_k": cfg.top_k,
-             "label": cfg.label}
-        if v_records:
-            s["vanilla_tok_s"]   = round(float(np.mean([r.tok_per_sec for r in v_records])), 1)
-            s["vanilla_acc"]     = round(float(np.mean([r.mean_accepted_per_step for r in v_records])), 3)
-            s["vanilla_verify"]  = round(float(np.mean([r.verify_fraction for r in v_records])), 4)
-        if r_records:
-            s["ragged_tok_s"]    = round(float(np.mean([r.tok_per_sec for r in r_records])), 1)
-            s["ragged_acc"]      = round(float(np.mean([r.mean_accepted_per_step for r in r_records])), 3)
-            s["ragged_verify"]   = round(float(np.mean([r.verify_fraction for r in r_records])), 4)
-        if v_records and r_records:
-            s["e2e_speedup"] = round(s["ragged_tok_s"] / s["vanilla_tok_s"], 4) \
-                if s.get("vanilla_tok_s", 0) > 0 else float("nan")
-        summary_rows.append(s)
+                s["ragged_tok_s"]    = round(float(np.mean([r.tok_per_sec for r in r_records])), 1)
+                s["ragged_acc"]      = round(float(np.mean([r.mean_accepted_per_step for r in r_records])), 3)
+                s["ragged_verify"]   = round(float(np.mean([r.verify_fraction for r in r_records])), 4)
+            if v_records and r_records:
+                s["e2e_speedup"] = round(s["ragged_tok_s"] / s["vanilla_tok_s"], 4) \
+                    if s.get("vanilla_tok_s", 0) > 0 else float("nan")
+            summary_rows.append(s)
 
     # ── Cleanup ──────────────────────────────────────────────────────────────
     del model
@@ -1518,30 +1630,29 @@ def main() -> None:
 
     # ── Final summary: 2D pivot tables ───────────────────────────────────────
     print(f"\n{'=' * 72}")
-    print("  E2E BENCHMARK COMPLETE  —  depth × branching factor grid")
+    print("  E2E BENCHMARK COMPLETE  —  depth × branching factor × context-length")
     print(f"{'=' * 72}")
 
-    # Helper: look up summary value for (b, d)
-    def _s(b: int, d: int, key: str):
+    # Helper: look up summary value for (ctx_len, b, d)
+    def _s(ctx_len: int, b: int, d: int, key: str):
         for row in summary_rows:
-            if row["top_k"] == b and row["depth"] == d:
+            if row["context_length"] == ctx_len and row["top_k"] == b and row["depth"] == d:
                 v = row.get(key, "")
                 return v if isinstance(v, (int, float)) and not (
                     isinstance(v, float) and math.isnan(v)
                 ) else None
         return None
 
-    def _pivot(metric_key: str, fmt: str, title: str) -> None:
-        print(f"\n  {title}")
+    def _pivot(ctx_len: int, metric_key: str, fmt: str, title: str) -> None:
+        print(f"\n  {title}  [L={ctx_len}]")
         col_w = 8
-        # header row
         hline = "  " + f"{'b \\ d':>6s}" + "".join(f"{d:>{col_w}d}" for d in depths)
         print(hline)
         print("  " + "─" * (len(hline) - 2))
         for b in bfacs:
             cells = []
             for d in depths:
-                v = _s(b, d, metric_key)
+                v = _s(ctx_len, b, d, metric_key)
                 if v is None:
                     cells.append(f"{'—':>{col_w}s}")
                 else:
@@ -1550,47 +1661,54 @@ def main() -> None:
             b_mark = " ← default" if b == 10 else ""
             print(f"  {f'b={b}':>6s}" + "".join(cells) + b_mark)
 
-    _pivot("e2e_speedup",    "{:.3f}×", "E2E Speedup  (ragged tok/s / vanilla tok/s — >1 means ragged wins)")
-    _pivot("vanilla_tok_s",  "{:.1f}",  "Vanilla Eagle-3  tok/s")
-    _pivot("ragged_tok_s",   "{:.1f}",  "Ragged-kernel Eagle-3  tok/s")
-    _pivot("vanilla_acc",    "{:.2f}",  "Mean accepted tokens/step  (vanilla)")
+    for ctx_len in context_lengths:
+        print(f"\n{'─' * 72}")
+        print(f"  CONTEXT LENGTH L={ctx_len}" + (" (baseline: no extra prefix)" if ctx_len == 0 else ""))
+        print(f"{'─' * 72}")
 
-    # ── Per-b crossover analysis ──────────────────────────────────────────────
-    print(f"\n  {'─' * 68}")
-    print("  Crossover analysis  (min depth where ragged first beats vanilla, per b)")
-    print(f"  {'─' * 68}")
-    all_speedups = [
-        (s["top_k"], s["depth"], s["e2e_speedup"])
-        for s in summary_rows
-        if isinstance(s.get("e2e_speedup"), (int, float))
-        and not math.isnan(float(s["e2e_speedup"]))
-    ]
-    if all_speedups:
-        best_overall = max(all_speedups, key=lambda x: x[2])
-        print(f"  Overall best: {best_overall[2]:.3f}× at b={best_overall[0]}, d={best_overall[1]}")
-        print()
-        for b in bfacs:
-            group = sorted(
-                [(d, sp) for bv, d, sp in all_speedups if bv == b],
-                key=lambda x: x[0],
-            )
-            wins  = [d for d, sp in group if sp > 1.0]
-            b_mark = " (EAGLE-3 default top_k ★)" if b == 10 else ""
-            if wins:
-                best_d, best_sp = max(group, key=lambda x: x[1])
-                xover = min(wins)
-                print(f"  b={b}{b_mark}:  ragged wins at d ≥ {xover}  "
-                      f"(best {best_sp:.3f}× at d={best_d})")
-            else:
-                print(f"  b={b}{b_mark}:  ragged does not win at any tested depth")
-                print(f"    → expected: extend depths beyond {max(d for d,_ in group)} "
-                      f"or run with larger batch (use continuous-batching scenario)")
+        _pivot(ctx_len, "e2e_speedup",   "{:.3f}×", "E2E Speedup  (ragged / vanilla — >1 means ragged wins)")
+        _pivot(ctx_len, "vanilla_tok_s", "{:.1f}",  "Vanilla Eagle-3  tok/s")
+        _pivot(ctx_len, "ragged_tok_s",  "{:.1f}",  "Ragged-kernel Eagle-3  tok/s")
+        _pivot(ctx_len, "vanilla_acc",   "{:.2f}",  "Mean accepted tokens/step  (vanilla)")
+
+        # ── Per-b crossover analysis ──────────────────────────────────────────
+        print(f"\n  {'─' * 66}")
+        print(f"  Crossover analysis  [L={ctx_len}]  (min depth where ragged beats vanilla)")
+        print(f"  {'─' * 66}")
+        all_speedups = [
+            (s["top_k"], s["depth"], s["e2e_speedup"])
+            for s in summary_rows
+            if s["context_length"] == ctx_len
+            and isinstance(s.get("e2e_speedup"), (int, float))
+            and not math.isnan(float(s["e2e_speedup"]))
+        ]
+        if all_speedups:
+            best_overall = max(all_speedups, key=lambda x: x[2])
+            print(f"  Overall best: {best_overall[2]:.3f}× at b={best_overall[0]}, d={best_overall[1]}")
+            print()
+            for b in bfacs:
+                group = sorted(
+                    [(d, sp) for bv, d, sp in all_speedups if bv == b],
+                    key=lambda x: x[0],
+                )
+                wins  = [d for d, sp in group if sp > 1.0]
+                b_mark = " (EAGLE-3 default top_k ★)" if b == 10 else ""
+                if wins:
+                    best_d, best_sp = max(group, key=lambda x: x[1])
+                    xover = min(wins)
+                    print(f"  b={b}{b_mark}:  ragged wins at d ≥ {xover}  "
+                          f"(best {best_sp:.3f}× at d={best_d})")
+                else:
+                    print(f"  b={b}{b_mark}:  ragged does not win at any tested depth")
+                    print(f"    → expected: extend depths beyond {max(d for d,_ in group)} "
+                          f"or run with larger batch (use continuous-batching scenario)")
+
     # ── Micro-benchmark reference ─────────────────────────────────────────────
     print()
     print("  Reference: micro-benchmark crossover thresholds (H100 SXM, L=0):")
     for b in bfacs:
         for d in depths:
-            tt = _s(b, d, 'total_token')
+            tt = _s(0, b, d, 'total_token')
             if tt is None:
                 tt = _default_total_token(b, d)
             n = tt
