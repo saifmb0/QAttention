@@ -1145,6 +1145,103 @@ def ragged_attention(
 
 
 # ---------------------------------------------------------------------------
+# Fused LSE Merge kernel
+#
+# Replaces the 5-op PyTorch merge:
+#   lse_max = torch.maximum(lse_p, lse_t)
+#   w_p  = torch.exp(lse_p - lse_max)
+#   w_t  = torch.exp(lse_t - lse_max)
+#   wsum = (w_p + w_t).clamp_min(1e-8).unsqueeze(-1)
+#   out  = (w_p[:,None]*out_p + w_t[:,None]*out_t) / wsum
+#
+# Each PyTorch op above is a separate CUDA launch that reads + writes the full
+# [B*H*N_q, D] tensor to/from HBM.  This kernel does one pass:
+#   read lse_p, lse_t, out_p[D], out_t[D] → compute in registers → write out[D].
+# Memory traffic: 4 reads + 1 write  (was ~8 reads + 5 writes across 5 kernels).
+# ---------------------------------------------------------------------------
+
+@triton.jit
+def _fused_lse_merge_kernel(
+    lse_p_ptr,      # [N_pos] float32  (B*H*N_q, contiguous)
+    lse_t_ptr,      # [N_pos] float32
+    out_p_ptr,      # [N_pos * HEAD_DIM]  fp16/bf16
+    out_t_ptr,      # [N_pos * HEAD_DIM]  fp16/bf16
+    result_ptr,     # [N_pos * HEAD_DIM]  fp16/bf16  (output)
+    N_pos,          # int  — total number of (b,h,q) positions
+    HEAD_DIM: tl.constexpr,
+):
+    """
+    Each program handles one (b, h, q) position.
+    Loads: lse_p, lse_t (scalars), out_p[D], out_t[D].
+    Writes: result[D] = (w_p*out_p + w_t*out_t) / (w_p+w_t).
+    All weights computed in fp32; result stored in the original dtype.
+    """
+    pid = tl.program_id(0)
+    if pid >= N_pos:
+        return
+
+    # ── Load LSE scalars (fp32) ─────────────────────────────────────────────
+    lse_p = tl.load(lse_p_ptr + pid).to(tl.float32)
+    lse_t = tl.load(lse_t_ptr + pid).to(tl.float32)
+
+    # ── Stable softmax weights ──────────────────────────────────────────────
+    lse_max = tl.maximum(lse_p, lse_t)
+    w_p     = tl.exp(lse_p - lse_max)
+    w_t     = tl.exp(lse_t - lse_max)
+    w_sum   = tl.maximum(w_p + w_t, 1e-8)
+
+    # ── Load D-dim output vectors ───────────────────────────────────────────
+    base   = pid * HEAD_DIM
+    d_offs = tl.arange(0, HEAD_DIM)
+    o_p_raw = tl.load(out_p_ptr + base + d_offs)   # keep original dtype for cast
+    o_t_raw = tl.load(out_t_ptr + base + d_offs)
+    _out_dtype = o_p_raw.dtype                      # fp16 or bf16
+    o_p = o_p_raw.to(tl.float32)
+    o_t = o_t_raw.to(tl.float32)
+
+    # ── Merge and write ─────────────────────────────────────────────────────
+    merged = (w_p * o_p + w_t * o_t) / w_sum
+    tl.store(result_ptr + base + d_offs, merged.to(_out_dtype))
+
+
+def fused_lse_merge(
+    lse_pre:  torch.Tensor,   # [B, H, N_q]       float32
+    lse_tree: torch.Tensor,   # [B, H, N_q]       float32
+    out_pre:  torch.Tensor,   # [B, H, N_q, D]    fp16/bf16
+    out_tree: torch.Tensor,   # [B, H, N_q, D]    fp16/bf16
+) -> torch.Tensor:            # [B, H, N_q, D]    same dtype as out_pre
+    """
+    Fused online-softmax LSE merge via a single Triton kernel.
+
+    Equivalent to the 5-op PyTorch merge but uses one HBM pass instead of five,
+    eliminating ~5 kernel-launch round-trips on typically small (N≈137–274)
+    attention output tensors.
+
+    All four inputs must be contiguous (call ``.contiguous()`` if in doubt).
+    """
+    B, H, N_q, D = out_pre.shape
+    N_pos   = B * H * N_q
+    device  = out_pre.device
+    dtype   = out_pre.dtype
+
+    # Flatten [B, H, N_q] → [N_pos] and [B, H, N_q, D] → [N_pos, D]
+    lse_p_flat = lse_pre.float().contiguous().view(N_pos)
+    lse_t_flat = lse_tree.float().contiguous().view(N_pos)
+    op_flat    = out_pre.contiguous().view(N_pos, D)
+    ot_flat    = out_tree.contiguous().view(N_pos, D)
+
+    result_flat = torch.empty(N_pos, D, dtype=dtype, device=device)
+
+    _fused_lse_merge_kernel[(N_pos,)](
+        lse_p_flat, lse_t_flat,
+        op_flat, ot_flat, result_flat,
+        N_pos,
+        HEAD_DIM=D,
+    )
+    return result_flat.view(B, H, N_q, D)
+
+
+# ---------------------------------------------------------------------------
 # Smoke test  (python -m src.ragged_attn)
 # ---------------------------------------------------------------------------
 

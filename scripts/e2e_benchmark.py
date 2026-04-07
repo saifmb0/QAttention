@@ -109,7 +109,7 @@ warnings.filterwarnings(
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.ragged_attn import ragged_attention_with_lse, ragged_attention_with_parents
+from src.ragged_attn import ragged_attention_with_lse, ragged_attention_with_parents, fused_lse_merge
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1033,18 +1033,13 @@ def _ragged_tree_attn(
     if prof is not None:
         evts[5].record()                                        # ── [5] out_reshape done
 
-    # ── Part 3: online-softmax merge ────────────────────────────────────────
+    # ── Part 3: fused online-softmax merge (single Triton kernel) ───────────
     if N_prefix == 0:
         result = out_tree.to(dtype)
     else:
-        lse_p   = lse_pre.float()
-        lse_t   = lse_tree.float()
-        lse_max = torch.maximum(lse_p, lse_t)
-        w_p     = torch.exp(lse_p - lse_max)
-        w_t     = torch.exp(lse_t - lse_max)
-        w_sum   = (w_p + w_t).clamp_min(1e-8).unsqueeze(-1)
-        result  = ((w_p.unsqueeze(-1) * out_pre.float()
-                    + w_t.unsqueeze(-1) * out_tree.float()) / w_sum).to(dtype)
+        # fused_lse_merge fuses all 5 elementwise ops into one kernel:
+        # 1 HBM pass instead of 5, eliminating ~5 kernel-launch round-trips.
+        result = fused_lse_merge(lse_pre, lse_tree, out_pre, out_tree)
 
     if prof is not None:
         evts[6].record()                                        # ── [6] lse_merge done
