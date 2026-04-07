@@ -111,6 +111,14 @@ warnings.filterwarnings(
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ragged_attn import ragged_attention_with_lse, ragged_attention_with_parents, fused_lse_merge
 
+# EAGLE internals — needed for module-level attention forward patch
+from eagle.model.modeling_llama_kv import (
+    LlamaRotaryEmbedding_L31,
+    apply_rotary_pos_emb,
+    apply_rotary_pos_emb_L31,
+    repeat_kv,
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Per-component profiler for _ragged_tree_attn
@@ -854,15 +862,15 @@ def run_generation(
 
             # ── run generation via EAGLE's own loop (no reimplementation) ─────
             # When use_ragged=True, wrap the ENTIRE eagenerate() call with
-            # ragged_eagle_context so torch.matmul is patched once for all
-            # verify steps in this generation, not re-patched per step.
-            # The q_len>1 guard in the state machine ensures the hook only
-            # fires during tree verification (q_len=N_tree > 1), never during
-            # the autoregressive backbone forward pass (q_len=1 always).
+            # ragged_eagle_context which patches LlamaAttention.forward on
+            # the base model so tree verification uses the ragged kernel.
+            # The in_tree_verify flag ensures the patch only fires during
+            # tree_decoding(), never during backbone or draft-model calls.
             if use_ragged:
                 with ragged_eagle_context(branching_factor, max_depth,
                                           silent=True,
-                                          verify_flag=_state) as _hook_state:
+                                          verify_flag=_state,
+                                          model=model) as _hook_state:
                     out_ids, new_token, n_steps_idx = model.eagenerate(
                         input_ids,
                         temperature=0.0,
@@ -957,12 +965,11 @@ def _ragged_tree_attn(
     runs flash attention over the prefix and the ragged Triton kernel over
     the tree, then merges via online-softmax LSE combination.
 
-    When ``tree_parents`` is provided (int32 [N_tree] — seq-local parent index),
-    uses the explicit-parent kernel variant for EAGLE-3's dynamic/pruned trees.
-    Otherwise falls back to the formula-based kernel (complete b-ary trees only).
-
-    When ``_ACTIVE_PROFILER`` is set, records 7 CUDA events per call
-    (one at each phase boundary) for zero-overhead timing.
+    Optimizations vs. the original matmul-hook approach:
+     - No wasted softmax/mask/scale/cast runs on garbage (those were eliminated
+       by the module-level forward patch in ragged_eagle_context).
+     - K_tree and V_tree are packed to [B*N_q,H,D] in a single
+       slice+permute+contiguous() instead of two separate copies.
     """
     prof = _ACTIVE_PROFILER  # read module-level profiler
 
@@ -1001,13 +1008,12 @@ def _ragged_tree_attn(
         evts[2].record()                                        # ── [2] flash_prefix done
 
     # ── Part 2: ragged intra-tree attention ─────────────────────────────────
-    K_tree = K[:, :, N_prefix:, :].contiguous()   # [B, H, N_q, D]
-    V_tree = V[:, :, N_prefix:, :].contiguous()
-
-    # Pack [B, H, N_q, D] → [B*N_q, H, D]
-    Q_r = Q.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
-    K_r = K_tree.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
-    V_r = V_tree.permute(0, 2, 1, 3).reshape(B * N_q, H, D).contiguous()
+    # Pack [B, H, N_q, D] → [B*N_q, H, D] in one slice+permute+contiguous
+    # (avoids the old double-copy: .contiguous() on slice then .contiguous()
+    # again after permute+reshape).
+    Q_r = Q.permute(0, 2, 1, 3).contiguous().view(B * N_q, H, D)
+    K_r = K[:, :, N_prefix:, :].permute(0, 2, 1, 3).contiguous().view(B * N_q, H, D)
+    V_r = V[:, :, N_prefix:, :].permute(0, 2, 1, 3).contiguous().view(B * N_q, H, D)
     cu  = torch.arange(0, (B + 1) * N_q, N_q, dtype=torch.int32, device=Q.device)
 
     if prof is not None:
@@ -1015,9 +1021,8 @@ def _ragged_tree_attn(
 
     # Use explicit-parent kernel when EAGLE-3 parent array is available.
     if tree_parents is not None and tree_parents.shape[0] == N_q:
-        # Pack parent array for batch: replicate per batch element
-        # tree_parents is [N_q] in local space; for packed [B*N_q] we tile it.
-        parents_packed = tree_parents.repeat(B)  # [B*N_q]
+        # B=1: tree_parents is already [N_q], skip .repeat(1)
+        parents_packed = tree_parents if B == 1 else tree_parents.repeat(B)
         out_tree_r, lse_tree_r = ragged_attention_with_parents(
             Q_r, K_r, V_r, cu, parents_packed, max_depth)
     else:
@@ -1037,8 +1042,6 @@ def _ragged_tree_attn(
     if N_prefix == 0:
         result = out_tree.to(dtype)
     else:
-        # fused_lse_merge fuses all 5 elementwise ops into one kernel:
-        # 1 HBM pass instead of 5, eliminating ~5 kernel-launch round-trips.
         result = fused_lse_merge(lse_pre, lse_tree, out_pre, out_tree)
 
     if prof is not None:
@@ -1051,134 +1054,142 @@ def _ragged_tree_attn(
 @contextlib.contextmanager
 def ragged_eagle_context(branching_factor: int, max_depth: int,
                          silent: bool = False,
-                         verify_flag: Optional[Dict[str, object]] = None):
+                         verify_flag: Optional[Dict[str, object]] = None,
+                         model=None):
     """
-    Context manager that replaces Eagle-3's tree-verification attention
-    (the dense QK-softmax-AV triple) with the ragged Triton kernel.
+    Module-level attention patch for EAGLE-3 tree verification.
 
-    IMPORTANT — apply this ONCE per eagenerate() call, NOT per verify step.
-    Entering/exiting this context patches and unpatches ``torch.matmul``
-    globally.  Wrapping individual tree_decoding steps instead would add
-    Python patch/unpatch + print overhead on every step (~75× per prompt),
-    easily negating any kernel speedup.
+    Replaces ``LlamaAttention.forward`` on the base model's attention class so
+    that during tree verification the entire QK→scale→mask→softmax→AV path is
+    replaced by a single call to ``_ragged_tree_attn``.
 
-    Root cause of previous SDPA-patch failure:
-      EAGLE's modeling_llama_kv.py and cnets.py both implement attention via
-      manual  ``torch.matmul(Q, K^T) / scale``  + ``softmax``  + ``matmul(A, V)``.
-      They NEVER call ``F.scaled_dot_product_attention``, so patching SDPA
-      had zero effect — the hook fired 0 times.
+    Why this beats the old ``torch.matmul`` hook
+    ─────────────────────────────────────────────
+    The matmul hook intercepted the QK matmul and returned zeros, but EAGLE's
+    code between QK and AV still ran:
 
-    This implementation patches ``torch.matmul`` with a shape-aware state
-    machine that identifies the two attention matmuls by their 4-D shapes:
+      ``zeros / sqrt(d)  →  + attention_mask  →  softmax(fp32)  →  .to(dtype)``
 
-      QK step:  matmul([B,H,q,D], [B,H,D,kv])  where q>1 and kv>q
-                → save Q and K; return zeros placeholder (discarded by softmax)
+    That's **6 CUDA kernels × 32 layers = 192 wasted launches** per step plus
+    ~1.5 GB of wasted HBM traffic (~5 ms on A10G).  This module-level patch
+    eliminates all of it by replacing the forward method directly.
 
-      AV step:  matmul([B,H,q,kv], [B,H,kv,D])  (immediately after QK)
-                → ignore the garbage softmax weights in A;
-                  use saved Q, K and current V to run _ragged_tree_attn;
-                  return the correct ragged output.
-
-    Safety:
-      • ``verify_flag`` is a dict from ``run_generation``'s ``_state`` containing
-        ``in_tree_verify: bool``.  ``_timed_tree_decoding`` sets it True only
-        for the duration of the actual verify call, and the hook is a no-op
-        outside that window.  This prevents false positives during:
-          - initialize_tree backbone prefill (input tokens, q_len=63)
-          - initialize_tree incremental decode (accepted tokens, q_len=2–4
-            with kv_len >> q_len — would otherwise satisfy the shape guard)
-          - draft-model cnets forward pass
-      • Re-entrancy guard (``_inside`` flag) prevents the prefix-flash fallback
-        inside ``_ragged_tree_attn`` from re-triggering the state machine.
-
-    Yields the internal state dict so callers can read ``state["n"]`` (total
-    hook fires = layers × steps) after the context exits.
+    Safety
+    ──────
+    • Only fires when ``verify_flag["in_tree_verify"]`` is True.
+    • For all other calls (initialize_tree, draft model, autoregressive decode)
+      the original LlamaAttention.forward runs unmodified.
+    • Patches the *class method*, so all 32 layers are covered atomically.
+    • Restores the original forward on context exit.
 
     Args:
         branching_factor: tree branching factor (= EAGLE top_k).
         max_depth:        maximum tree depth.
         silent:           if True, suppress the summary print on exit.
         verify_flag:      dict with key ``"in_tree_verify"`` (bool) shared
-                          with ``_timed_tree_decoding``.  When provided, the
-                          hook is a no-op unless the flag is True.
+                          with ``_timed_tree_decoding``.
+        model:            the EaModel instance (required for module-level patching).
     """
-    _orig_mm = torch.matmul
+    if model is None:
+        raise ValueError("ragged_eagle_context requires model= parameter "
+                         "for module-level attention patching")
 
-    # State: q/kt set while waiting for the AV matmul; cleared after.
-    _s: Dict[str, object] = {"q": None, "kt": None, "n": 0, "inside": False}
+    # ── Resolve the LlamaAttention class to patch ───────────────────────────
+    _AttnClass = type(model.base_model.model.layers[0].self_attn)
+    _orig_forward = _AttnClass.forward
 
-    def _patched_matmul(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
-        _prof = _ACTIVE_PROFILER  # read once
+    _s: Dict[str, object] = {"n": 0}
 
-        # Gate 1: only intercept when we're inside tree_decoding().
-        # Without this, the hook fires during initialize_tree's backbone call
-        # on newly-accepted tokens (q_len=2–4, kv_len>>q_len), routing
-        # non-tree Q/K/V through the ragged kernel and crashing when seq_len
-        # is not a power of 2 for Triton's tl.arange.
-        if verify_flag is not None and not verify_flag["in_tree_verify"]:
-            if _prof is not None:
-                _prof.hook_total += 1
-                _prof.hook_skip_verify += 1
-            return _orig_mm(A, B)
+    def _ragged_attn_forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value=None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+    ):
+        """Patched LlamaAttention.forward that uses ragged kernel during verify."""
+        # Gate: use original forward when NOT in tree verification
+        if verify_flag is None or not verify_flag.get("in_tree_verify", False):
+            return _orig_forward(self, hidden_states, attention_mask,
+                                 position_ids, past_key_value,
+                                 output_attentions, use_cache)
 
-        # Gate 2: re-entrancy guard — calls from inside _ragged_tree_attn bypass us.
-        if _s["inside"]:
-            if _prof is not None:
-                _prof.hook_total += 1
-                _prof.hook_skip_inside += 1
-            return _orig_mm(A, B)
+        # ==================================================================
+        # PRE-ATTENTION — replicated from EAGLE's LlamaAttention.forward
+        # (modeling_llama_kv.py lines 653-720)
+        # ==================================================================
+        bsz, q_len, _ = hidden_states.size()
 
-        if _prof is not None:
-            _prof.hook_total += 1
+        # QKV projections (pretraining_tp=1 path; tp>1 is unused for 8B)
+        query_states = self.q_proj(hidden_states)
+        key_states   = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
 
-        if A.dim() == 4 and B.dim() == 4:
-            q_len  = A.shape[2]
-            kv_len = B.shape[3]   # B is already transposed: [B,H,D,kv]
+        query_states = query_states.view(
+            bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = key_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-            if _s["q"] is None and q_len > 1 and kv_len > q_len:
-                # ── QK matmul: save Q=[B,H,q,D] and K^T=[B,H,D,kv] ──────────
-                # Return zeros; the downstream softmax produces garbage weights
-                # that we discard at the AV step.
-                _s["q"]  = A
-                _s["kt"] = B
-                if _prof is not None:
-                    _prof.hook_intercept += 1
-                return torch.zeros(A.shape[0], A.shape[1], q_len, kv_len,
-                                   device=A.device, dtype=A.dtype)
+        # Rotary position embeddings
+        kv_seq_len = key_states.shape[-2]
+        if past_key_value is not None:
+            kv_seq_len += past_key_value[0].shape[-2]
+        if isinstance(self.rotary_emb, LlamaRotaryEmbedding_L31):
+            cos, sin = self.rotary_emb(query_states, position_ids)
+            query_states, key_states = apply_rotary_pos_emb_L31(
+                query_states, key_states, cos, sin)
+        else:
+            cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin, position_ids)
 
-            elif _s["q"] is not None:
-                # ── AV matmul: ignore A (garbage softmax), run ragged ────────
-                Q  = _s["q"]                    # [B, H, q_len, D]
-                K  = _s["kt"].transpose(-2, -1) # [B, H, kv_len, D]
-                V  = B                          # [B, H, kv_len, D]
-                _s["q"] = _s["kt"] = None
-                _s["n"] = _s["n"] + 1           # type: ignore[assignment]
-                if _prof is not None:
-                    _prof.hook_intercept += 1
-                # Read parent array extracted in _timed_tree_decoding
-                _tree_parents = (verify_flag.get("tree_parents")
-                                 if verify_flag is not None else None)
-                _s["inside"] = True
-                try:
-                    return _ragged_tree_attn(Q, K, V, branching_factor, max_depth,
-                                             tree_parents=_tree_parents)
-                finally:
-                    _s["inside"] = False
+        # KV cache update (EAGLE's custom KVCache.cat method)
+        if past_key_value is not None:
+            key_states   = past_key_value[0].cat(key_states, dim=2)
+            value_states = past_key_value[1].cat(value_states, dim=2)
+        past_key_value = None   # EAGLE always resets on verify
 
-        if _prof is not None:
-            _prof.hook_skip_shape += 1
-        return _orig_mm(A, B)
+        # GQA: expand KV heads to match Q heads
+        key_states   = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-    torch.matmul = _patched_matmul          # type: ignore[assignment]
+        # ==================================================================
+        # RAGGED ATTENTION — replaces QK + scale + mask + softmax + AV
+        # ==================================================================
+        _tree_parents = (verify_flag.get("tree_parents")
+                         if verify_flag is not None else None)
+        attn_output = _ragged_tree_attn(
+            query_states, key_states, value_states,
+            branching_factor, max_depth,
+            tree_parents=_tree_parents)
+
+        _s["n"] = int(_s["n"]) + 1  # type: ignore[arg-type]
+
+        # ==================================================================
+        # POST-ATTENTION — replicated from EAGLE's LlamaAttention.forward
+        # (modeling_llama_kv.py lines 749-759)
+        # ==================================================================
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+        attn_output = self.o_proj(attn_output)
+
+        return attn_output, None, past_key_value
+
+    # ── Apply the patch ─────────────────────────────────────────────────────
+    _AttnClass.forward = _ragged_attn_forward   # type: ignore[assignment]
     try:
-        yield _s                            # caller can inspect _s["n"]
+        yield _s
     finally:
-        torch.matmul = _orig_mm             # type: ignore[assignment]
+        _AttnClass.forward = _orig_forward      # type: ignore[assignment]
         if not silent:
-            n_fires = int(_s["n"])          # type: ignore[arg-type]
-            n_layers = 32                   # LLaMA-3.1-8B
+            n_fires = int(_s["n"])               # type: ignore[arg-type]
+            n_layers = 32                        # LLaMA-3.1-8B
             n_steps = n_fires // max(1, n_layers)
-            print(f"  [ragged] hook fired {n_fires}× total  "
+            print(f"  [ragged] module patch fired {n_fires}× total  "
                   f"({n_layers} layers × {n_steps} verify steps)")
 
 
