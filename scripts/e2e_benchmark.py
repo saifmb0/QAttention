@@ -758,6 +758,56 @@ def load_eagle_model(
     return model
 
 
+def run_ar_baseline(
+    model,
+    prompts: List[str],
+    is_llama3: bool,
+    max_new_tokens: int,
+    extra_prefix_ids: Optional[torch.Tensor] = None,
+) -> float:
+    """Greedy autoregressive generation with no speculative decoding.
+
+    Runs model.base_model.generate() directly on each prompt and returns
+    mean tok/s.  This establishes the true AR baseline so we can report
+    SD speedup-over-AR per context length, not just ragged-over-vanilla.
+    Returns 0.0 on OOM (logged to stdout).
+    """
+    prefill_device = next(model.base_model.parameters()).device
+    tps_list: List[float] = []
+
+    for pi, raw in enumerate(prompts):
+        if is_llama3 and hasattr(model.tokenizer, "apply_chat_template"):
+            input_ids = _llama3_input_ids(model.tokenizer, raw, prefill_device)
+        else:
+            input_ids = model.tokenizer([raw], return_tensors="pt").input_ids.to(prefill_device)
+        if extra_prefix_ids is not None and extra_prefix_ids.shape[1] > 0:
+            input_ids = torch.cat([extra_prefix_ids.to(prefill_device), input_ids], dim=1)
+
+        if pi == 0:
+            print(f"  [AR diag] input_ids shape={tuple(input_ids.shape)}")
+
+        try:
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            with torch.no_grad():
+                out = model.base_model.generate(
+                    input_ids,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                )
+            torch.cuda.synchronize()
+            elapsed = time.perf_counter() - t0
+            n_new = out.shape[1] - input_ids.shape[1]
+            if n_new > 0:
+                tps_list.append(n_new / elapsed)
+        except torch.cuda.OutOfMemoryError as _oom:
+            print(f"  [AR OOM prompt {pi}] {_oom}")
+            torch.cuda.empty_cache()
+            break
+
+    return float(np.mean(tps_list)) if tps_list else 0.0
+
+
 def run_generation(
     model,
     prompts: List[str],
@@ -1327,6 +1377,10 @@ def main() -> None:
                         help="Skip vanilla Eagle-3 runs (only run ragged)")
     parser.add_argument("--skip-ragged",   action="store_true",
                         help="Skip ragged-kernel runs (only run vanilla)")
+    parser.add_argument("--include-ar-baseline", action="store_true",
+                        help="Also run plain autoregressive generation (no speculative "
+                             "decoding) at each context length using base_model.generate(). "
+                             "Reports SD speedup-over-AR alongside ragged-over-vanilla.")
     parser.add_argument("--out-dir",  default="results")
     parser.add_argument("--csv-name", default="e2e_benchmark.csv")
     parser.add_argument("--prompt-seed", type=int, default=42)
@@ -1524,6 +1578,20 @@ def main() -> None:
         extra_prefix = _prefix_cache.get(ctx_len, None)
         ctx_tag = f"  L={ctx_len}" if ctx_len > 0 else ""
 
+        # ── Native AR baseline (no SD) ────────────────────────────────────────
+        ar_tok_s: float = 0.0
+        if getattr(args, 'include_ar_baseline', False):
+            print(f"\n  [AR baseline]  L={ctx_len} — greedy AR (no speculative decoding)")
+            ar_tok_s = run_ar_baseline(
+                model, prompts[:min(5, len(prompts))], is_llama3,
+                max_new_tokens=args.max_new_tokens,
+                extra_prefix_ids=extra_prefix,
+            )
+            if ar_tok_s > 0:
+                print(f"    → AR baseline: {ar_tok_s:.1f} tok/s at L={ctx_len}")
+            else:
+                print(f"    → AR baseline: OOM / no data")
+
         for ci, cfg in enumerate(configs):
             print(f"\n{'━' * 72}")
             print(f"  CONFIG {ci+1}/{len(configs)}  —  {cfg.label}{ctx_tag}")
@@ -1624,14 +1692,20 @@ def main() -> None:
             s = {"context_length": ctx_len, "depth": cfg.depth,
                  "total_token": cfg.total_token, "top_k": cfg.top_k,
                  "label": cfg.label}
+            if ar_tok_s > 0:
+                s["ar_tok_s"] = round(ar_tok_s, 1)
             if v_records:
                 s["vanilla_tok_s"]   = round(float(np.mean([r.tok_per_sec for r in v_records])), 1)
                 s["vanilla_acc"]     = round(float(np.mean([r.mean_accepted_per_step for r in v_records])), 3)
                 s["vanilla_verify"]  = round(float(np.mean([r.verify_fraction for r in v_records])), 4)
+                if ar_tok_s > 0:
+                    s["eagle_over_ar"] = round(s["vanilla_tok_s"] / ar_tok_s, 4)
             if r_records:
                 s["ragged_tok_s"]    = round(float(np.mean([r.tok_per_sec for r in r_records])), 1)
                 s["ragged_acc"]      = round(float(np.mean([r.mean_accepted_per_step for r in r_records])), 3)
                 s["ragged_verify"]   = round(float(np.mean([r.verify_fraction for r in r_records])), 4)
+                if ar_tok_s > 0:
+                    s["ragged_over_ar"] = round(s["ragged_tok_s"] / ar_tok_s, 4)
             if v_records and r_records:
                 s["e2e_speedup"] = round(s["ragged_tok_s"] / s["vanilla_tok_s"], 4) \
                     if s.get("vanilla_tok_s", 0) > 0 else float("nan")
