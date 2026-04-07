@@ -1001,6 +1001,7 @@ def _ragged_tree_attn(
     When ``_ACTIVE_PROFILER`` is set, records 7 CUDA events per call
     (one at each phase boundary) for zero-overhead timing.
     """
+    global _RAGGED_DIAG_DONE
     prof = _ACTIVE_PROFILER  # read module-level profiler
 
     B, H, N_q, D = Q.shape
@@ -1104,7 +1105,6 @@ def _ragged_tree_attn(
         prof.entries.append(evts)
 
     # ── One-time correctness diagnostic ─────────────────────────────────────
-    global _RAGGED_DIAG_DONE
     if not _RAGGED_DIAG_DONE:
         _RAGGED_DIAG_DONE = True
         print(f"  [DIAG-attn] B={B} H={H} N_q={N_q} D={D} N_prefix={N_prefix} "
