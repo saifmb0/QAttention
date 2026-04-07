@@ -675,6 +675,7 @@ def load_eagle_model(
     total_token: int = 60,
     depth: int = 7,
     top_k: int = 10,
+    max_length: int = 2048,
 ) -> "eagle.model.ea_model.EaModel":
     _patch_transformers_for_eagle()
     from eagle.model.ea_model import EaModel
@@ -721,6 +722,7 @@ def load_eagle_model(
     # the right choice here.
     _dtype = torch.float16
     print(f"    dtype: float16 (EAGLE tested config)")
+    print(f"    KV cache max_length: {max_length} tokens")
 
     # Suppress transformers' verbose "doesn't inherit GenerationMixin" warnings
     try:
@@ -739,6 +741,7 @@ def load_eagle_model(
         torch_dtype=_dtype,
         low_cpu_mem_usage=True,
         device_map="auto",
+        max_length=max_length,
     )
     model.eval()
     cfg = model.base_model.config
@@ -1419,6 +1422,20 @@ def main() -> None:
         print(f"  PROFILE MODE:     ON  (per-component timing in ragged path)")
     print("=" * 72)
 
+    # ── Compute KV cache max_length ───────────────────────────────────────────
+    # Must accommodate: longest prefix (context sweep) + longest prompt
+    # (~512 tokens for ShareGPT after chat-template) + max_new_tokens + tree
+    # tokens emitted per verification step (~total_token).  Round up to the
+    # next multiple of 256 for alignment.
+    _max_prefix    = max(context_lengths)
+    _prompt_budget = 512          # conservative upper bound for ShareGPT prompts
+    _tree_budget   = max(c.total_token for c in configs)
+    _raw_max_len   = _max_prefix + _prompt_budget + args.max_new_tokens + _tree_budget
+    _kv_max_length = max(2048, math.ceil(_raw_max_len / 256) * 256)
+    print(f"\n  KV cache max_length: {_kv_max_length}  "
+          f"(prefix={_max_prefix} + prompt≤{_prompt_budget} + "
+          f"new={args.max_new_tokens} + tree={_tree_budget}, rounded to 256)")
+
     # ── Load model once at the deepest config ────────────────────────────────
     max_cfg = max(configs, key=lambda c: c.total_token)
     model = load_eagle_model(
@@ -1428,6 +1445,7 @@ def main() -> None:
         total_token=max_cfg.total_token,
         depth=max_cfg.depth,
         top_k=max_cfg.top_k,
+        max_length=_kv_max_length,
     )
 
     # ── Warmup: trigger Triton JIT compilation before timed runs ────────────
