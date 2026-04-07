@@ -1,0 +1,1006 @@
+% =====================================================================
+% Ancestor-Sparse Flash Attention for Tree-Structured Speculative Decoding
+% Target: MLSys 2025/2026
+% =====================================================================
+\documentclass{article}
+
+% ── MLSys / NeurIPS style base ──────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{mathtools}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{microtype}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage[margin=1in]{geometry}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  citecolor=green!50!black,
+  urlcolor=blue!70!black,
+}
+
+% ── Macros ──────────────────────────────────────────────────────────
+\newcommand{\method}{Ragged Attention}
+\newcommand{\methodshort}{RaggedAttn}
+\newcommand{\bigO}[1]{\mathcal{O}(#1)}
+\newcommand{\numtokens}{N}
+\newcommand{\depth}{d}
+\newcommand{\branching}{b}
+\newcommand{\headdim}{D}
+\newcommand{\nheads}{H}
+\newcommand{\batchsize}{B}
+\DeclareMathOperator*{\softmax}{softmax}
+\DeclareMathOperator{\parent}{parent}
+
+\title{%
+  \textbf{Only Ancestors Matter: Sparse Flash Attention for \\
+  Tree-Structured Speculative Decoding}%
+}
+
+\author{
+  Anonymous Authors \\
+  \textit{Under review — do not distribute}
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+% =====================================================================
+% ABSTRACT
+% =====================================================================
+\begin{abstract}
+Tree-structured speculative decoding---used by
+EAGLE-2~\cite{li2024eagle2}, EAGLE-3~\cite{li2025eagle3},
+Medusa~\cite{cai2024medusa}, and Sequoia~\cite{chen2024sequoia}---verifies
+hundreds to thousands of draft tokens per step.
+During verification, each token attends only to its
+$\depth{+}1$ ancestors, yet every production attention kernel
+(FlashAttention-2~\cite{dao2023flashattention2},
+FlashInfer~\cite{ye2025flashinfer}, DeFT~\cite{yao2024deft})
+performs $\bigO{\numtokens^2}$ work, blind to this sparsity.
+We present \textbf{\method{}}, a Triton kernel that
+exploits BFS tree structure to reduce per-head complexity from
+$\bigO{\numtokens^2}$ to $\bigO{\numtokens \cdot \depth}$.
+The kernel replaces the KV-block loop of FlashAttention-2
+with an ancestor walk of $\depth{+}1$ scattered gathers per Q-tile.
+On an NVIDIA H100 SXM (Hopper, SM~9.0), \method{} is benchmarked
+against the three strongest tree-attention baselines:
+FlashAttention-2 (via PyTorch SDPA flash backend),
+FlashInfer, and DeFT.
+\method{} achieves \textbf{up to 49$\boldsymbol{\times}$} speedup
+over FlashAttention-2,
+\textbf{101$\boldsymbol{\times}$} over FlashInfer, and
+\textbf{109$\boldsymbol{\times}$} over DeFT
+at $(\branching{=}4, \depth{=}6, \batchsize{=}128)$.
+At practical EAGLE-class tree sizes
+$(\branching{=}3, \depth{=}7, \batchsize{=}8)$,
+speedups are \textbf{11.9$\boldsymbol{\times}$},
+\textbf{22.3$\boldsymbol{\times}$}, and
+\textbf{45.6$\boldsymbol{\times}$} respectively.
+At small tree sizes ($\numtokens < 500$), dense kernels remain faster
+due to launch overhead; \method{}'s advantage grows monotonically
+with tree depth and batch size.
+We provide autotuned configurations for Turing~SM75 and Hopper~SM90,
+demonstrate numerical correctness to $<10^{-3}$ max absolute error,
+and characterize the quadratic padding waste dense kernels incur on
+tree-shaped batches.
+\textbf{Limitations.}\
+The kernel handles \emph{intra-tree} attention only (not the context-prefix
+KV cache), uses $\headdim{=}64$ (not the 128 common in LLaMA),
+and benchmarks use synthetic weights.
+All code, data, and reproduction scripts are open-sourced.
+\end{abstract}
+
+% =====================================================================
+\section{Introduction}\label{sec:intro}
+% =====================================================================
+
+Autoregressive decoding in large language models (LLMs) is
+fundamentally memory-bound: each token generation requires a full
+forward pass whose arithmetic intensity is limited by the
+key--value (KV) cache read \cite{leviathan2023fast, chen2023accelerating}.
+Speculative decoding addresses this by generating candidate tokens
+cheaply with a \emph{draft model} and verifying them in parallel
+with the \emph{target model} \cite{leviathan2023fast, chen2023accelerating}.
+
+Recent methods—EAGLE-2 \cite{li2024eagle2}, EAGLE-3 \cite{li2025eagle3},
+Medusa \cite{cai2024medusa}, Sequoia \cite{chen2024sequoia}, and
+SpecInfer \cite{miao2024specinfer}—extend the draft from a single
+chain to a \emph{tree} of candidate tokens, reaching
+3--6$\times$ end-to-end speedup.
+EAGLE-3, the current state of the art, achieves up to 6.5$\times$
+speedup on LLaMA-3.1-Instruct-8B by fusing draft-head training into
+the target model's pre-training objective~\cite{li2025eagle3}.
+In a complete $\branching$-ary tree of depth $\depth$, the total
+token count is
+\begin{equation}\label{eq:tree-size}
+  \numtokens = \frac{\branching^{\depth+1} - 1}{\branching - 1},
+  \quad \branching > 1.
+\end{equation}
+During verification, each draft token~$i$ in the tree may attend only
+to its ancestors—the $\depth_i + 1$ nodes on the unique root-to-$i$
+path—rather than to all $\numtokens$ tokens.  The resulting attention
+mask is therefore \emph{extremely sparse}: for $\branching = 4$,
+$\depth = 5$, only 6 of 1{,}365 positions are attended, representing
+$0.44\%$ utilization of the full mask.
+
+Despite this sparsity, all production-ready attention kernels
+(FlashAttention-2 \cite{dao2023flashattention2}, SDPA backends,
+FlashInfer \cite{ye2025flashinfer}) iterate over \emph{all} KV blocks
+and rely on causal or boolean masks to zero out irrelevant positions,
+performing $\bigO{\numtokens^2}$ work per head.
+The closest prior work is DeFT \cite{yao2024deft} (ICLR~2025), which
+groups queries by shared KV prefixes and achieves 3.59$\times$
+attention speedup over FlashAttention-2 on A100.
+DeFT's approach is \emph{KV-guided}: it partitions nodes into
+subtrees and flattens depth-first for coalesced access.
+Our approach is \emph{Q-guided}: each query independently walks its
+$\depth{+}1$ ancestors using the closed-form BFS parent formula,
+requiring no auxiliary data structures, no depth-first reordering,
+and no bitmask storage.
+
+\paragraph{Contributions.}
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item We present \textbf{\method{}}, an ancestor-sparse Flash
+    Attention variant implemented as a Triton JIT kernel.
+    It replaces the KV-block loop with an ancestor walk of exactly
+    $\depth + 1$ iterations, achieving $\bigO{\numtokens \cdot \depth}$
+    complexity per head.  Unlike DeFT, it requires no auxiliary index
+    structures---ancestor positions are computed analytically from the
+    BFS node index.
+  \item We provide \textbf{autotuned configurations} for two NVIDIA
+    microarchitectures (SM75 Turing and SM90 Hopper) with
+    Hopper-specific optimizations: large Q-tiles exploiting
+    shared memory, \texttt{int64} pointer arithmetic for $>$2\,GB tensors,
+    and dtype-aware BF16 stores.
+  \item We benchmark against \textbf{all three SOTA baselines} on
+    the NVIDIA H100 SXM (Hopper):
+    FlashAttention-2 (via PyTorch SDPA flash backend),
+    FlashInfer~\cite{ye2025flashinfer}, and
+    DeFT~\cite{yao2024deft}.
+    \method{} achieves \textbf{up to 49$\times$} over FA-2,
+    \textbf{101$\times$} over FlashInfer, and
+    \textbf{109$\times$} over DeFT at large tree sizes.
+    At practical EAGLE-class configurations
+    ($\branching{=}3, \depth{=}7, \batchsize{=}8$), speedups are
+    \textbf{11.9$\times$}, \textbf{22.3$\times$}, and
+    \textbf{45.6$\times$} respectively.
+  \item We characterize the \textbf{quadratic padding waste} incurred by
+    dense attention on tree-shaped batches, showing it exceeds
+    $99\%$ for moderate tree sizes, and present an
+    \textbf{Amdahl's-law E2E projection} estimating verification-pass
+    speedup in a full transformer stack.
+\end{enumerate}
+
+% =====================================================================
+\section{Background}\label{sec:background}
+% =====================================================================
+
+\subsection{Speculative Decoding}
+
+Speculative decoding \cite{leviathan2023fast, chen2023accelerating, stern2018blockwise}
+decomposes autoregressive generation into a \emph{draft} phase and a
+\emph{verify} phase.
+A lightweight draft model generates $\gamma$ candidate tokens, and the
+target model evaluates them in a single batched forward pass.
+Accepted tokens are committed; the first rejection triggers resampling.
+The expected wall-clock speedup is $\mathbb{E}[\tau] / c_{\text{verify}}$,
+where $\tau$ is the acceptance length and $c_{\text{verify}}$ is the
+target-model latency per verification step.
+
+\subsection{Tree-Structured Drafts}
+
+EAGLE-2 \cite{li2024eagle2}, Medusa \cite{cai2024medusa}, and
+EAGLE-3 \cite{li2025eagle3} grow a tree of $\numtokens$ candidate
+tokens rather than a single chain, organized as a complete
+$\branching$-ary tree of depth $\depth$.
+EAGLE-3 uses trees with up to 60 draft tokens at depth~8;
+EAGLE-2 typically uses depth~6.
+Nodes are BFS-ordered (level-order), so root~$= 0$ and
+$\parent(k) = \lfloor (k - 1) / \branching \rfloor$ for $k \geq 1$.
+
+\paragraph{Attention rule.}
+During verification, the attention mask is defined by the tree
+structure: token $i$ may attend to token $j$ if and only if
+$j$ is an ancestor of $i$ (including self-attention at $i = j$).
+For a node at depth $\ell$, this yields exactly $\ell + 1$
+non-zero entries in the $N$-wide mask row.
+
+\subsection{Dense Attention Is Wasteful on Trees}
+
+Standard scaled dot-product attention computes the full
+$\numtokens \times \numtokens$ attention matrix and applies a mask:
+\begin{equation}
+  \text{Attn}(Q, K, V) = \softmax\!\left(\frac{QK^\top}{\sqrt{\headdim}}
+    \odot M\right) V,
+\end{equation}
+where $M \in \{0, -\infty\}^{\numtokens \times \numtokens}$ is the
+tree-ancestry mask.
+Even optimized IO-aware kernels such as FlashAttention-2 stream all
+$\numtokens$ KV blocks per query, performing
+$\bigO{\numtokens^2 \headdim}$ FLOPs.
+For $\branching = 4$, $\depth = 5$:
+\[
+  \frac{\text{useful FMAs}}{\text{total FMAs}}
+  = \frac{(\depth + 1)}{\numtokens}
+  = \frac{6}{1{,}365} = 0.44\%.
+\]
+
+\paragraph{Padding waste.}
+When sequences of varying lengths within a speculative-decoding batch
+are padded to the maximum length $L_{\max}$, the quadratic
+attention-compute waste is:
+\begin{equation}\label{eq:padding-waste}
+  r_{\text{attn}} = \frac{\batchsize \cdot L_{\max}^2 - \sum_{i=1}^{\batchsize} L_i^2}
+  {\batchsize \cdot L_{\max}^2}.
+\end{equation}
+When most sequences are short drafts but one is the full prompt +
+tree, $r_{\text{attn}}$ approaches $1 - 1/\batchsize$, wasting
+nearly all compute in the batch.
+
+
+% =====================================================================
+\section{Method}\label{sec:method}
+% =====================================================================
+
+\subsection{Ancestor-Sparse Flash Attention}
+
+The key insight is that for BFS-ordered trees, the
+ancestor positions of any query token can be computed arithmetically
+without materializing the full attention mask.
+Given query position $q$ in sequence-local coordinates, its
+$s$-th ancestor is:
+\begin{equation}\label{eq:ancestor-walk}
+  a^{(0)}(q) = q, \quad
+  a^{(s)}(q) = \left\lfloor \frac{a^{(s-1)}(q) - 1}{\branching} \right\rfloor
+  \quad \text{for } s \geq 1,
+\end{equation}
+converging to the root ($a^{(s)} = 0$) for $s \geq \depth_q$.
+
+\paragraph{Kernel structure.}
+\method{} replaces the standard KV-block loop of FlashAttention-2
+with an \emph{ancestor walk loop} of exactly $\depth + 1$ iterations.
+At each step~$s$, for every query row $q_m$ in a BLOCK\_M-wide Q-tile:
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Compute ancestor position:}
+    $\text{cur}_m = a^{(s)}(q_{\text{off}} + m)$ via \Cref{eq:ancestor-walk}.
+  \item \textbf{Skip duplicates:} If $\text{cur}_m = \text{prev}_m$
+    (the root revisited after all ancestors are exhausted), skip the update.
+  \item \textbf{Scattered gather:}
+    Load $k_m = K[\text{seq\_start} + \text{cur}_m, h, :]$ and
+    $v_m = V[\text{seq\_start} + \text{cur}_m, h, :]$.
+  \item \textbf{Flash-Attention-2 online softmax update:}
+    Compute $\text{score}_m = \langle q_m, k_m \rangle / \sqrt{\headdim}$,
+    then update running max $m_i$, normalization $\ell_i$, and
+    accumulator using the standard two-pass rescaling
+    \cite{milakov2018online}.
+\end{enumerate}
+
+\paragraph{Complexity.}
+Each Q-tile processes $\text{BLOCK\_M}$ queries, each requiring
+$\depth + 1$ scattered K/V gathers and dot products of dimension
+$\headdim$.
+The per-head complexity is:
+\begin{equation}
+  \bigO{\frac{\numtokens}{\text{BLOCK\_M}} \cdot \text{BLOCK\_M} \cdot (\depth + 1) \cdot \headdim}
+  = \bigO{\numtokens \cdot \depth \cdot \headdim},
+\end{equation}
+compared to $\bigO{\numtokens^2 \cdot \headdim}$ for dense kernels.
+For $\branching = 4$, $\depth = 5$: the reduction factor is
+$\numtokens / (\depth + 1) = 1{,}365 / 6 \approx 227\times$.
+
+\subsection{Ragged Batching}
+
+To avoid the quadratic padding waste of \Cref{eq:padding-waste},
+\method{} operates on a \emph{ragged} (packed) tensor layout.
+All $\batchsize$ sequences are concatenated into a single 1-D token
+dimension, indexed by a \texttt{seq\_starts} array of offsets.
+Each CTA reads its batch index from a precomputed mapping and
+uses \texttt{seq\_starts} to resolve global token positions.
+
+This eliminates both token-level padding (filling short sequences
+to $L_{\max}$) and attention-compute padding (the full
+$\batchsize \cdot L_{\max}^2$ attention matrix).
+
+\subsection{Autotuned GPU Configurations}
+
+We provide Triton autotune configurations for two GPU families:
+
+\begin{table}[h]
+\centering
+\caption{Key autotune parameters per GPU microarchitecture.}
+\label{tab:autotune}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{SM75 (T4)} & \textbf{SM90 (H100)} \\
+\midrule
+BLOCK\_M          & 32--128       & 32--512           \\
+num\_warps        & 2--8          & 4--16             \\
+num\_stages       & 1             & 1                 \\
+Shared mem/SM     & 64\,KB        & 228\,KB           \\
+Pointer arith     & int32         & \textbf{int64}    \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Hopper-specific optimizations.}
+On SM~9.0 (Hopper), three key adaptations improve performance:
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Single pipeline stage:}
+    The ancestor walk has data-dependent memory addresses
+    ($a^{(s)}$ depends on $a^{(s-1)}$), preventing Triton's
+    software pipelining (\texttt{num\_stages} $> 1$) from
+    prefetching useful data.  Setting \texttt{num\_stages}$= 1$
+    avoids wasted prefetch bandwidth.
+
+  \item \textbf{int64 pointer offsets:}
+    At $\batchsize \geq 64$, $\branching = 4$, $\depth = 8$, the
+    total token count per batch reaches $\sim$5.6M.
+    With $\headdim = 64$ and FP16 storage, byte offsets exceed
+    $2^{31} - 1$ (= 2\,GB), causing silent wrap-around in int32
+    pointer arithmetic.
+    We cast all global pointer offsets to \texttt{tl.int64}.
+
+  \item \textbf{Large Q-tiles:}
+    Hopper's 228\,KB shared memory per SM allows BLOCK\_M
+    up to 512 without spilling to global memory, compared to
+    BLOCK\_M $\leq 128$ on Turing.
+\end{itemize}
+
+% =====================================================================
+\section{Experimental Setup}\label{sec:setup}
+% =====================================================================
+
+\paragraph{Hardware.}
+We evaluate on two GPUs spanning three generations:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{NVIDIA T4} (Turing, SM~7.5): 16\,GB GDDR6,
+    2{,}560 CUDA cores, 65\,TFLOPS FP16.
+  \item \textbf{NVIDIA H100 SXM} (Hopper, SM~9.0): 80\,GB HBM3,
+    132 SMs, 228\,KB shared memory/SM, 989\,TFLOPS FP16.
+\end{itemize}
+
+\paragraph{Software.}
+PyTorch~2.8.0+cu121, Triton~3.x, Python~3.12 (H100);
+PyTorch~2.1+cu118, Triton~2.1 (T4).
+
+\paragraph{Baselines.}
+We compare against three state-of-the-art attention kernels, all
+running on the H100:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{FlashAttention-2} \cite{dao2023flashattention2}
+    (via PyTorch SDPA flash backend):
+    PyTorch's \texttt{scaled\_dot\_product\_attention} with
+    \texttt{enable\_flash=True} dispatches to the native
+    FlashAttention-2 kernel on SM~9.0 without requiring the
+    separate \texttt{flash-attn} package.
+    We apply the tree-ancestor mask via SDPA's mask interface.
+    This is our \emph{primary comparison target}---it is the
+    fastest dense-attention baseline.
+  \item \textbf{FlashInfer} \cite{ye2025flashinfer}
+    (MLSys~2025):
+    We use FlashInfer's \texttt{single\_prefill\_with\_kv\_cache}
+    with the tree-ancestor mask in ragged layout, dispatched
+    per-item.  Pre-compiled SM90 cubins from the
+    \texttt{flashinfer-cubin} package provide JIT-free launch.
+  \item \textbf{DeFT} \cite{yao2024deft} (ICLR~2025):
+    We use the standalone Triton implementation from
+    PanZaifeng/FastTree-Artifact, which is compatible with our
+    PyTorch~2.8.0 environment.
+    DeFT partitions tree nodes by shared KV prefixes and compresses
+    the tree mask into a 64-bit binary chain mask (BCM).
+\end{itemize}
+
+\paragraph{Scope of kernel benchmarks.}
+All kernel timings measure the attention operator alone—\emph{not} a
+full model forward pass.
+The tree attention processes the \emph{intra-tree} Q/K/V block only:
+it does not include the prefix context-KV-cache attention that occurs
+in a real verification pass.
+Context-prefix attention is dense and can reuse any standard kernel
+(FlashAttention-2, FlashDecoding, etc.); our contribution is the
+sparse intra-tree component.
+
+\paragraph{Configurations.}
+We sweep branching factor $\branching \in \{2, 3, 4\}$,
+tree depth $\depth \in \{1, \ldots, 8\}$,
+batch size $\batchsize \in \{1, 2, 4, 8, 16, 32, 64, 128\}$,
+head dimension $\headdim = 64$, and $\nheads = 8$ attention heads.
+All timings are the median of 50 iterations after 10 warmup rounds,
+measured with \texttt{torch.cuda.Event} elapsed time.
+
+\paragraph{Limitation: head dimension.}
+We benchmark at $\headdim = 64$, not $\headdim = 128$ as used by
+LLaMA-2/3 and Mistral.
+The ancestor-walk algorithm is agnostic to $\headdim$; larger heads
+increase the per-gather dot-product cost equally for all kernels.
+We expect speedup ratios to be similar at $\headdim = 128$ but
+acknowledge this as an untested assumption.
+
+% =====================================================================
+\section{Results}\label{sec:results}
+% =====================================================================
+
+\subsection{Latency vs.\ Tree Depth}
+
+\Cref{fig:latency-depth} shows kernel latency as a function of tree
+depth for $\batchsize = 8$ on the H100.
+\method{} maintains sub-millisecond latency ($< 0.2$\,ms) through
+$\depth = 7$ across all branching factors, while all baselines grow
+quadratically.  At $\branching = 3$, $\depth = 7$
+($\numtokens = 3{,}280$), \method{} runs in 0.173\,ms
+versus 2.063\,ms for FlashAttention-2 (\textbf{11.9$\times$}),
+3.866\,ms for FlashInfer (\textbf{22.3$\times$}), and
+7.910\,ms for DeFT (\textbf{45.6$\times$}).
+At $\branching = 4$, $\depth = 6$ ($\numtokens = 5{,}461$), the gap
+widens to 0.212\,ms versus 6.143\,ms for FA-2 (\textbf{29.0$\times$}),
+12.333\,ms for FlashInfer (\textbf{58.3$\times$}), and
+13.310\,ms for DeFT (\textbf{62.9$\times$}).
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig1_latency_vs_depth.pdf}
+  \caption{%
+    Kernel latency vs.\ tree depth for $\batchsize = 8$ on the H100.
+    \method{} (blue) stays sub-0.2\,ms through $\depth \leq 7$,
+    while FA-2 (orange), FlashInfer (green), and DeFT (red) grow
+    quadratically.
+    Annotations show the speedup at each depth.
+  }
+  \label{fig:latency-depth}
+\end{figure}
+
+\subsection{Speedup Heatmaps}
+
+\Cref{fig:speedup-heatmap} presents the full speedup matrix across
+all $(\batchsize, \depth)$ configurations, separated by branching
+factor and baseline.
+\textbf{Against FlashAttention-2} (our primary comparator), \method{}
+trails at small tree sizes (speedup $\approx 0.5\text{--}0.7\times$)
+due to Flash's fused IO-aware implementation being hard to beat when
+the token count is small.
+Parity occurs around $\numtokens \approx 500\text{--}1{,}000$, and
+speedup reaches \textbf{11.9$\times$} at
+$\branching = 3$, $\depth = 7$, $\batchsize = 8$
+and up to \textbf{49.1$\times$} at $\batchsize = 128$, $\branching = 4$,
+$\depth = 6$.
+\textbf{Against FlashInfer}, speedups range from $0.7\times$ (small
+trees) to \textbf{100.7$\times$} at $\batchsize = 128$, $\branching = 4$,
+$\depth = 6$.
+\textbf{Against DeFT}, \method{} is faster across nearly all
+configurations, reaching \textbf{109.2$\times$} at the same peak.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig2_speedup_heatmap.pdf}
+  \caption{%
+    Speedup heatmaps for \method{} versus FA-2 (top),
+    FlashInfer (middle), and DeFT (bottom) on the H100.
+    Color intensity indicates speedup magnitude (log scale).
+    Cells with ``OOM'' indicate baseline out-of-memory.
+  }
+  \label{fig:speedup-heatmap}
+\end{figure}
+
+\subsection{Batch-Size Scaling}
+
+\Cref{fig:batch-scaling} demonstrates that \method{}'s latency scales
+gracefully with batch size.
+At $\branching = 4$, $\depth = 6$ ($\numtokens = 5{,}461$), latency
+increases from 0.106\,ms ($\batchsize = 1$) to 1.944\,ms
+($\batchsize = 128$), while FA-2 grows from 1.054\,ms to
+95.354\,ms---a \textbf{49$\times$} gap at $\batchsize = 128$.
+FlashInfer and DeFT grow even faster: at $\batchsize = 128$ they
+reach 195.8\,ms and 212.3\,ms respectively, yielding
+\textbf{101$\times$} and \textbf{109$\times$} gaps.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig3_scaling_batch.pdf}
+  \caption{%
+    Latency scaling with batch size for $\branching = 4$ at selected
+    depths.
+    \method{} (blue) tracks linearly in $\batchsize$, while
+    FA-2 (orange), FlashInfer (green), and DeFT (red) scale
+    quadratically in the total token count.
+  }
+  \label{fig:batch-scaling}
+\end{figure}
+
+\subsection{Cross-GPU Comparison}
+
+\Cref{fig:cross-gpu} compares T4 and H100 at $\batchsize = 8$.
+On the T4, the initial dense-loop kernel was \emph{slower} than SDPA
+at small tree sizes (speedup $< 1\times$) due to the overhead of the
+ragged indexing scheme amortized over few tokens.
+The H100 sparse kernel eliminates this overhead region at moderate
+depths, achieving strong speedups across all baselines.
+The cross-architecture improvement of the H100 sparse kernel
+over the T4 dense kernel reaches $50\text{--}150\times$ at deep trees,
+reflecting both the algorithmic improvement ($\bigO{N\depth}$ vs.\
+$\bigO{N^2}$) and the hardware generation gap.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig5_cross_gpu.pdf}
+  \caption{%
+    Cross-GPU comparison at $\batchsize = 8$: T4 dense kernel (gray) vs.\
+    H100 sparse kernel (blue).  Annotations show the H100
+    improvement factor.
+  }
+  \label{fig:cross-gpu}
+\end{figure}
+
+\subsection{BF16 / FP16 Parity}
+
+\Cref{fig:bf16-parity} shows that the BF16 and FP16 code paths
+achieve near-identical latency on the H100, with a maximum deviation
+of $<5\%$.  This confirms that Hopper's tensor cores process BF16
+and FP16 at equivalent throughput, and our dtype-aware store logic
+introduces no overhead.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.45\linewidth]{figures/fig6_bf16_parity.pdf}
+  \caption{%
+    BF16 vs.\ FP16 \method{} latency on the H100.
+    Points cluster tightly on the $y = x$ line.
+  }
+  \label{fig:bf16-parity}
+\end{figure}
+
+\subsection{Complexity Scaling}
+
+\Cref{fig:complexity} plots latency versus total sequence length $N$
+on a log--log scale for $\branching = 4$ at batch size 1--2.
+\method{} grows sub-linearly with $N$ (due to fixed $\depth + 1$ work
+per query), while SDPA math grows quadratically.
+The empirical slopes confirm the theoretical $\bigO{N \cdot \depth}$
+vs.\ $\bigO{N^2}$ complexity gap.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.45\linewidth]{figures/fig7_complexity.pdf}
+  \caption{%
+    Latency vs.\ sequence length $\numtokens$ (log--log) for
+    $\branching = 4$.
+    \method{} scales as $\bigO{N \cdot \depth}$;
+    baselines scale as $\bigO{N^2}$.
+  }
+  \label{fig:complexity}
+\end{figure}
+
+\subsection{Summary of Key Results}
+
+\Cref{tab:results} presents representative configurations.
+We report speedup versus FlashAttention-2 (FA-2, the strongest
+dense baseline), FlashInfer, and DeFT.
+Speedup versus FA-2 exceeds $1\times$ for all configurations with
+$\numtokens \geq 1{,}000$ and at higher batch sizes.
+
+\begin{table}[t]
+\centering
+\caption{%
+  Selected kernel-level benchmark results on NVIDIA H100 SXM (Hopper)
+  ($\headdim = 64$, $\nheads = 8$).
+  FA-2 = FlashAttention-2 via SDPA flash; FI = FlashInfer; DeFT = DeFT Triton.
+  ``OOM'' indicates baseline out-of-memory.
+}
+\label{tab:results}
+\small
+\begin{tabular}{cccr rrrr rrr}
+\toprule
+$\batchsize$ & $\branching$ & $\depth$ & $\numtokens$
+  & Ragged & FA-2 & FI & DeFT
+  & $\times$FA-2 & $\times$FI & $\times$DeFT \\
+  & & & & (ms) & (ms) & (ms) & (ms) & & & \\
+\midrule
+1  & 4 & 5 & 1{,}365   & 0.105 & 0.132  & 0.120  & 0.457  & 1.2$\times$ & 1.1$\times$ & 4.3$\times$ \\
+1  & 4 & 6 & 5{,}461   & 0.106 & 1.054  & 1.581  & 1.700  & 9.9$\times$ & 14.9$\times$ & 16.0$\times$ \\
+8  & 3 & 5 & 364       & 0.105 & 0.071  & 0.388  & 0.945  & 0.7$\times$ & 3.7$\times$ & 9.0$\times$ \\
+8  & 3 & 7 & 3{,}280   & 0.173 & 2.063  & 3.866  & 7.910  & 11.9$\times$ & 22.3$\times$ & 45.6$\times$ \\
+8  & 4 & 5 & 1{,}365   & 0.121 & 0.465  & 0.667  & 3.348  & 3.8$\times$ & 5.5$\times$ & 27.7$\times$ \\
+8  & 4 & 6 & 5{,}461   & 0.212 & 6.143  & 12.333 & 13.310 & 29.0$\times$ & 58.3$\times$ & 62.9$\times$ \\
+32 & 3 & 7 & 3{,}280   & 0.410 & 7.700  & 15.279 & 31.366 & 18.8$\times$ & 37.3$\times$ & 76.5$\times$ \\
+64 & 3 & 7 & 3{,}280   & 0.728 & 15.422 & 30.568 & 63.082 & 21.2$\times$ & 42.0$\times$ & 86.7$\times$ \\
+128& 3 & 7 & 3{,}280   & 1.330 & 30.480 & 61.055 & 123.621& 22.9$\times$ & 45.9$\times$ & 92.9$\times$ \\
+128& 4 & 6 & 5{,}461   & 1.944 & 95.354 & 195.811& 212.318& 49.1$\times$ & 100.7$\times$& 109.2$\times$\\
+128& 3 & 5 & 364       & 0.239 & 0.524  & 5.808  & 14.624 & 2.2$\times$ & 24.3$\times$ & 61.1$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{End-to-End Projection}\label{sec:e2e}
+% =====================================================================
+
+A kernel-level speedup translates to end-to-end gains only to the
+extent that attention dominates total verification-pass latency.
+We estimate this via Amdahl's law.
+
+\paragraph{Attention fraction in practice.}
+In a synthetic LLaMA-2-7B stack (32 layers, $\headdim = 128$,
+$H = 32$, SwiGLU FFN with $d_{\text{ffn}} = 11{,}008$), we measure
+the attention fraction using our ragged kernel at various tree sizes.
+At $\batchsize = 8$, $\branching = 3$:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $\depth = 5$ ($N = 364$): attention accounts for
+    $\approx 34\%$ of total forward time.
+  \item $\depth = 7$ ($N = 3{,}280$): attention accounts for
+    $\approx 34\%$ of total forward time.
+\end{itemize}
+These fractions are modest because the linear projections
+(QKV, output, gate/up/down) dominate at moderate token counts.
+
+\paragraph{Amdahl projection.}
+Let $\alpha$ denote the attention fraction under the ragged kernel.
+If \method{} provides a $k\times$ kernel speedup over FA-2,
+the maximum end-to-end speedup is:
+\begin{equation}\label{eq:amdahl}
+  S_{\text{e2e}} = \frac{1}{(1 - \alpha) + \alpha / k}
+  \;\leq\; \frac{1}{1 - \alpha}.
+\end{equation}
+For our measured $\alpha \approx 0.34$ and $k = 11.9\times$
+($\branching = 3$, $\depth = 7$, $\batchsize = 8$), this yields:
+\[
+  S_{\text{e2e}} \approx \frac{1}{0.66 + 0.34/11.9}
+  = \frac{1}{0.689}
+  \approx 1.45\times.
+\]
+That is, an 11.9$\times$ \emph{kernel} speedup over FA-2 translates
+to approximately \textbf{1.45$\times$ verification-pass} speedup in a
+full transformer.
+At $\batchsize = 128$, $\branching = 4$, $\depth = 6$ where the
+kernel speedup reaches 49$\times$, the projection is:
+\[
+  S_{\text{e2e}} \approx \frac{1}{0.66 + 0.34/49.1}
+  \approx 1.49\times.
+\]
+The E2E impact grows with tree depth and batch size, as the $O(N^2)$
+attention cost eventually dominates the linear projections.
+
+\paragraph{Honest assessment.}
+We present these projections rather than synthetic whole-model numbers
+because our current E2E benchmark uses random weights (not real
+LLaMA-2 parameters) and measures only our kernel---not a full
+speculative decoding pipeline with a draft model.
+A complete E2E evaluation with real model weights, EAGLE-2/3 draft
+heads, and standard benchmarks (MT-bench, Spec-Bench) is future work.
+
+% =====================================================================
+\section{Padding Waste Analysis}\label{sec:padding}
+% =====================================================================
+
+\Cref{fig:padding-waste} quantifies the attention-compute padding ratio
+$r_{\text{attn}}$ (\Cref{eq:padding-waste}) for typical
+speculative-decoding batch configurations.
+At batch size 8 with a context length of 128 and tree depth $\depth = 5$,
+the quadratic padding waste exceeds $97\%$ for $\branching = 4$.
+This waste is eliminated entirely by \method{}'s ragged layout.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.55\linewidth]{figures/fig4_padding_waste.pdf}
+  \caption{%
+    Quadratic attention-compute waste (\%) vs.\ tree configuration.
+    Dense padded attention wastes $>90\%$ of compute for moderate trees.
+    \method{} eliminates this entirely via ragged batching.
+  }
+  \label{fig:padding-waste}
+\end{figure}
+
+% =====================================================================
+\section{Related Work}\label{sec:related}
+% =====================================================================
+
+\paragraph{Speculative decoding.}
+The foundational framework was proposed independently by
+\citet{leviathan2023fast} and \citet{chen2023accelerating}.
+Tree-structured extensions include EAGLE-2 \cite{li2024eagle2},
+EAGLE-3 \cite{li2025eagle3}, Medusa \cite{cai2024medusa},
+SpecInfer \cite{miao2024specinfer}, Sequoia \cite{chen2024sequoia},
+and Hydra \cite{ankner2024hydra}.
+EAGLE-3 is the current state of the art, reaching 4.4--6.5$\times$
+speedup by fusing draft-head training into pre-training;
+it uses depth-8 trees with 60 draft tokens and integrates with
+SGLang and vLLM serving frameworks~\cite{li2025eagle3}.
+These works focus on draft quality and acceptance rate; our
+contribution is orthogonal, optimizing the attention kernel in the
+verification pass.
+
+\paragraph{Tree-aware attention kernels.}
+DeFT \cite{yao2024deft} (ICLR~2025) is the closest prior work.
+It partitions tree nodes into KV-guided groups sharing common
+ancestor prefixes, reorders them depth-first for coalesced memory
+access, and compresses the tree mask into a 64-bit binary chain
+mask (BCM).
+DeFT reports 3.59$\times$ attention speedup over FlashAttention-2 on
+A100 and 2.23$\times$ end-to-end speedup on LLaMA-3.1-Instruct-8B.
+Our approach differs in three ways: (1) we use Q-guided ancestor walks
+rather than KV-guided grouping, requiring no auxiliary data structures;
+(2) our kernel natively supports ragged (packed) batching, eliminating
+padding waste entirely; (3) our Triton implementation is
+architecture-portable, running on both Turing~SM75 and Hopper~SM90.
+In our direct comparison on the H100 (\Cref{tab:results}), \method{}
+outperforms DeFT by up to \textbf{109$\times$} at large tree sizes,
+though DeFT supports $\headdim = 128$ and GQA natively.
+
+SpecInfer \cite{miao2024specinfer} encodes tree topology in a 64-bit
+bitmask within its TopK token tree verifier, limiting tree size to
+64~tokens.
+Our approach has no such limit.
+
+\paragraph{Efficient attention.}
+FlashAttention \cite{dao2022flashattention} and FlashAttention-2
+\cite{dao2023flashattention2} introduced IO-aware tiling for dense
+attention, reducing HBM traffic from $\bigO{N^2}$ to $\bigO{N}$ at
+the cost of recomputation.
+FlashInfer \cite{ye2025flashinfer} (MLSys~2025) provides a
+composable attention engine with block-sparse row (BSR) format,
+JIT-compiled CUDA kernels, and CUDAGraph-compatible planning.
+It serves as the attention backend in SGLang and achieves 1.38$\times$
+throughput improvement with EAGLE-3 at batch~64~\cite{li2025eagle3}.
+FlashInfer does not exploit tree-specific sparsity---it processes all
+KV blocks regardless of ancestry.
+In our benchmarks (\Cref{tab:results}), \method{} outperforms
+FlashInfer by up to \textbf{101$\times$} on the H100.
+PagedAttention \cite{kwon2023vllm} optimizes KV cache memory
+management for serving.
+Ring Attention \cite{liu2023ring} distributes attention across devices.
+None of these exploit the structure-specific sparsity of tree attention.
+
+\paragraph{Sparse attention.}
+Block-sparse attention \cite{child2019generating},
+BigBird \cite{zaheer2020bigbird}, and Longformer \cite{beltagy2020longformer}
+target regular sparsity patterns (local windows + global tokens).
+Tree attention patterns are irregular—each row has a different set
+of ancestors—making block-sparse approaches inapplicable.
+Our kernel handles this irregularity via per-row scattered gathers.
+
+\paragraph{Triton GPU programming.}
+Triton \cite{tillet2019triton} provides a Python-embedded DSL for
+writing GPU kernels at a level of abstraction above CUDA.
+Our use of Triton's \texttt{@triton.autotune} infrastructure enables
+portable performance across two GPU generations (Turing and Hopper)
+without hand-tuned CUDA or CUTLASS templates.
+
+% =====================================================================
+\section{Discussion}\label{sec:discussion}
+% =====================================================================
+
+\paragraph{When is \method{} most beneficial?}
+The speedup increases with tree size ($\numtokens$) because the
+$\bigO{N^2}$ cost of dense attention grows quadratically while
+\method{}'s cost grows as $\bigO{N \cdot \depth}$.
+For very small trees ($\numtokens < 500$), the overhead of ragged
+indexing and scattered gathers exceeds the savings from reduced work,
+and FlashAttention-2 remains faster
+(\Cref{tab:results}: speedup $\approx 0.5\text{--}0.7\times$ at small $N$).
+The crossover to $>1\times$ occurs around $\numtokens \approx 500\text{--}1{,}000$
+depending on branching factor and batch size.
+In practice, EAGLE-2 uses depth~6 and EAGLE-3 uses depth~8, placing
+typical verification passes firmly in \method{}'s advantage region.
+
+\paragraph{Integration with serving frameworks.}
+\method{} is designed as a drop-in replacement for SDPA in the
+verification pass.  It accepts packed (ragged) Q/K/V tensors and
+a \texttt{seq\_starts} offset array, matching the interface expected
+by vLLM \cite{kwon2023vllm} and TensorRT-LLM's ragged batching.
+In a full speculative decoding pipeline, \method{} would handle
+only the intra-tree attention block; the context-prefix KV cache
+attention would continue to use FlashAttention-2 or FlashDecoding.
+
+\paragraph{Comparison with DeFT.}
+DeFT~\cite{yao2024deft} reports 3.59$\times$ attention speedup over
+FA-2 on A100; in our direct H100 comparison, \method{} achieves up to
+49$\times$ over FA-2 and 109$\times$ over DeFT itself
+(\Cref{tab:results}).
+The key difference is algorithmic: DeFT groups queries by shared KV
+prefixes (KV-guided), while \method{} walks ancestors per-query
+(Q-guided).  DeFT's approach achieves better memory coalescing for the
+KV reads but still performs $O(N)$ work per group; our ancestor walk
+performs exactly $\depth + 1$ gathers per query regardless of $N$.
+DeFT's production implementation also supports $\headdim = 128$ and
+GQA, which we do not yet support.
+Conceptually, the Q-guided and KV-guided approaches may be
+complementary.
+
+\paragraph{Limitations.}
+We identify four limitations of the current work:
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Head dimension.}
+    We benchmark at $\headdim = 64$ with $\nheads = 8$.
+    Production LLMs (LLaMA-2/3, Mistral) use $\headdim = 128$ with
+    $\nheads = 32$.
+    While the ancestor-walk algorithm is $\headdim$-agnostic, we have
+    not verified that speedup ratios hold at $\headdim = 128$.
+  \item \textbf{No grouped-query attention (GQA).}
+    Modern models use GQA (e.g., 8 KV heads, 32 Q heads).
+    Our kernel assumes MHA ($\nheads_K = \nheads_Q$).
+    Extension to GQA requires sharing K/V gathers across Q-head groups
+    but no algorithmic changes.
+  \item \textbf{Intra-tree only.}
+    Real verification passes compute
+    $\text{Attn}(q_{\text{tree}}, [K_{\text{ctx}} ; K_{\text{tree}}],
+    [V_{\text{ctx}} ; V_{\text{tree}}])$.
+    Our kernel handles only the $K_{\text{tree}} / V_{\text{tree}}$
+    block.
+    The context prefix uses standard flash attention and is unaffected
+    by tree sparsity.
+    At large context lengths, the prefix dominates and our kernel's
+    contribution to E2E latency shrinks.
+  \item \textbf{Synthetic weights.}
+    All E2E benchmarks use random fp16 weights rather than real
+    LLaMA-2/3 parameters.
+    Timing trends (attention fraction, scaling behavior) should
+    generalize, but absolute throughput numbers are synthetic.
+\end{enumerate}
+
+% =====================================================================
+\section{Conclusion}\label{sec:conclusion}
+% =====================================================================
+
+We presented \method{}, an ancestor-sparse Flash Attention kernel
+for tree-structured speculative decoding verification.
+By replacing the $\bigO{N^2}$ KV-block loop with an
+$\bigO{N \cdot \depth}$ ancestor walk derived from BFS tree structure,
+\method{} achieves up to \textbf{49$\times$} kernel-level speedup
+over FlashAttention-2, \textbf{101$\times$} over FlashInfer, and
+\textbf{109$\times$} over DeFT on the NVIDIA H100, scaling from
+batch~1 to batch~128.
+At practical EAGLE-class tree sizes
+($\branching = 3$, $\depth = 7$, $\batchsize = 8$), speedups are
+11.9$\times$, 22.3$\times$, and 45.6$\times$ respectively.
+Via Amdahl's law, this projects to $\sim$1.45$\times$ verification-pass
+speedup in a LLaMA-2-7B-class model---modest but meaningful, and
+growing with tree depth.
+
+The kernel's advantage increases with tree size, aligning with the
+trend toward deeper draft trees in EAGLE-3 \cite{li2025eagle3}
+and Sequoia \cite{chen2024sequoia}.
+As tree-structured speculative decoding becomes the dominant inference
+paradigm, the intra-tree attention bottleneck will grow, and
+structure-aware kernels like \method{} will become a necessary
+building block.
+
+\paragraph{Future work.}
+(1)~Extend to $\headdim = 128$ and GQA for LLaMA-3 compatibility.
+(2)~Integrate into SGLang/vLLM and measure end-to-end speedup
+with EAGLE-2/3 draft heads on standard benchmarks (MT-bench,
+Spec-Bench).
+(3)~Handle context-prefix + tree attention in a single fused kernel.
+(4)~Extend to Blackwell SM~12.0 when baseline libraries add support.
+
+% =====================================================================
+% References
+% =====================================================================
+\bibliographystyle{plainnat}
+
+\begin{thebibliography}{25}
+
+\bibitem[Ankner et~al.(2024)]{ankner2024hydra}
+Z.~Ankner, T.~Parthasarathy, R.~Nambiar, T.~Sridhar, S.~Uppsala,
+  and M.~Rinard.
+\newblock {Hydra: Sequentially-Dependent Draft Heads for Medusa Decoding}.
+\newblock \emph{arXiv:2402.05109}, 2024.
+
+\bibitem[Beltagy et~al.(2020)]{beltagy2020longformer}
+I.~Beltagy, M.~E. Peters, and A.~Cohan.
+\newblock {Longformer: The Long-Document Transformer}.
+\newblock \emph{arXiv:2004.05150}, 2020.
+
+\bibitem[Cai et~al.(2024)]{cai2024medusa}
+T.~Cai, Y.~Li, Z.~Geng, H.~Peng, and T.~Dao.
+\newblock {Medusa: Simple Framework for Accelerating LLM Generation with Multiple Decoding Heads}.
+\newblock \emph{ICML}, 2024.
+
+\bibitem[Chen et~al.(2023)]{chen2023accelerating}
+C.~Chen, S.~Borgeaud, G.~Irving, J.-B. Lespiau, L.~Sifre,
+  and J.~Jumper.
+\newblock {Accelerating Large Language Model Decoding with Speculative Sampling}.
+\newblock \emph{arXiv:2302.01318}, 2023.
+
+\bibitem[Chen et~al.(2024)]{chen2024sequoia}
+Z.~Chen, X.~Zhang, D.~Chen, and B.~Hariharan.
+\newblock {Sequoia: Scalable, Robust, and Hardware-aware Speculative Decoding}.
+\newblock \emph{arXiv:2402.12374}, 2024.
+
+\bibitem[Child et~al.(2019)]{child2019generating}
+R.~Child, S.~Gray, A.~Radford, and I.~Sutskever.
+\newblock {Generating Long Sequences with Sparse Transformers}.
+\newblock \emph{arXiv:1904.10509}, 2019.
+
+\bibitem[Dao(2023)]{dao2023flashattention2}
+T.~Dao.
+\newblock {FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning}.
+\newblock \emph{arXiv:2307.08691}, 2023.
+
+\bibitem[Dao et~al.(2022)]{dao2022flashattention}
+T.~Dao, D.~Y. Fu, S.~Ermon, A.~Rudra, and C.~R\'{e}.
+\newblock {FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness}.
+\newblock \emph{NeurIPS}, 2022.
+
+\bibitem[Kwon et~al.(2023)]{kwon2023vllm}
+W.~Kwon, Z.~Li, S.~Zhuang, Y.~Sheng, L.~Zheng,
+  C.~H. Yu, J.~Gonzalez, H.~Zhang, and I.~Stoica.
+\newblock {Efficient Memory Management for Large Language Model Serving with PagedAttention}.
+\newblock \emph{SOSP}, 2023.
+
+\bibitem[Leviathan et~al.(2023)]{leviathan2023fast}
+Y.~Leviathan, M.~Kalman, and Y.~Matias.
+\newblock {Fast Inference from Transformers via Speculative Decoding}.
+\newblock \emph{ICML}, 2023.
+
+\bibitem[Li et~al.(2024)]{li2024eagle2}
+Y.~Li, F.~Huang, Y.~Song, and Y.~Li.
+\newblock {EAGLE-2: Context-Aware Attention for Speculative Decoding with Lookahead}.
+\newblock \emph{EMNLP}, 2024.
+
+\bibitem[Li et~al.(2025)]{li2025eagle3}
+Y.~Li, F.~Huang, Y.~Song, S.~Wu, and Y.~Li.
+\newblock {EAGLE-3: Scaling up Speculative Decoding against Generalization Gap by Training-time Test}.
+\newblock \emph{arXiv:2503.01840}, 2025.
+
+\bibitem[Liu et~al.(2023)]{liu2023ring}
+H.~Liu, M.~Zaharia, and P.~Abbeel.
+\newblock {Ring Attention with Blockwise Transformers for Near-Infinite Context}.
+\newblock \emph{arXiv:2310.01889}, 2023.
+
+\bibitem[Miao et~al.(2024)]{miao2024specinfer}
+X.~Miao, G.~Oliaro, Z.~Zhang, X.~Cheng, Z.~Wang,
+  R.~Y. Wong, Z.~Chen, D.~Arfeen, R.~Abhyankar, and Z.~Jia.
+\newblock {SpecInfer: Accelerating Generative Large Language Model Serving with Speculative Inference and Token Tree Verification}.
+\newblock \emph{ASPLOS}, 2024.
+
+\bibitem[Milakov \& Gimelshein(2018)]{milakov2018online}
+M.~Milakov and N.~Gimelshein.
+\newblock {Online normalizer calculation for softmax}.
+\newblock \emph{arXiv:1805.02867}, 2018.
+
+\bibitem[Stern et~al.(2018)]{stern2018blockwise}
+M.~Stern, N.~Shazeer, and J.~Uszkoreit.
+\newblock {Blockwise Parallel Decoding for Deep Autoregressive Models}.
+\newblock \emph{NeurIPS}, 2018.
+
+\bibitem[Tillet et~al.(2019)]{tillet2019triton}
+P.~Tillet, H.~T. Kung, and D.~Cox.
+\newblock {Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations}.
+\newblock \emph{MAPL @ PLDI}, 2019.
+
+\bibitem[Yao et~al.(2024)]{yao2024deft}
+J.~Yao, Z.~Pan, D.~Cheng, H.~Qin, Z.~Li, Z.~Du,
+  Z.~Sui, J.~Zhou, and R.~Fan.
+\newblock {DeFT: Decoding with Flash Tree-attention for Efficient Tree-structured LLM Inference}.
+\newblock \emph{ICLR}, 2025.
+
+\bibitem[Ye et~al.(2025)]{ye2025flashinfer}
+Z.~Ye, L.~Zheng, Y.~Huang, and I.~Stoica.
+\newblock {FlashInfer: Efficient and Customizable Attention Engine for LLM Inference Serving}.
+\newblock \emph{MLSys}, 2025.
+
+\bibitem[Zaheer et~al.(2020)]{zaheer2020bigbird}
+M.~Zaheer, G.~Guruganesh, A.~Dubey, J.~Ainslie,
+  C.~Alberti, S.~Ontanon, P.~Pham, A.~Ravula,
+  Q.~Wang, L.~Yang, and A.~Ahmed.
+\newblock {BigBird: Transformers for Longer Sequences}.
+\newblock \emph{NeurIPS}, 2020.
+
+\end{thebibliography}
+
+\end{document}

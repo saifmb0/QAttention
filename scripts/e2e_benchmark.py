@@ -216,6 +216,9 @@ class _RaggedProfiler:
 # Module-level profiler — set by run_generation, read by _ragged_tree_attn
 _ACTIVE_PROFILER: Optional[_RaggedProfiler] = None
 
+# One-time diagnostic flag for ragged attention correctness check
+_RAGGED_DIAG_DONE = False
+
 
 # ── Version gate ─────────────────────────────────────────────────────────────
 # EAGLE 3.0.x was authored + tested against transformers 4.53.1 and
@@ -699,7 +702,8 @@ def run_generation(
     records: List[GenerationRecord] = []
 
     # ── profiler setup ──────────────────────────────────────────────────────
-    global _ACTIVE_PROFILER
+    global _ACTIVE_PROFILER, _RAGGED_DIAG_DONE
+    _RAGGED_DIAG_DONE = False  # reset per config for fresh diagnostics
     _profiler: Optional[_RaggedProfiler] = None
     if profile and use_ragged:
         _profiler = _RaggedProfiler()
@@ -755,6 +759,63 @@ def run_generation(
                 valid         = tm_bool & depth_match          # [N, N]
                 parents       = valid.int().argmax(dim=1).to(torch.int32)  # [N]
                 parents[0]    = 0  # root self-loop
+
+                # ── Diagnostic: print parent info on first call ──────────
+                _diag_count = _state.get("_diag_count", 0)
+                if _diag_count < 1:
+                    _pcpu = parents.cpu().tolist()
+                    _dcpu = depths.cpu().tolist()
+                    print(f"  [DIAG] tree_mask shape={list(tm.shape)} "
+                          f"N={N} depths range={min(_dcpu)}..{max(_dcpu)}")
+                    print(f"  [DIAG] parents[:20]={_pcpu[:20]}")
+                    print(f"  [DIAG] depths[:20]={_dcpu[:20]}")
+                    print(f"  [DIAG] max(parents)={max(_pcpu)} "
+                          f"unique_depths={sorted(set(_dcpu))}")
+                    # Verify: each non-root node's parent should be at depth-1
+                    _ok = 0
+                    _bad = 0
+                    for _i in range(1, N):
+                        if _dcpu[_pcpu[_i]] == _dcpu[_i] - 1:
+                            _ok += 1
+                        else:
+                            _bad += 1
+                            if _bad <= 5:
+                                print(f"  [DIAG] BAD parent: node {_i} "
+                                      f"depth={_dcpu[_i]} parent={_pcpu[_i]} "
+                                      f"parent_depth={_dcpu[_pcpu[_i]]}")
+                    print(f"  [DIAG] parent depth check: {_ok} OK, {_bad} BAD")
+
+                    # Reconstruct ancestor mask from parents and compare
+                    # with tree_mask
+                    _tmcpu = tm_bool.cpu()
+                    _mask_from_parents = torch.zeros(N, N, dtype=torch.bool)
+                    for _i in range(N):
+                        cur = _i
+                        visited = set()
+                        for _ in range(N):
+                            if cur in visited:
+                                break
+                            _mask_from_parents[_i, cur] = True
+                            visited.add(cur)
+                            cur = _pcpu[cur]
+                    _match = (_mask_from_parents == _tmcpu).all(dim=1)
+                    _n_match = _match.sum().item()
+                    _n_mismatch = N - _n_match
+                    print(f"  [DIAG] mask reconstruction: "
+                          f"{_n_match}/{N} rows match tree_mask exactly, "
+                          f"{_n_mismatch} differ")
+                    if _n_mismatch > 0:
+                        for _i in range(N):
+                            if not _match[_i]:
+                                _ours = _mask_from_parents[_i].nonzero().squeeze(-1).tolist()
+                                _ref = _tmcpu[_i].nonzero().squeeze(-1).tolist()
+                                print(f"  [DIAG]   row {_i}: "
+                                      f"ragged={_ours} vs tree_mask={_ref}")
+                                if sum(1 for _j in range(N) if not _match[_j]) > 10:
+                                    print(f"  [DIAG]   (showing first mismatch only)")
+                                    break
+                _state["_diag_count"] = _diag_count + 1
+
                 _state["tree_parents"] = parents
             else:
                 _state["tree_parents"] = None
@@ -996,9 +1057,25 @@ def _ragged_tree_attn(
         parents_packed = tree_parents.repeat(B)  # [B*N_q]
         out_tree_r, lse_tree_r = ragged_attention_with_parents(
             Q_r, K_r, V_r, cu, parents_packed, max_depth)
+        _used_parents_kernel = True
+
+        # One-time: also run formula kernel and compare outputs
+        if not _RAGGED_DIAG_DONE:
+            _out_formula, _lse_formula = ragged_attention_with_lse(
+                Q_r, K_r, V_r, cu, branching_factor, max_depth)
+            _diff_kr = (out_tree_r.float() - _out_formula.float()).abs()
+            print(f"  [DIAG-kernel] parents vs formula kernel: "
+                  f"MSE={_diff_kr.pow(2).mean().item():.2e} "
+                  f"max={_diff_kr.max().item():.2e}")
+            _diff_lse = (lse_tree_r.float() - _lse_formula.float()).abs()
+            print(f"  [DIAG-kernel] LSE diff: "
+                  f"MSE={_diff_lse.pow(2).mean().item():.2e} "
+                  f"max={_diff_lse.max().item():.2e}")
+            del _out_formula, _lse_formula
     else:
         out_tree_r, lse_tree_r = ragged_attention_with_lse(
             Q_r, K_r, V_r, cu, branching_factor, max_depth)
+        _used_parents_kernel = False
 
     if prof is not None:
         evts[4].record()                                        # ── [4] ragged_kernel done
@@ -1025,6 +1102,62 @@ def _ragged_tree_attn(
     if prof is not None:
         evts[6].record()                                        # ── [6] lse_merge done
         prof.entries.append(evts)
+
+    # ── One-time correctness diagnostic ─────────────────────────────────────
+    global _RAGGED_DIAG_DONE
+    if not _RAGGED_DIAG_DONE:
+        _RAGGED_DIAG_DONE = True
+        print(f"  [DIAG-attn] B={B} H={H} N_q={N_q} D={D} N_prefix={N_prefix} "
+              f"used_parents={_used_parents_kernel} "
+              f"tree_parents={'None' if tree_parents is None else list(tree_parents.shape)}")
+        # Compute reference: full Q @ K^T masked → softmax → @ V
+        try:
+            _s_ref = Q.float() @ K.float().transpose(-2, -1) * scale_v  # [B,H,N_q,N_kv]
+            # Build reference mask: prefix = all visible, tree = tree_mask
+            _ref_mask = torch.zeros(N_q, N_kv, device=Q.device, dtype=torch.float32)
+            # prefix columns: always visible → leave as 0
+            # tree columns: apply tree_mask (block where tree_mask==0)
+            if tree_parents is not None and tree_parents.shape[0] == N_q:
+                # Reconstruct mask from parents
+                _anc_mask = torch.zeros(N_q, N_q, device=Q.device, dtype=torch.bool)
+                _pcpu = tree_parents.cpu().tolist()
+                for _i in range(N_q):
+                    cur = _i
+                    visited = set()
+                    for _ in range(N_q):
+                        if cur in visited:
+                            break
+                        _anc_mask[_i, cur] = True
+                        visited.add(cur)
+                        cur = _pcpu[cur]
+                _ref_mask[:, N_prefix:] = torch.where(_anc_mask, 0.0, float('-inf'))
+            else:
+                # No tree_parents → causal within tree
+                _tree_causal = torch.triu(
+                    torch.ones(N_q, N_q, device=Q.device), diagonal=1) * float('-inf')
+                _ref_mask[:, N_prefix:] = _tree_causal
+            _s_ref = _s_ref + _ref_mask[None, None, :, :]
+            _ref_out = torch.softmax(_s_ref, dim=-1) @ V.float()
+            _ref_out = _ref_out.to(dtype)
+            # Compare
+            _diff = (result.float() - _ref_out.float()).abs()
+            _mse = _diff.pow(2).mean().item()
+            _max_err = _diff.max().item()
+            _rel_err = (_diff / (_ref_out.float().abs() + 1e-6)).mean().item()
+            print(f"  [DIAG-attn] vs reference: MSE={_mse:.2e} max_err={_max_err:.2e} "
+                  f"rel_err={_rel_err:.2e}")
+            # Also check tree-only part
+            _diff_tree = (out_tree.float() - _ref_out.float()).abs()
+            _mse_tree = _diff_tree.pow(2).mean().item()
+            print(f"  [DIAG-attn] tree-only vs ref (expect large if prefix matters): "
+                  f"MSE={_mse_tree:.2e}")
+            # Compare lse values
+            _ref_lse_full = torch.logsumexp(_s_ref, dim=-1)  # [B, H, N_q]
+            print(f"  [DIAG-attn] lse_pre range: [{lse_pre.min().item():.2f}, {lse_pre.max().item():.2f}] "
+                  f"lse_tree range: [{lse_tree.min().item():.2f}, {lse_tree.max().item():.2f}]"
+                  if N_prefix > 0 else "  [DIAG-attn] no prefix")
+        except Exception as _e:
+            print(f"  [DIAG-attn] reference check failed: {_e}")
 
     return result
 
@@ -1317,26 +1450,30 @@ def main() -> None:
     # ── Warmup: trigger Triton JIT compilation before timed runs ────────────
     # The first time the ragged kernel sees a new (HEAD_DIM, MAX_DEPTH) combo,
     # Triton compiles + autotunes, adding 10-15× overhead to that call.
-    # We run one short generation to pay that cost outside the measurement loop.
+    # We run one short generation per unique depth to pay that cost upfront.
     if not args.skip_ragged:
-        print("\n  [warmup]  Compiling Triton kernels (1 prompt, short) …")
-        set_tree_config(model, configs[0])
+        unique_depths = sorted(set(c.depth for c in configs))
+        print(f"\n  [warmup]  Compiling Triton kernels for {len(unique_depths)} "
+              f"depth configs: {unique_depths} …")
         warmup_prompts = [prompts[0][:200]]  # first prompt, truncated
-        _warmup = run_generation(
-            model, warmup_prompts, args.model_type,
-            max_new_tokens=32,
-            is_llama3=is_llama3,
-            use_ragged=True,
-            branching_factor=configs[0].top_k,
-            max_depth=configs[0].depth,
-            profile=False,
-        )
-        if _warmup:
-            print(f"  [warmup]  done ({_warmup[0].tok_per_sec:.1f} tok/s, "
-                  f"accept={_warmup[0].mean_accepted_per_step:.2f}/step)")
-        else:
-            print("  [warmup]  completed (no output)")
-        del _warmup
+        for _wd in unique_depths:
+            _wcfg = next(c for c in configs if c.depth == _wd)
+            set_tree_config(model, _wcfg)
+            _warmup = run_generation(
+                model, warmup_prompts, args.model_type,
+                max_new_tokens=32,
+                is_llama3=is_llama3,
+                use_ragged=True,
+                branching_factor=_wcfg.top_k,
+                max_depth=_wcfg.depth,
+                profile=False,
+            )
+            if _warmup:
+                print(f"  [warmup d={_wd}]  done ({_warmup[0].tok_per_sec:.1f} tok/s, "
+                      f"accept={_warmup[0].mean_accepted_per_step:.2f}/step)")
+            else:
+                print(f"  [warmup d={_wd}]  completed (no output)")
+            del _warmup
         torch.cuda.empty_cache()
 
     # ── Sweep ────────────────────────────────────────────────────────────────
