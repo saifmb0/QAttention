@@ -567,6 +567,216 @@ def ragged_attention_with_lse(
 
 
 # ---------------------------------------------------------------------------
+# Explicit-parent variant — for EAGLE-3 dynamic/pruned trees
+# ---------------------------------------------------------------------------
+# EAGLE-3 builds trees via beam search + global top-k pruning.  The
+# resulting tree is NOT a complete b-ary tree — it has irregular branching
+# and varying depths across paths.  The formula parent(k) = ⌊(k-1)/b⌋
+# is WRONG for these trees.
+#
+# This variant accepts an explicit parent array (int32, per-token) that
+# encodes the actual tree topology.  Everything else — online softmax,
+# ancestor walk, duplicate detection — is identical.
+# ---------------------------------------------------------------------------
+
+@triton.autotune(
+    configs=_get_autotune_configs(),
+    key=["HEAD_DIM", "MAX_DEPTH"],
+)
+@triton.jit
+def _ragged_attn_parents_kernel_lse(
+    Q_ptr, K_ptr, V_ptr, O_ptr, LSE_ptr,
+    parent_ptr,                    # int32 [total_tokens] — seq-local parent idx
+    cu_seqlens_ptr,
+    stride_qt, stride_qh, stride_qd,
+    stride_kt, stride_kh, stride_kd,
+    stride_vt, stride_vh, stride_vd,
+    stride_ot, stride_oh, stride_od,
+    stride_lse_t, stride_lse_h,
+    scale,
+    max_seqlen,
+    H:                tl.constexpr,
+    HEAD_DIM:         tl.constexpr,
+    MAX_DEPTH:        tl.constexpr,
+    BLOCK_M:          tl.constexpr,
+):
+    """
+    Ancestor-sparse Flash Attention with explicit parent array.
+
+    For each query at local position q, the ancestor walk does:
+        cur = q  (self)
+        for each step:
+            attend to cur
+            cur = parent[cur]   (from parent_ptr)
+    Root nodes have parent[root] = root (self-loop → cur==prev → stops).
+    """
+    pid0   = tl.program_id(0)
+    m_tile = tl.program_id(1)
+
+    seq_idx  = pid0 // H
+    head_idx = pid0  % H
+
+    seq_start = tl.load(cu_seqlens_ptr + seq_idx)
+    seq_end   = tl.load(cu_seqlens_ptr + seq_idx + 1)
+    seq_len   = seq_end - seq_start
+
+    q_off = m_tile * BLOCK_M
+    if q_off >= seq_len:
+        return
+
+    m_range  = tl.arange(0, BLOCK_M)
+    d_range  = tl.arange(0, HEAD_DIM)
+    valid_q  = (m_range + q_off) < seq_len
+    q_global = (seq_start + q_off + m_range).to(tl.int64)
+
+    # ── Load Q tile  [BLOCK_M, HEAD_DIM] ────────────────────────────────────
+    q_ptrs = (Q_ptr
+              + q_global[:, None] * stride_qt
+              + head_idx          * stride_qh
+              + d_range  [None,:] * stride_qd)
+    q = tl.load(q_ptrs, mask=valid_q[:, None], other=0.0)
+    _out_dtype = q.dtype
+
+    # ── Flash-Attention-2 online softmax state ──────────────────────────────
+    m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M],              dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, HEAD_DIM],    dtype=tl.float32)
+
+    # ── Ancestor walk state ──────────────────────────────────────────────────
+    cur  = (m_range + q_off).to(tl.int32)   # local positions — step 0 = self
+    prev = tl.full([BLOCK_M], -1, dtype=tl.int32)
+
+    # ── Ancestor-sparse loop ────────────────────────────────────────────────
+    for _step in range(MAX_DEPTH + 1):
+        is_new = (cur != prev) & valid_q
+        kv_abs = (seq_start + cur).to(tl.int64)
+
+        # ── Scatter-gather K[ancestor] ──────────────────────────────────────
+        k_ptrs = (K_ptr
+                  + kv_abs[:, None] * stride_kt
+                  + head_idx        * stride_kh
+                  + d_range [None,:] * stride_kd)
+        k_anc = tl.load(k_ptrs, mask=is_new[:, None], other=0.0)
+
+        raw   = tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale
+        s     = tl.where(is_new, raw, float("-inf"))
+
+        # ── Online softmax update ───────────────────────────────────────────
+        m_new = tl.maximum(m_i, s)
+        alpha = tl.exp(m_i - m_new)
+        p     = tl.exp(s   - m_new)
+        p_pos = tl.where(is_new, p, 0.0)
+
+        # ── Scatter-gather V[ancestor] ──────────────────────────────────────
+        v_ptrs = (V_ptr
+                  + kv_abs[:, None] * stride_vt
+                  + head_idx        * stride_vh
+                  + d_range [None,:] * stride_vd)
+        v_anc = tl.load(v_ptrs, mask=is_new[:, None], other=0.0)
+
+        l_i = l_i * alpha + p_pos
+        acc = acc * alpha[:, None] + p_pos[:, None] * v_anc.to(tl.float32)
+        m_i = m_new
+
+        # ── Advance to parent via explicit lookup ───────────────────────────
+        prev = cur
+        parent_global = (seq_start + cur).to(tl.int64)
+        cur = tl.load(parent_ptr + parent_global, mask=valid_q, other=0).to(tl.int32)
+
+    # ── Write LSE ───────────────────────────────────────────────────────────
+    l_safe = tl.where(l_i == 0.0, 1.0, l_i)
+    lse_ptrs = (LSE_ptr
+                + q_global * stride_lse_t
+                + head_idx * stride_lse_h)
+    tl.store(lse_ptrs, m_i + tl.log(l_safe), mask=valid_q)
+
+    # ── Normalise and write output ──────────────────────────────────────────
+    acc = acc / l_safe[:, None]
+    o_ptrs = (O_ptr
+              + q_global[:, None] * stride_ot
+              + head_idx          * stride_oh
+              + d_range  [None,:] * stride_od)
+    tl.store(o_ptrs, acc.to(_out_dtype), mask=valid_q[:, None])
+
+
+def ragged_attention_with_parents(
+    Q:  torch.Tensor,       # [total_tokens, H, D]
+    K:  torch.Tensor,       # [total_tokens, H, D]
+    V:  torch.Tensor,       # [total_tokens, H, D]
+    cu_seqlens:  torch.Tensor,   # [B+1] int32
+    parents:     torch.Tensor,   # [total_tokens] int32 — local parent index
+    max_depth:   int,
+) -> tuple:
+    """Ancestor-sparse attention with explicit parent array.
+
+    Same as ``ragged_attention_with_lse`` but uses an explicit parent array
+    instead of the complete b-ary tree parent formula.  This is required for
+    EAGLE-3's dynamic/pruned trees where ``parent(k) = ⌊(k-1)/b⌋`` is wrong.
+
+    Parameters
+    ----------
+    parents : int32 tensor [total_tokens]
+        ``parents[global_pos]`` = sequence-local parent index.
+        Root nodes must have ``parents[root] = root`` (self-loop).
+
+    Returns
+    -------
+    O   : same dtype as Q,  [total_tokens, H, D]
+    lse : float32,          [total_tokens, H]
+    """
+    _SUPPORTED = (torch.float16, torch.bfloat16)
+    assert Q.dtype in _SUPPORTED and Q.dtype == K.dtype == V.dtype, (
+        f"Inputs must be fp16 or bf16 (got {Q.dtype})"
+    )
+
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(Q.device)
+        if Q.dtype == torch.bfloat16 and (props.major, props.minor) < (8, 9):
+            Q, K, V = Q.to(torch.float16), K.to(torch.float16), V.to(torch.float16)
+            _cast_back = True
+        else:
+            _cast_back = False
+    else:
+        _cast_back = False
+
+    total_tokens, H, D = Q.shape
+    B      = int(cu_seqlens.shape[0]) - 1
+    device = Q.device
+    scale  = 1.0 / math.sqrt(D)
+
+    cu_sl_cpu  = cu_seqlens.cpu()
+    sl_list    = cu_sl_cpu.tolist()
+    max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+
+    cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
+    parents_dev    = parents.to(device=device, dtype=torch.int32, non_blocking=True)
+
+    O   = torch.empty_like(Q)
+    LSE = torch.empty(total_tokens, H, dtype=torch.float32, device=device)
+
+    grid = lambda meta: (B * H, triton.cdiv(max_seqlen, meta["BLOCK_M"]))
+
+    _ragged_attn_parents_kernel_lse[grid](
+        Q, K, V, O, LSE,
+        parents_dev,
+        cu_seqlens_dev,
+        Q.stride(0),   Q.stride(1),   Q.stride(2),
+        K.stride(0),   K.stride(1),   K.stride(2),
+        V.stride(0),   V.stride(1),   V.stride(2),
+        O.stride(0),   O.stride(1),   O.stride(2),
+        LSE.stride(0), LSE.stride(1),
+        scale,
+        max_seqlen,
+        H=H,
+        HEAD_DIM=D,
+        MAX_DEPTH=max_depth,
+    )
+    if _cast_back:
+        O = O.to(torch.bfloat16)
+    return O, LSE
+
+
+# ---------------------------------------------------------------------------
 # Paged KV-Cache variant
 # ---------------------------------------------------------------------------
 # PagedAttention (vLLM) stores K/V in non-contiguous 16-token pages.

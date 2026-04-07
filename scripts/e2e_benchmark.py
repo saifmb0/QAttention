@@ -96,7 +96,7 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.ragged_attn import ragged_attention_with_lse
+from src.ragged_attn import ragged_attention_with_lse, ragged_attention_with_parents
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -729,6 +729,38 @@ def run_generation(
         e0 = torch.cuda.Event(enable_timing=True)
         e1 = torch.cuda.Event(enable_timing=True)
         e0.record()
+
+        # ── Extract parent array from EAGLE-3's tree_mask ────────────────────
+        # EAGLE sets mdl.model.tree_mask = [1, 1, N, N] float before calling
+        # tree_decoding.  N = number of tree tokens (root + selected candidates).
+        # tree_position_ids[i] = depth of token i.
+        # We reconstruct the parent array:  parents[i] = j  where
+        #   tree_mask[i,j]=True  and  depth[j] = depth[i]-1.
+        # Root (depth=0): parents[0] = 0  (self-loop).
+        if use_ragged and hasattr(mdl, 'model') and hasattr(mdl.model, 'tree_mask'):
+            tm = mdl.model.tree_mask  # [1, 1, N, N] float
+            if tm is not None and tm.dim() == 4:
+                tm_bool = tm[0, 0].bool()         # [N, N]
+                N = tm_bool.shape[0]
+                depths = tree_position_ids          # [N]
+                if depths.dim() > 1:
+                    depths = depths.squeeze(0)
+                depths = depths[:N]                 # ensure matching length
+
+                # Vectorised parent extraction:
+                # For each node i, find col j where mask[i,j]=True and depth[j]=depth[i]-1
+                target_depths = (depths - 1).unsqueeze(1)   # [N, 1]
+                col_depths    = depths.unsqueeze(0)          # [1, N]
+                depth_match   = (col_depths == target_depths)  # [N, N]
+                valid         = tm_bool & depth_match          # [N, N]
+                parents       = valid.int().argmax(dim=1).to(torch.int32)  # [N]
+                parents[0]    = 0  # root self-loop
+                _state["tree_parents"] = parents
+            else:
+                _state["tree_parents"] = None
+        else:
+            _state["tree_parents"] = None
+
         # Raise the flag so the matmul hook knows we are inside tree_decoding.
         # This is the ONLY window where the hook should intercept matmuls.
         # Without this guard the hook fires during initialize_tree's backbone
@@ -892,6 +924,7 @@ def _ragged_tree_attn(
     V:  torch.Tensor,   # [B, H, N_kv, D]
     branching_factor: int,
     max_depth: int,
+    tree_parents: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:      # [B, H, N_q, D]
     """
     Ragged ancestor-sparse attention for Eagle-3 tree-verification.
@@ -899,6 +932,10 @@ def _ragged_tree_attn(
     Splits K/V into prefix (dense causal) and tree (sparse ancestor) parts,
     runs flash attention over the prefix and the ragged Triton kernel over
     the tree, then merges via online-softmax LSE combination.
+
+    When ``tree_parents`` is provided (int32 [N_tree] — seq-local parent index),
+    uses the explicit-parent kernel variant for EAGLE-3's dynamic/pruned trees.
+    Otherwise falls back to the formula-based kernel (complete b-ary trees only).
 
     When ``_ACTIVE_PROFILER`` is set, records 7 CUDA events per call
     (one at each phase boundary) for zero-overhead timing.
@@ -952,8 +989,16 @@ def _ragged_tree_attn(
     if prof is not None:
         evts[3].record()                                        # ── [3] tree_reshape done
 
-    out_tree_r, lse_tree_r = ragged_attention_with_lse(Q_r, K_r, V_r, cu,
-                                                        branching_factor, max_depth)
+    # Use explicit-parent kernel when EAGLE-3 parent array is available.
+    if tree_parents is not None and tree_parents.shape[0] == N_q:
+        # Pack parent array for batch: replicate per batch element
+        # tree_parents is [N_q] in local space; for packed [B*N_q] we tile it.
+        parents_packed = tree_parents.repeat(B)  # [B*N_q]
+        out_tree_r, lse_tree_r = ragged_attention_with_parents(
+            Q_r, K_r, V_r, cu, parents_packed, max_depth)
+    else:
+        out_tree_r, lse_tree_r = ragged_attention_with_lse(
+            Q_r, K_r, V_r, cu, branching_factor, max_depth)
 
     if prof is not None:
         evts[4].record()                                        # ── [4] ragged_kernel done
@@ -1091,9 +1136,13 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
                 _s["n"] = _s["n"] + 1           # type: ignore[assignment]
                 if _prof is not None:
                     _prof.hook_intercept += 1
+                # Read parent array extracted in _timed_tree_decoding
+                _tree_parents = (verify_flag.get("tree_parents")
+                                 if verify_flag is not None else None)
                 _s["inside"] = True
                 try:
-                    return _ragged_tree_attn(Q, K, V, branching_factor, max_depth)
+                    return _ragged_tree_attn(Q, K, V, branching_factor, max_depth,
+                                             tree_parents=_tree_parents)
                 finally:
                     _s["inside"] = False
 
@@ -1264,6 +1313,31 @@ def main() -> None:
         depth=max_cfg.depth,
         top_k=max_cfg.top_k,
     )
+
+    # ── Warmup: trigger Triton JIT compilation before timed runs ────────────
+    # The first time the ragged kernel sees a new (HEAD_DIM, MAX_DEPTH) combo,
+    # Triton compiles + autotunes, adding 10-15× overhead to that call.
+    # We run one short generation to pay that cost outside the measurement loop.
+    if not args.skip_ragged:
+        print("\n  [warmup]  Compiling Triton kernels (1 prompt, short) …")
+        set_tree_config(model, configs[0])
+        warmup_prompts = [prompts[0][:200]]  # first prompt, truncated
+        _warmup = run_generation(
+            model, warmup_prompts, args.model_type,
+            max_new_tokens=32,
+            is_llama3=is_llama3,
+            use_ragged=True,
+            branching_factor=configs[0].top_k,
+            max_depth=configs[0].depth,
+            profile=False,
+        )
+        if _warmup:
+            print(f"  [warmup]  done ({_warmup[0].tok_per_sec:.1f} tok/s, "
+                  f"accept={_warmup[0].mean_accepted_per_step:.2f}/step)")
+        else:
+            print("  [warmup]  completed (no output)")
+        del _warmup
+        torch.cuda.empty_cache()
 
     # ── Sweep ────────────────────────────────────────────────────────────────
     # Per-config aggregated results:
