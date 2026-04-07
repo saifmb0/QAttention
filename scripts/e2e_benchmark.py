@@ -90,10 +90,23 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import random
+import warnings
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+# Suppress verbose HuggingFace/transformers warnings that clutter output
+warnings.filterwarnings(
+    "ignore",
+    message=r".*has generative capabilities.*doesn.t directly inherit from.*GenerationMixin.*",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*GenerationMixin.*",
+    category=UserWarning,
+)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ragged_attn import ragged_attention_with_lse, ragged_attention_with_parents
@@ -650,6 +663,13 @@ def load_eagle_model(
     _dtype = torch.float16
     print(f"    dtype: float16 (EAGLE tested config)")
 
+    # Suppress transformers' verbose "doesn't inherit GenerationMixin" warnings
+    try:
+        import transformers as _tr
+        _tr.logging.set_verbosity_error()
+    except Exception:
+        pass
+
     model = EaModel.from_pretrained(
         use_eagle3=use_eagle3,
         base_model_path=base_model,
@@ -748,16 +768,17 @@ def run_generation(
             if tm is not None and tm.dim() == 4:
                 tm_bool = tm[0, 0].bool()         # [N, N]
                 N = tm_bool.shape[0]
+                dev = tm_bool.device
                 depths = tree_position_ids          # [N]
                 if depths.dim() > 1:
                     depths = depths.squeeze(0)
-                depths = depths[:N]                 # ensure matching length
+                depths = depths[:N].to(dev)         # ensure matching device + length
 
                 # Vectorised parent extraction:
                 # For each node i, find col j where mask[i,j]=True and depth[j]=depth[i]-1
                 target_depths = (depths - 1).unsqueeze(1)   # [N, 1]
                 col_depths    = depths.unsqueeze(0)          # [1, N]
-                depth_match   = (col_depths == target_depths)  # [N, N]
+                depth_match   = (col_depths == target_depths)  # [N, N]  (on dev)
                 valid         = tm_bool & depth_match          # [N, N]
                 parents       = valid.int().argmax(dim=1).to(torch.int32)  # [N]
                 parents[0]    = 0  # root self-loop
