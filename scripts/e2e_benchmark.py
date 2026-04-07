@@ -735,14 +735,16 @@ def run_generation(
         e0.record()
 
         # ── Extract parent array from EAGLE-3's tree_mask ────────────────────
-        # EAGLE sets mdl.model.tree_mask = [1, 1, N, N] float before calling
-        # tree_decoding.  N = number of tree tokens (root + selected candidates).
+        # EAGLE sets mdl.base_model.model.tree_mask = [1, 1, N, N] float before
+        # calling tree_decoding.  N = number of tree tokens.
         # tree_position_ids[i] = depth of token i.
         # We reconstruct the parent array:  parents[i] = j  where
         #   tree_mask[i,j]=True  and  depth[j] = depth[i]-1.
         # Root (depth=0): parents[0] = 0  (self-loop).
-        if use_ragged and hasattr(mdl, 'model') and hasattr(mdl.model, 'tree_mask'):
-            tm = mdl.model.tree_mask  # [1, 1, N, N] float
+        _base_model = getattr(mdl, 'base_model', None)
+        _llama_model = getattr(_base_model, 'model', None) if _base_model is not None else None
+        if use_ragged and _llama_model is not None and hasattr(_llama_model, 'tree_mask'):
+            tm = _llama_model.tree_mask  # [1, 1, N, N] float
             if tm is not None and tm.dim() == 4:
                 tm_bool = tm[0, 0].bool()         # [N, N]
                 N = tm_bool.shape[0]
