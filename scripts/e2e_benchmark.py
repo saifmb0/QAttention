@@ -81,6 +81,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import datetime
 import importlib.util
 import math
 import os
@@ -1478,19 +1479,25 @@ def main() -> None:
     del model
     torch.cuda.empty_cache()
 
-    # ── Write CSV ────────────────────────────────────────────────────────────
+    # ── Write CSV (datetime-stamped to avoid overwriting) ────────────────────
     os.makedirs(args.out_dir, exist_ok=True)
-    csv_path = os.path.join(args.out_dir, args.csv_name)
+    _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    _base_name = args.csv_name.removesuffix(".csv")
+    csv_path   = os.path.join(args.out_dir, f"{_base_name}_{_ts}.csv")
+    csv_latest = os.path.join(args.out_dir, args.csv_name)
     if all_rows:
         fieldnames = list(all_rows[0].keys())
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(all_rows)
+        for _p in (csv_path, csv_latest):
+            with open(_p, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(all_rows)
         print(f"\n  Saved: {csv_path}")
+        print(f"  Saved: {csv_latest}  (latest)")
 
     # Summary CSV — one row per (b, d) config.
-    summary_csv = os.path.join(args.out_dir, "e2e_summary.csv")
+    summary_csv_ts = os.path.join(args.out_dir, f"e2e_summary_{_ts}.csv")
+    summary_csv    = os.path.join(args.out_dir, "e2e_summary.csv")
     if summary_rows:
         # Collect all keys across rows (some may be absent if a mode was skipped)
         s_fields: List[str] = []
@@ -1501,11 +1508,13 @@ def main() -> None:
         for row in summary_rows:
             for k in s_fields:
                 row.setdefault(k, "")
-        with open(summary_csv, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=s_fields)
-            writer.writeheader()
-            writer.writerows(summary_rows)
-        print(f"  Saved: {summary_csv}")
+        for _p in (summary_csv_ts, summary_csv):
+            with open(_p, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=s_fields)
+                writer.writeheader()
+                writer.writerows(summary_rows)
+        print(f"  Saved: {summary_csv_ts}")
+        print(f"  Saved: {summary_csv}  (latest)")
 
     # ── Final summary: 2D pivot tables ───────────────────────────────────────
     print(f"\n{'=' * 72}")
