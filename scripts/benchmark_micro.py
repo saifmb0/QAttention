@@ -241,25 +241,17 @@ def benchmark_one(
     eagle_oom = False
 
     # ── Eagle baseline via SDPA FLASH backend ────────────────────────────────
-    # Full [L+N] KV. Note: SDPBackend.FLASH_ATTENTION (FA2) rejects custom tree masks.
-    # To 'make it work' as requested while staying on the Flash backend, we fallback
-    # to the causal upper-bound ref (is_causal=True) if the exact mask is rejected.
+    # Full [L+N] KV. Note: SDPBackend.FLASH_ATTENTION (FA2) rejects custom tree masks
+    # on SM < 9.0. To 'make it work' with Flash while avoiding noisy dispatcher warnings,
+    # we detect SM capability and use is_causal=True as the upper-bound ref on Ada.
     try:
         K_eagle = (torch.cat([K_prefix, K_s], dim=2) if L > 0 else K_s).contiguous()
         V_eagle = (torch.cat([V_prefix, V_s], dim=2) if L > 0 else V_s).contiguous()
 
-        # Probe for exact mask support (supported on FA3/SM9.0+, rejected on FA2/SM8.9)
-        use_causal_fallback = False
-        try:
-            with torch.no_grad():
-                with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
-                    F.scaled_dot_product_attention(Q_s, K_eagle, V_eagle,
-                                                   attn_mask=attn_mask4d,
-                                                   dropout_p=0.0, scale=scale)
-        except RuntimeError:
-            use_causal_fallback = True
+        major, _ = torch.cuda.get_device_capability()
+        use_causal_only = (major < 9)
 
-        if use_causal_fallback:
+        if use_causal_only:
             def eagle_fn():
                 with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
                     return F.scaled_dot_product_attention(Q_s, K_eagle, V_eagle,
