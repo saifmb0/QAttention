@@ -83,7 +83,7 @@ def _tree_n(b: int, d: int, token_cap: int = 0) -> int:
 DEFAULT_BATCH_SIZES       = [8, 16, 32, 64, 128]
 DEFAULT_BRANCHING_FACTORS = [8, 10, 12, 14, 16, 18, 20]
 DEFAULT_DEPTHS            = [5, 7, 9, 12, 14, 16, 20, 24, 28, 32]
-DEFAULT_PREFIX_LENGTHS    = [0, 1024, 4096]
+DEFAULT_PREFIX_LENGTHS    = [0, 1024, 4096, 8192, 16384, 32768, 65536]  # Simulated past KV-cache lengths: tree-only + realistic verify-step lengths
 DEFAULT_TOKEN_CAP         = 0     # 0 = no cap; E2E benchmark uses 120
 DEFAULT_NUM_HEADS         = 32    # LLaMA-3.1-8B
 DEFAULT_HEAD_DIM          = 128   # LLaMA-3.1-8B
