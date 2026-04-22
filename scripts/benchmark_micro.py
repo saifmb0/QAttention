@@ -17,12 +17,8 @@ at small N; this sweep intentionally goes beyond realistic EAGLE configs to
 establish the crossover point and the asymptotic speedup ceiling.
 
 Both kernels compute IDENTICAL attention over the same b-ary tree topology:
-  • eagle_tree:  manual matmul + additive bias mask + softmax + matmul,
-                 exactly matching modeling_llama_kv.py line-by-line:
-                   attn_weights = matmul(Q,[B,H,N,D], K^T,[B,H,D,N]) / sqrt(D)
-                   attn_weights = attn_weights + bias_mask   # -inf for non-ancestors
-                   attn_weights = softmax(attn_weights, dim=-1).to(fp16)
-                   attn_output  = matmul(attn_weights, V,[B,H,N,D])
+    • eagle_tree:  PyTorch SDPA with explicit tree-ancestor bool mask,
+                                 backend forced to SDPBackend.FLASH_ATTENTION.
   • ragged:      Our Triton kernel with O(d+1) ancestor-walk per query,
                  ragged packed layout, no mask tensor.
 
@@ -68,6 +64,7 @@ from typing import List
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ragged_attn import ragged_attention, ragged_attention_with_lse
@@ -97,7 +94,7 @@ def _tree_n(b: int, d: int, token_cap: int = 0) -> int:
 # Eagle-3 operates at b∈{8-12}, d=7 (N~48-72).  We push d up to 20 so N
 # reaches 200+ at b=12, revealing the asymptotic speedup ceiling.
 DEFAULT_BATCH_SIZES       = [1, 4, 8, 16]
-DEFAULT_BRANCHING_FACTORS = [8, 10, 12, 14, 16]
+DEFAULT_BRANCHING_FACTORS = [8, 10, 12, 14]
 DEFAULT_DEPTHS            = [5, 7, 9, 12, 14, 16, 20]
 DEFAULT_PREFIX_LENGTHS    = [0, 1024, 4096, 8192, 16384, 32768, 65536]  # Simulated past KV-cache lengths: tree-only + realistic verify-step lengths
 DEFAULT_TOKEN_CAP         = 0     # 0 = no cap; E2E benchmark uses 120
@@ -145,7 +142,7 @@ class MicroRow:
     num_tree_nodes:   int
     num_heads:        int
     head_dim:         int
-    eagle_tree_ms:    float     # Eagle manual matmul+mask+softmax (modeling_llama_kv.py)
+    eagle_tree_ms:    float     # Eagle baseline via SDPA FLASH + tree bool mask
     ragged_ms:        float     # our ragged kernel (+ flash prefix + LSE merge when L>0)
     speedup:          float     # eagle_tree_ms / ragged_ms  (>1 → ragged wins)
 
@@ -172,8 +169,8 @@ def benchmark_one(
         simulating real speculative-decoding verify where the past KV cache
         already contains L committed tokens.
 
-    The Eagle baseline uses manual matmul over the full [L+N] KV, materialising
-    the [B, H, N, L+N] attention-weight matrix.  The ragged approach uses flash
+    The Eagle baseline uses SDPA over the full [L+N] KV with explicit tree bool
+    mask and SDPBackend.FLASH_ATTENTION forced. The ragged approach uses flash
     attention for the prefix and the Triton kernel for the tree, merging via
     online-softmax (no large matrix materialised).
     """
@@ -205,7 +202,7 @@ def benchmark_one(
         K_prefix = torch.randn(B, H, L, D, device=device, dtype=torch.float16)
         V_prefix = torch.randn(B, H, L, D, device=device, dtype=torch.float16)
 
-    # ── Tree mask: [N, N] bool → additive bias ──────────────────────────────
+    # ── Tree mask: [N, N] bool (True = attend) ──────────────────────────────
     if use_pruned_trees:
         # Generate EAGLE-like pruned tree
         rng_seed = B * 10000 + b * 100 + d
@@ -219,34 +216,23 @@ def benchmark_one(
         mask_np = tree_attention_mask_pruned(parent_array)   # [N, N] bool
     else:
         mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
-    mask_t  = torch.from_numpy(mask_np).to(device)
-    tree_bias = torch.where(
-        mask_t,
-        torch.zeros(1, device=device, dtype=torch.float16),
-        torch.full((1,), float("-inf"), device=device, dtype=torch.float16),
-    )   # [N, N]
-    del mask_t
-
+    tree_mask_t = torch.from_numpy(mask_np).to(device=device, dtype=torch.bool)
     if L > 0:
-        # Prefix columns: all-attend (0);  tree columns: ancestor mask
-        prefix_zeros = torch.zeros(N, L, device=device, dtype=torch.float16)
-        full_bias = torch.cat([prefix_zeros, tree_bias], dim=1)  # [N, L+N]
-        bias4d = full_bias.unsqueeze(0).unsqueeze(0)             # [1,1,N,L+N]
-        del prefix_zeros, full_bias
+        # Prefix columns: all-attend True; tree columns: ancestor bool mask
+        prefix_true = torch.ones(N, L, device=device, dtype=torch.bool)
+        full_mask = torch.cat([prefix_true, tree_mask_t], dim=1)   # [N, L+N]
+        attn_mask4d = full_mask.unsqueeze(0).unsqueeze(0)          # [1,1,N,L+N]
+        del prefix_true, full_mask
     else:
-        bias4d = tree_bias.unsqueeze(0).unsqueeze(0)             # [1,1,N,N]
-    del tree_bias
+        attn_mask4d = tree_mask_t.unsqueeze(0).unsqueeze(0)        # [1,1,N,N]
+    del tree_mask_t
 
     t_eagle  = nan
     t_ragged = nan
     eagle_oom = False
 
-    # ── Eagle manual matmul attention (the actual baseline) ──────────────────
-    # Replicates modeling_llama_kv.py exactly:
-    #   attn_weights = matmul(Q, K_full^T) / sqrt(D) + bias_mask
-    #   attn_weights = softmax(attn_weights, dim=-1, dtype=float32).to(fp16)
-    #   attn_output  = matmul(attn_weights, V_full)
-    # This materialises [B, H, N, L+N] — OOMs at large B×L.
+    # ── Eagle baseline via SDPA FLASH backend ────────────────────────────────
+    # Full [L+N] KV with explicit tree bool mask.
     try:
         if L > 0:
             K_eagle = torch.cat([K_prefix, K_s], dim=2)  # [B,H,L+N,D]
@@ -256,10 +242,13 @@ def benchmark_one(
             V_eagle = V_s
 
         def eagle_fn():
-            w = torch.matmul(Q_s, K_eagle.transpose(-2, -1)) * scale
-            w = w + bias4d
-            w = torch.softmax(w, dim=-1, dtype=torch.float32).to(Q_s.dtype)
-            return torch.matmul(w, V_eagle)
+            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
+                return F.scaled_dot_product_attention(
+                    Q_s, K_eagle, V_eagle,
+                    attn_mask=attn_mask4d,
+                    dropout_p=0.0,
+                    scale=scale,
+                )
 
         t_eagle = _cuda_median_ms(eagle_fn, warmup, iters)
         if L > 0:
@@ -268,7 +257,7 @@ def benchmark_one(
         if "out of memory" not in str(exc).lower():
             raise
         eagle_oom = True
-        print(f"    [OOM] Eagle matmul skipped for B={B} b={b} d={d} L={L} N={N}")
+        print(f"    [OOM] Eagle SDPA skipped for B={B} b={b} d={d} L={L} N={N}")
     finally:
         torch.cuda.empty_cache()
 
@@ -322,7 +311,7 @@ def benchmark_one(
         speedup = t_eagle / t_ragged
 
     # Cleanup
-    del Q_r, K_r, V_r, cu, Q_s, K_s, V_s, bias4d
+    del Q_r, K_r, V_r, cu, Q_s, K_s, V_s, attn_mask4d
     if K_prefix is not None:
         del K_prefix, V_prefix
     torch.cuda.empty_cache()
@@ -339,7 +328,7 @@ def benchmark_one(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Micro-benchmark: Eagle manual-matmul tree-attn vs ragged kernel",
+        description="Micro-benchmark: Eagle SDPA-FLASH tree-attn vs ragged kernel",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--batch-sizes",       default=",".join(map(str, DEFAULT_BATCH_SIZES)))
