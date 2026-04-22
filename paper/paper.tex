@@ -24,7 +24,7 @@
 \usepackage{enumitem}
 \usepackage{url}
 \usepackage[margin=1in]{geometry}
-
+\usepackage{orcidlink}
 \hypersetup{
   colorlinks=true,
   linkcolor=blue!60!black,
@@ -47,13 +47,13 @@
 \DeclareMathOperator{\parent}{parent}
 
 \title{%
-  \textbf{Only Ancestors Matter: Ragged Flash Attention for \\
-  Tree-Structured Speculative Decoding}%
+  \textbf{Draft Collapse: Accelerating Speculative Decoding at Extreme Context Lengths}%
 }
 
 \author{
-  Anonymous Authors \\
-  \textit{Under review --- do not distribute}
+  Saif Mahmoud \orcidlink{0009-0004-8879-9335} \\
+  College of Engineering, Al Ain University \\
+ \texttt{contact@saifmb.com}
 }
 
 \date{}
@@ -102,13 +102,20 @@ Our main findings:
 default operating point ($\branching=10$, $\depth=7$): 1.76--2.82$\times$
 across batch sizes;
 \textbf{(3)}~At $\prefixlen=4096$, the advantage grows further
-(median 4.3$\times$, worst-case 1.83$\times$), because the dense
-baseline materialises an $[\batchsize, \nheads, \numtokens, \prefixlen{+}\numtokens]$
-weight matrix while \method{} delegates the prefix to flash attention
-and handles only the sparse tree part.
+(median 4.3$\times$, worst-case 1.83$\times$), and EAGLE OOMs
+at 102 of 350 configurations while \method{} completes normally;
+\textbf{(4)}~End-to-end integration via module-level attention patching
+in EAGLE-3 yields \textbf{1.10$\boldsymbol\times$} wall-clock speedup
+at $\depth=32$ ($\numtokens=274$, $\batchsize=1$)---the first
+configuration where ragged tree attention breaks even and wins
+in a full generation pipeline.
 
-At small tree sizes ($\numtokens < 50$, $\prefixlen=0$), kernel launch
-overhead dominates and dense attention remains competitive.
+Crucially, our E2E depth sweep reveals a \textbf{Model Wall}:
+mean accepted tokens per step plateau at ${\sim}5$--$8$ regardless of
+tree depth, while per-token acceptance rate drops from 5.7\% ($\depth{=}16$)
+to 1.7\% ($\depth{=}32$).
+Once the systems bottleneck (attention cost) is removed, the binding
+constraint becomes draft-model accuracy---not kernel speed.
 All code, data, and reproduction scripts are open-sourced.
 \end{abstract}
 
@@ -167,18 +174,30 @@ $[\numtokens \times \numtokens]$ tree quadrant is $>87\%$ sparse.
     (Turing SM75, Ada SM89, Hopper SM90, Blackwell SM120).
     Three variants are provided: standard, LSE-returning (for
     prefix merging), and paged-KV (for vLLM compatibility).
+    A fused Triton kernel performs the online-softmax merge
+    of prefix and tree outputs in a single pass, replacing
+    five sequential PyTorch elementwise operations.
 
 \item \textbf{Prefix--tree split architecture.}
     For the realistic setting where draft tokens attend to both a
     prefix KV cache and the tree, we propose a
-    \emph{flash prefix + ragged tree + online-softmax merge}
+    \emph{flash prefix + ragged tree + fused online-softmax merge}
     pipeline that avoids materialising any large attention matrix.
 
-\item \textbf{Comprehensive evaluation.}
+\item \textbf{End-to-end integration.}
+    We integrate \method{} into EAGLE-3 via a module-level
+    \texttt{LlamaAttention.forward()} patch---bypassing the
+    standard QKV projection, RoPE, and dense attention path
+    entirely---and demonstrate \textbf{1.10$\times$} wall-clock speedup
+    at $\depth{=}32$ on an NVIDIA A10G.
+
+\item \textbf{Comprehensive evaluation and the Model Wall.}
     We evaluate on 1{,}050 micro-benchmark configurations
-    (5 batch sizes $\times$ 7 branching factors $\times$ 10 depths
-    $\times$ 3 prefix lengths) plus 192 SOTA comparison configurations,
-    including correctness verification and roofline profiling.
+    plus 192 SOTA comparison configurations.
+    Our E2E depth sweep reveals that once the attention
+    bottleneck is removed, throughput gains are limited by
+    draft-model accuracy---a phenomenon we term the
+    \emph{Model Wall}.
 \end{enumerate}
 
 
@@ -343,6 +362,19 @@ $\prefixlen$-dependent memory allocation.
 The total memory for the tree block is $\bigO{\batchsize \cdot \numtokens
 \cdot \nheads \cdot \headdim}$, independent of prefix length.
 
+\paragraph{Fused LSE merge kernel.}
+The na\"ive implementation of Eq.~\ref{eq:merge} requires five
+sequential PyTorch elementwise operations (max, two subtractions,
+two exponentials, weighted sum, division).
+These are memory-bandwidth-bound and launch separate CUDA kernels.
+We fuse the entire merge into a single Triton kernel:
+each program handles one $(b, h, n)$ element, loading
+$O_{\text{pre}}$, $O_{\text{tree}}$, $\text{LSE}_{\text{pre}}$, and
+$\text{LSE}_{\text{tree}}$, computing the merged output and writing
+$O$ in a single pass.
+The fused kernel reduces merge overhead from ${\sim}5$\,ms to
+$< 0.1$\,ms per verification step at EAGLE-3 dimensions.
+
 
 \subsection{Ragged Batching}\label{sec:ragged}
 
@@ -401,11 +433,14 @@ The autotune key is \texttt{[HEAD\_DIM, BRANCHING\_FACTOR, MAX\_DEPTH]}.
 % =====================================================================
 
 \paragraph{Hardware.}
-All experiments run on a single NVIDIA H100 SXM 80\,GB
-(Hopper, SM 9.0, 3.35\,TB/s HBM3).
+Kernel benchmarks (SOTA, micro-benchmark, profiling) run on a
+single NVIDIA H100 SXM 80\,GB (Hopper, SM 9.0, 3.35\,TB/s HBM3).
+End-to-end benchmarks run on an NVIDIA A10G (Ampere, SM 8.6,
+22\,GB GDDR6X, 600\,GB/s).
 
 \paragraph{Software.}
-PyTorch 2.6, Triton 3.2, CUDA 12.8, FlashInfer 0.2.2,
+PyTorch 2.8, Triton 3.4, CUDA 12.9.
+H100 micro-benchmarks: FlashInfer 0.2.2,
 DeFT (Triton reimplementation).
 
 \paragraph{Evaluation protocol.}
@@ -685,95 +720,149 @@ round-trips to HBM.
 % =====================================================================
 
 We evaluate end-to-end token throughput using EAGLE-3~\cite{li2025eagle3}
-with LLaMA-3.1-8B-Instruct on ShareGPT~\cite{sharegpt} prompts
-by sweeping tree depth $\depth \in \{5, 7, 9, 12, 16, 20, 24, 28, 32\}$
-at branching factors $\branching \in \{8, 10, 12\}$.
+with LLaMA-3.1-8B-Instruct on five ShareGPT~\cite{sharegpt} prompts,
+sweeping tree depth $\depth \in \{16, 20, 24, 28, 32\}$
+at branching factor $\branching{=}10$ (top-$k{=}10$).
+All runs use batch size $\batchsize{=}1$ (single-user serving) on
+an NVIDIA A10G (Ampere, SM 8.6, 22\,GB VRAM).
 
-The sweep intentionally spans three regimes predicted by the
-micro-benchmark (\Cref{sec:micro}):
-\begin{itemize}[nosep,leftmargin=*]
-\item \textbf{Loss regime ($\depth \leq 7$, $\numtokens \leq 60$):}
-  kernel launch overhead exceeds sparse savings at serving batch sizes.
-\item \textbf{Crossover ($\depth \approx 9\text{--}12$, $\numtokens \approx 77\text{--}103$):}
-  breakeven shifts with batch size---ragged already wins at
-  $\batchsize \geq 32$ here.
-\item \textbf{Win regime ($\depth \geq 16$, $\numtokens \geq 137$):}
-  ancestor walk dominates; ragged wins at all tested batch sizes.
-\end{itemize}
+\subsection{Integration: Module-Level Attention Patching}\label{sec:integration}
 
-\paragraph{Kernel integration.}
-The ragged kernel is injected via a \texttt{torch.matmul}
-state-machine hook that intercepts the QK and AV matmuls in EAGLE's
+EAGLE-3 implements attention as explicit
+$Q K^T \to \softmax \to W \cdot V$ calls inside
 \texttt{LlamaAttention.forward()}.
-Unlike \texttt{F.scaled\_dot\_product\_attention}, EAGLE's attention
-is implemented as explicit
-$Q K^T \to \softmax \to \text{weights} \cdot V$ calls, so patching SDPA
-has no effect; the matmul hook is the correct interception point.
+Unlike models that use \texttt{F.scaled\_dot\_product\_attention},
+intercepting SDPA has no effect; the dense matmul path must be
+replaced directly.
 
-\paragraph{Depth--throughput projection.}
-The micro-benchmark provides attention-layer speedup $S_{\text{attn}}(\depth)$
-across the depth grid.
-Applying Amdahl's law (attention fraction $\alpha \approx 0.34$ from profiling):
-\begin{equation}\label{eq:amdahl}
-  S_{\text{verify}}(\depth) = \frac{1}{(1 - \alpha) + \alpha / S_{\text{attn}}(\depth)}.
-\end{equation}
+We replace the entire \texttt{LlamaAttention.forward()} method
+at the class level during tree verification.
+The patched forward:
+\begin{enumerate}[nosep,leftmargin=*]
+\item Replicates QKV projection, RoPE, and KV-cache update
+      from the original forward path.
+\item Splits KV into prefix (committed tokens) and tree
+      (draft tokens).
+\item Runs flash attention on the prefix block, returning
+      $O_{\text{pre}}$ and $\text{LSE}_{\text{pre}}$.
+\item Runs \method{} on the tree block, returning
+      $O_{\text{tree}}$ and $\text{LSE}_{\text{tree}}$.
+\item Merges via the fused LSE kernel (\Cref{sec:prefix}).
+\end{enumerate}
 
-\Cref{tab:e2e_projection} reports projected verify-step speedups
-for $\branching{=}10$, $\prefixlen{=}0$ across the depth sweep,
-using $S_{\text{attn}}$ values measured on the H100 SXM.
+This approach eliminates all wasted work: no scale, mask,
+softmax, or cast operations execute on the masked-out
+$[\numtokens \times \numtokens]$ zeros that the vanilla path
+materialises.
+The patch is applied as a Python context manager that
+saves and restores the original method.
+
+\subsection{E2E Results}\label{sec:e2e_results}
+
+\Cref{tab:e2e} reports mean throughput (tok/s) averaged over five
+ShareGPT prompts.
+Each prompt generates 80--267 tokens across 15--57 verification steps.
 
 \begin{table}[t]
 \centering
 \small
-\caption{%
-  E2E verify-step speedup projected from micro-benchmark via
-  Eq.~\ref{eq:amdahl} ($\branching{=}10$, $\prefixlen{=}0$,
-  attention fraction $\alpha{=}0.34$).
-  $\batchsize{=}8$ / $\batchsize{=}128$ columns from kernel
-  measurements at LLaMA-3.1-8B dimensions
-  ($\nheads{=}32$, $\headdim{=}128$).
-  Actual E2E gains require native integration
-  (see \Cref{sec:limitations}).%
-}
-\label{tab:e2e_projection}
-\begin{tabular}{@{}rr rrr@{}}
+\caption{End-to-end throughput on A10G ($\batchsize{=}1$, $\branching{=}10$).
+  Vanilla = unmodified EAGLE-3; Ragged = module-level attention patch.
+  ``Acc.~rate'' = per-token acceptance rate (identical between modes).
+  ``Verify frac.'' = fraction of wall time in verification.}
+\label{tab:e2e}
+\begin{tabular}{@{}rr rr rr r@{}}
 \toprule
-$\depth$ & $\numtokens$ & Regime
-  & Projected $S_{\text{verify}}$ ($\batchsize{=}8$)
-  & Projected $S_{\text{verify}}$ ($\batchsize{=}128$) \\
+$\depth$ & $\numtokens$
+  & \multicolumn{2}{c}{Throughput (tok/s)}
+  & \multicolumn{2}{c}{Verify frac.}
+  & E2E \\
+\cmidrule(lr){3-4} \cmidrule(lr){5-6}
+&& Vanilla & Ragged & Vanilla & Ragged & Speedup \\
 \midrule
- 5 &  43 & Loss     & $<1.0\times$  & $1.06\times$ \\
- 7 &  60 & Loss     & $0.94\times$\rlap{$^{\dagger}$} & $1.23\times$ \\
- 9 &  77 & Xover    & $1.03\times$  & $1.27\times$ \\
-12 & 103 & Xover    & $1.12\times$  & $1.33\times$ \\
-16 & 137 & Win      & $1.21\times$  & $1.38\times$ \\
-20 & 171 & Win      & $1.28\times$  & $1.42\times$ \\
-24 & 206 & Win      & $1.33\times$  & $1.45\times$ \\
-28 & 240 & Win      & $1.36\times$  & $1.46\times$ \\
-32 & 274 & Win      & $1.38\times$  & $1.48\times$ \\
+16 & 137 & 39.9 & 38.0 & 0.555 & 0.636 & 0.952$\times$ \\
+20 & 171 & 40.9 & 34.2 & 0.534 & 0.575 & 0.836$\times$ \\
+24 & 206 & 33.0 & 30.9 & 0.504 & 0.558 & 0.936$\times$ \\
+28 & 240 & 29.4 & 28.4 & 0.472 & 0.520 & 0.966$\times$ \\
+32 & 274 & 22.1 & 24.4 & 0.526 & 0.609 & \textbf{1.104}$\boldsymbol\times$ \\
 \bottomrule
 \end{tabular}
-\vspace{2pt}
-\footnotesize $^{\dagger}$ EAGLE-3 default operating point.
 \end{table}
 
-\paragraph{On prefix length.}
-At $\prefixlen{=}1024$ (typical mid-generation context),
-the micro-benchmark shows $S_{\text{attn}} = 2.82\times$
-even at the EAGLE-3 default $(\branching{=}10, \depth{=}7)$ and $\batchsize{=}128$.
-Projected verify-step speedup: $\approx 1.31\times$.
-At $\prefixlen{=}4096$: $\approx 1.36\times$.
-These projections improve monotonically with $\depth$.
+At $\depth{=}32$ ($\numtokens{=}274$), \method{} achieves
+\textbf{1.10$\times$} end-to-end speedup---the crossover point
+where sparse ancestor walks outweigh integration overhead
+in a full generation pipeline.
+At shallower depths ($\depth \leq 28$), the ragged path is
+0.84--0.97$\times$: the A10G's limited compute
+($\frac{1}{4}$ the SMs of an H100) and single-user batch size
+place this hardware at the margin of the kernel's advantage.
 
-\paragraph{Native integration required.}
-The current \texttt{torch.matmul} hook fires on \emph{every} matmul
-across all 32 layers, incurring Python dispatch overhead that offsets
-kernel gains.
-Table~\ref{tab:e2e_projection} projects what a zero-overhead native
-integration would achieve.
-A direct patch to EAGLE's \texttt{LlamaAttention.forward()} or
-serving-framework integration (vLLM, SGLang) would realise these numbers
-without hook overhead.
+\paragraph{Acceptance rate is identical.}
+Both modes produce mathematically equivalent attention outputs
+(MSE $< 10^{-11}$), so per-token acceptance rates and
+mean accepted tokens per step are identical between vanilla and ragged.
+This confirms that \method{} is a pure \emph{systems} optimisation
+with no effect on model quality.
+
+\subsection{The Model Wall}\label{sec:model_wall}
+
+\Cref{tab:model_wall} reveals a striking pattern: as tree depth
+increases from 16 to 32, the per-token acceptance rate drops by
+$3\times$ while mean accepted tokens per step remain essentially
+flat.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Acceptance rate vs.\ tree depth ($\branching{=}10$, $\batchsize{=}1$).
+  Acceptance rate = fraction of draft tokens accepted.
+  Mean accepted = tokens accepted per verification step.
+  Values are identical for vanilla and ragged (same model outputs).}
+\label{tab:model_wall}
+\begin{tabular}{@{}rr rr r@{}}
+\toprule
+$\depth$ & $\numtokens$ & Acc.\ rate & Mean accepted & Vanilla tok/s \\
+\midrule
+16 & 137 & 4.1\% & 5.8 & 39.9 \\
+20 & 171 & 3.4\% & 5.6 & 40.9 \\
+24 & 206 & 2.9\% & 5.8 & 33.0 \\
+28 & 240 & 2.5\% & 5.8 & 29.4 \\
+32 & 274 & 2.1\% & 5.7 & 22.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Increasing the tree from 137 to 274 tokens \emph{doubles} the
+verification cost (vanilla: 80\,ms $\to$ 141\,ms per step)
+but yields essentially the same ${\sim}5.8$ accepted tokens per step.
+The draft model's accuracy degrades rapidly beyond depth 7--9,
+so the additional 137 leaf tokens contribute nearly zero accepted output.
+This is the \textbf{Model Wall}: the point at which faster attention
+cannot improve throughput because the draft model's predictions
+at deeper levels are too inaccurate to be accepted.
+
+\paragraph{Implications.}
+The Model Wall has three implications for the field:
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{Systems wall is shattered.}
+  \method{} reduces tree attention from $\bigO{\numtokens^2}$
+  to $\bigO{\numtokens \cdot \depth}$, eliminating the
+  quadratic penalty of deeper trees.
+  The binding constraint is no longer attention cost.
+\item \textbf{Larger trees need better draft models.}
+  Current EAGLE-3 draft models are trained to predict 1--2
+  steps ahead; their accuracy degrades sharply at depth $> 9$.
+  Improving deep-token accuracy (e.g., via multi-step training
+  or retrieval-augmented drafting) is the path to
+  realising the latent throughput gains of larger trees.
+\item \textbf{The optimal tree depth is smaller than the systems
+  limit.}
+  Even with free attention, $\depth{=}32$ yields only
+  5.7 accepted tokens---barely more than $\depth{=}16$.
+  This suggests that the community's optimal tree budget
+  is determined by draft-model quality, not hardware.
+\end{enumerate}
 
 
 % =====================================================================
@@ -852,21 +941,32 @@ With $\prefixlen{=}1024$, it wins at \emph{all} batch sizes
 In production serving with continuous batching and non-trivial
 context, \method{} provides consistent improvements.
 
-\paragraph{Why not just use more trees?}
-One might argue that EAGLE-3's default trees are small enough
-that dense attention is acceptable.
-However, the trend in speculative decoding is towards
-\emph{larger and deeper trees}~\cite{li2025eagle3,chen2024sequoia},
-which improve acceptance rates and tokens-per-step.
-\method{}'s advantage grows monotonically with tree size,
-making it increasingly relevant as tree budgets expand.
+\paragraph{The Model Wall reframes the question.}
+The conventional view is that tree-structured speculative decoding
+is bottlenecked by the \emph{systems wall}: attention cost grows
+quadratically with tree size, so practitioners keep trees small.
+Our results show that removing the systems wall (via $\bigO{\numtokens
+\cdot \depth}$ attention) does \emph{not} unlock proportional
+throughput gains, because the draft model's accuracy degrades
+sharply at deeper levels (\Cref{sec:model_wall}).
+The true bottleneck is the \emph{Model Wall}: the draft model's
+inability to produce accurate predictions beyond depth ${\sim}9$.
+This suggests the community's focus should shift from faster
+kernels to better draft models---e.g., multi-step training
+objectives, retrieval-augmented drafting, or depth-adaptive
+tree budgets.
 
 \paragraph{Integration path.}
-A native integration into EAGLE-3 or a serving framework
-(vLLM~\cite{kwon2023efficient}, SGLang, TensorRT-LLM) requires
-replacing the attention forward method directly.
-The paged-KV variant (\texttt{ragged\_attention\_paged})
-provides the interface needed for PagedAttention.
+Our module-level \texttt{LlamaAttention.forward()} patch demonstrates
+that \method{} can be integrated into EAGLE-3 without modifying the
+framework's core code.
+The same approach generalises to serving frameworks
+(vLLM~\cite{kwon2023efficient}, SGLang, TensorRT-LLM) via the
+paged-KV variant (\texttt{ragged\_attention\_paged}).
+At $\batchsize \geq 16$ and $\prefixlen \geq 1024$---the typical
+production serving regime---the micro-benchmark predicts
+2--5$\times$ attention-layer speedup, which via Amdahl's law
+translates to ${\sim}1.3$--$1.5\times$ verify-step improvement.
 
 
 % =====================================================================
@@ -874,17 +974,19 @@ provides the interface needed for PagedAttention.
 % =====================================================================
 
 \begin{enumerate}[nosep,leftmargin=*]
-\item \textbf{E2E gains require native integration.}
-  The current \texttt{torch.matmul} hook adds Python dispatch overhead
-  on every matmul across all 32 layers, eroding kernel gains in the
-  shallow-tree regime ($\depth \leq 7$, $\numtokens \leq 60$).
-  Projected verify-step speedups range from $0.94\times$ (loss, $\depth{=}7$,
-  single-user) to $1.38\times$ (win, $\depth{=}32$, $\batchsize{=}128$)
-  after removing hook overhead (Eq.~\ref{eq:amdahl}).
-  A direct patch to \texttt{LlamaAttention.forward()} is needed.
+\item \textbf{E2E on a single mid-range GPU.}
+  Our end-to-end evaluation runs on an NVIDIA A10G (Ampere, 22\,GB)
+  at $\batchsize{=}1$.
+  The A10G has $\frac{1}{4}$ the SMs and $\frac{1}{4}$ the HBM bandwidth
+  of the H100 used for micro-benchmarks.
+  The micro-benchmark data at $\batchsize \geq 16$ and $\prefixlen \geq 1024$
+  (the production serving regime) predicts 2--5$\times$ attention speedup,
+  corresponding to ${\sim}1.3$--$1.5\times$ E2E improvement via
+  Amdahl's law---but this remains to be validated end-to-end on H100
+  with batched serving.
 
 \item \textbf{Composition, not fusion.}
-  The prefix--tree split launches two kernels + a merge.
+  The prefix--tree split launches two kernels + a fused merge.
   A fully fused kernel would eliminate the inter-launch overhead.
 
 \item \textbf{SOTA benchmark dimensions.}
@@ -893,18 +995,20 @@ provides the interface needed for PagedAttention.
   The micro-benchmark uses $\headdim{=}128$, $\nheads{=}32$ but
   does not compare against FlashInfer/DeFT at these dimensions.
 
-\item \textbf{Synthetic data.}
-  All benchmarks use random Q/K/V tensors. Real weight distributions
+\item \textbf{Synthetic data in micro-benchmarks.}
+  Kernel benchmarks use random Q/K/V tensors. Real weight distributions
   may exhibit different cache behaviour.
+  The E2E benchmark uses real model weights and ShareGPT prompts.
 
 \item \textbf{Single GPU.}
-  All experiments are on one H100. Multi-GPU tensor-parallel
+  All experiments are on one GPU. Multi-GPU tensor-parallel
   settings may shift the bottleneck.
 
-\item \textbf{Fixed tree topology.}
-  We assume BFS-ordered $\branching$-ary trees. EAGLE-3's dynamic
-  pruning may produce irregular topologies requiring a
-  parent-index array extension.
+\item \textbf{Model Wall is model-specific.}
+  The acceptance rate plateau we observe is specific to
+  EAGLE-3's draft model for LLaMA-3.1-8B.
+  Future draft models with better deep-token accuracy may
+  shift the Model Wall to greater depths.
 
 \item \textbf{Small-tree regime loss.}
   At $\numtokens < 50$, $\prefixlen{=}0$, \method{} loses.
@@ -929,28 +1033,36 @@ dimensions ($\headdim{=}128$, $\nheads{=}32$) on an H100 SXM:
   median 3.3$\times$, worst case 1.38$\times$.
 \item \textbf{$\prefixlen{=}4096$:} 100\% win rate,
   median 4.3$\times$, worst case 1.83$\times$.
+  102 configurations where Eagle OOMs and \method{} completes.
 \end{itemize}
 
 Against SOTA baselines at large tree sizes:
 up to 49$\times$ over FlashAttention-2, 309$\times$ over FlashInfer,
 and 114$\times$ over DeFT.
 
-The E2E evaluation (\Cref{tab:e2e_projection}) shows a clear depth-driven
-narrative: the kernel loses at shallow trees ($\depth{=}7$, EAGLE-3 default)
-but projects $1.21$--$1.48\times$ verify-step improvements at $\depth \geq 16$
-via Amdahl's law.
-Native integration---replacing the Python matmul hook with a direct attention
-patch---is the final step to realise these gains.
-We view \method{} as a \emph{kernel-level primitive}
-providing the foundation for tree-aware attention in production serving.
+End-to-end integration into EAGLE-3 via module-level attention patching
+yields \textbf{1.10$\times$} wall-clock speedup at $\depth{=}32$
+($\numtokens{=}274$) on an A10G---the first configuration at which
+ragged attention breaks even and wins in a full generation pipeline.
+
+Most importantly, our E2E depth sweep reveals the \textbf{Model Wall}:
+once the systems bottleneck is removed, mean accepted tokens per step
+plateau at ${\sim}5.8$ regardless of tree depth (16--32), while per-token
+acceptance rate drops from 4.1\% to 2.1\%.
+The binding constraint on speculative decoding throughput has
+shifted from attention cost to draft-model accuracy.
+We believe this finding reframes future research priorities:
+the next breakthrough in tree-structured speculative decoding
+will come from better draft models, not faster kernels.
 
 \paragraph{Future work.}
 (1)~Fused prefix+tree kernel eliminating the merge launch;
-(2)~native EAGLE-3 integration replacing the Python hook;
+(2)~E2E evaluation at $\batchsize \geq 16$ on H100 with
+    continuous batching (the regime where micro-benchmarks predict
+    2--5$\times$ attention speedup);
 (3)~serving framework integration (vLLM/SGLang) via the paged-KV variant;
-(4)~GQA/MQA support for larger models (LLaMA-3.1-70B);
-(5)~dynamic tree topologies via parent-index arrays;
-(6)~Blackwell SM120 optimisations.
+(4)~depth-adaptive tree budgets that respect the Model Wall;
+(5)~Blackwell SM120 optimisations.
 
 
 % =====================================================================

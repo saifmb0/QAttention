@@ -239,6 +239,7 @@ def benchmark_one(
 
     t_eagle  = nan
     t_ragged = nan
+    eagle_oom = False
 
     # ── Eagle manual matmul attention (the actual baseline) ──────────────────
     # Replicates modeling_llama_kv.py exactly:
@@ -266,6 +267,7 @@ def benchmark_one(
     except (RuntimeError, torch.OutOfMemoryError) as exc:
         if "out of memory" not in str(exc).lower():
             raise
+        eagle_oom = True
         print(f"    [OOM] Eagle matmul skipped for B={B} b={b} d={d} L={L} N={N}")
     finally:
         torch.cuda.empty_cache()
@@ -306,7 +308,12 @@ def benchmark_one(
     except (RuntimeError, torch.OutOfMemoryError) as exc:
         if "out of memory" not in str(exc).lower():
             raise
-        print(f"    [OOM] Ragged skipped for B={B} b={b} d={d} L={L} N={N}")
+        if eagle_oom:
+            # Both eagle and ragged OOMed — config is too large for both
+            print(f"    [OOM] Both kernels OOMed for B={B} b={b} d={d} L={L} N={N} — skipping")
+        else:
+            # Only ragged OOMed (eagle succeeded) — this is worth noting
+            print(f"    [OOM] Ragged OOMed but Eagle succeeded for B={B} b={b} d={d} L={L} N={N}")
     finally:
         torch.cuda.empty_cache()
 
