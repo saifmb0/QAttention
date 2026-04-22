@@ -28,21 +28,32 @@ Both kernels compute IDENTICAL attention over the same b-ary tree topology:
 
 Model dimensions match LLaMA-3.1-8B: H=32, D=128  (configurable via CLI).
 
+Tree topology
+-------------
+By default, benchmarks use fully-balanced b-ary trees. Use --pruned-trees to
+instead generate EAGLE-like pruned trees with irregular branching and varying
+depths across branches, which more accurately simulates real EAGLE-3 behavior
+where top-k selection creates sparse trees.
+
 Output
 ------
   results/micro_benchmark.csv          — full per-config latency data
+  results/micro_benchmark_pruned.csv   — (if --pruned-trees is used)
   results/micro_benchmark_pivot.csv    — pivot: depth × (batch, branching)
 
 Usage
 -----
-  # Default grid
+  # Default grid with balanced trees
   python scripts/benchmark_micro.py
+
+  # With EAGLE-like pruned trees (irregular branching)
+  python scripts/benchmark_micro.py --pruned-trees
 
   # Custom grid
   python scripts/benchmark_micro.py --batch-sizes 1,8,16,32 --depths 1,2,3,4,5,6,7,8
 
-  # More iterations for tighter CIs
-  python scripts/benchmark_micro.py --warmup 20 --iters 100
+  # More iterations for tighter CIs with pruned trees
+  python scripts/benchmark_micro.py --pruned-trees --warmup 20 --iters 100
 """
 
 from __future__ import annotations
@@ -60,7 +71,12 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ragged_attn import ragged_attention, ragged_attention_with_lse
-from src.tree_mask import tree_attention_mask_n
+from src.tree_mask import (
+    tree_attention_mask_n,
+    tree_attention_mask_pruned,
+    build_pruned_tree,
+    sample_balanced_tree_nodes,
+)
 
 
 def _tree_n(b: int, d: int, token_cap: int = 0) -> int:
@@ -144,6 +160,7 @@ def benchmark_one(
     warmup: int, iters: int,
     device: torch.device,
     token_cap: int = 0,
+    use_pruned_trees: bool = False,
 ) -> MicroRow:
     """Benchmark one (B, b, d, L) configuration.  Returns a MicroRow.
 
@@ -189,7 +206,19 @@ def benchmark_one(
         V_prefix = torch.randn(B, H, L, D, device=device, dtype=torch.float16)
 
     # ── Tree mask: [N, N] bool → additive bias ──────────────────────────────
-    mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
+    if use_pruned_trees:
+        # Generate EAGLE-like pruned tree
+        rng_seed = B * 10000 + b * 100 + d
+        rng = np.random.default_rng(rng_seed)
+        parent_array = build_pruned_tree(b, d, target_nodes=N, rng=rng)
+        # Adjust N to actual tree size
+        N = len(parent_array)
+        tot = B * N
+        if tot > MAX_BATCH_TOKENS:
+            return MicroRow(B, L, b, d, N, H, D, nan, nan, nan)
+        mask_np = tree_attention_mask_pruned(parent_array)   # [N, N] bool
+    else:
+        mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
     mask_t  = torch.from_numpy(mask_np).to(device)
     tree_bias = torch.where(
         mask_t,
@@ -315,6 +344,9 @@ def main() -> None:
     parser.add_argument("--token-cap",  type=int, default=DEFAULT_TOKEN_CAP,
                         help="Cap N from above (0 = no cap, default). "
                              "Set to 120 to match Eagle-3 E2E configs.")
+    parser.add_argument("--pruned-trees", action="store_true",
+                        help="Use EAGLE-like pruned trees instead of fully balanced trees. "
+                             "This creates sparse, irregular trees more realistic to EAGLE.")
     parser.add_argument("--num-heads",  type=int, default=DEFAULT_NUM_HEADS)
     parser.add_argument("--head-dim",   type=int, default=DEFAULT_HEAD_DIM)
     parser.add_argument("--warmup",     type=int, default=WARMUP_ITERS)
@@ -335,6 +367,12 @@ def main() -> None:
     device         = torch.device("cuda:0")
     token_cap      = args.token_cap
 
+    # Adjust CSV name if using pruned trees
+    csv_name = args.csv_name
+    if args.pruned_trees:
+        base, ext = os.path.splitext(csv_name)
+        csv_name = f"{base}_pruned{ext}"
+
     p = torch.cuda.get_device_properties(0)
     print("=" * 72)
     print("  sd-ragged  ·  Micro Benchmark  ·  Eagle tree-attn vs Ragged")
@@ -351,6 +389,8 @@ def main() -> None:
                        f"/d={depths[-1]}→{_tree_n(b,depths[-1],token_cap)}"
                        for b in bfs))
     print(f"  Timing:   {args.warmup} warmup + {args.iters} iters (median)")
+    tree_mode = "EAGLE-like pruned (irregular branching)" if args.pruned_trees else "fully balanced"
+    print(f"  Trees:    {tree_mode}")
     print("=" * 72)
 
     configs = [(B, b, d, L)
@@ -363,7 +403,8 @@ def main() -> None:
     for ci, (B, b, d, L) in enumerate(configs):
         N = _tree_n(b, d, token_cap)
         row = benchmark_one(B, b, d, L, H, D,
-                            args.warmup, args.iters, device, token_cap)
+                            args.warmup, args.iters, device, token_cap,
+                            use_pruned_trees=args.pruned_trees)
         rows.append(row)
 
         def _f(v):
@@ -378,7 +419,7 @@ def main() -> None:
 
     # ── Write CSV ────────────────────────────────────────────────────────────
     os.makedirs(args.out_dir, exist_ok=True)
-    csv_path = os.path.join(args.out_dir, args.csv_name)
+    csv_path = os.path.join(args.out_dir, csv_name)
     fieldnames = list(asdict(rows[0]).keys())
     with open(csv_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)

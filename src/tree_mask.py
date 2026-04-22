@@ -2,7 +2,7 @@
 tree_mask.py
 ============
 Tree-structured causal attention mask construction for draft trees in
-speculative decoding (e.g. EAGLE-2).
+speculative decoding (e.g. EAGLE-2, EAGLE-3).
 
 Terminology
 -----------
@@ -35,14 +35,29 @@ This module generates:
 The mask is then combined with the context prefix via full-True rows/columns
 for context positions.
 
+EAGLE-like Pruned Trees
+------------------------
+EAGLE-3 uses beam search + top-k selection to generate trees dynamically,
+resulting in sparse, irregular trees (not perfectly balanced).  This module
+provides functions to generate such pruned trees for more realistic benchmarking.
+
 Public API
 ----------
+  # Balanced tree generation (original)
   build_tree(b, d)             -> parent_array: list[int]
   ancestors(node, parent_array) -> set[int]
   tree_attention_mask(b, d)    -> np.ndarray[bool, (N, N)]
   full_sequence_mask(ctx_len, b, d) -> np.ndarray[bool, (ctx_len+N, ctx_len+N)]
   verify_tree_mask(b, d)       -> bool  (prints diagnostics)
   num_tree_nodes(b, d)         -> int
+
+  # Pruned tree generation (EAGLE-like, NEW)
+  build_pruned_tree(b, d, target_nodes, pruning_prob, pruning_depth_scale, rng)
+                               -> parent_array: list[int]
+  sample_balanced_tree_nodes(b, d, num_nodes, rng)
+                               -> parent_array: list[int]
+  tree_attention_mask_pruned(parent_array)
+                               -> np.ndarray[bool, (N, N)]
 """
 
 from __future__ import annotations
@@ -53,6 +68,12 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Core helpers
 # ---------------------------------------------------------------------------
+
+# EAGLE pruning configuration
+# EAGLE-3 uses top-k selection at each level, effectively pruning branches.
+# These parameters control pruning realism in benchmarks.
+EAGLE_PRUNING_PROBABILITY = 0.3  # Probability each node is pruned (removed)
+EAGLE_PRUNING_DEPTH_SCALE = 1.05  # Exponential scale: pruning increases with depth
 
 def num_tree_nodes(branching_factor: int, depth: int) -> int:
     """Total number of nodes in a complete b-ary tree of given depth."""
@@ -103,6 +124,173 @@ def ancestors(node: int, parent_array: list[int]) -> set[int]:
         result.add(cur)
         cur = parent_array[cur]
     return result
+
+
+def build_pruned_tree(
+    branching_factor: int,
+    max_depth: int,
+    target_nodes: int | None = None,
+    pruning_prob: float = EAGLE_PRUNING_PROBABILITY,
+    pruning_depth_scale: float = EAGLE_PRUNING_DEPTH_SCALE,
+    rng: np.random.Generator | None = None,
+) -> list[int]:
+    """
+    Build an EAGLE-like pruned b-ary tree where branches are randomly pruned.
+
+    This simulates real EAGLE behavior where top-k selection creates sparse
+    trees with irregular branching and varying depths across branches.
+
+    Parameters
+    ----------
+    branching_factor : int
+        Maximum children per node (b).
+    max_depth : int
+        Maximum depth of the tree.
+    target_nodes : int, optional
+        Try to reach approximately this many nodes.  If None, prune
+        naturally based on probabilities.
+    pruning_prob : float
+        Base probability that a node is pruned (deleted) at depth 0.
+        Increases exponentially with depth per pruning_depth_scale.
+    pruning_depth_scale : float
+        Exponential scale factor: pruning_prob *= depth_scale^depth.
+        Default 1.05 gives ~5% increase per level of depth.
+    rng : np.random.Generator, optional
+        Random generator. If None, uses a default.
+
+    Returns
+    -------
+    parent_array : list[int]
+        parent_array[i] = parent node index; parent_array[0] = -1 (root).
+        Nodes appear in BFS order.  The actual depth of the tree may be
+        less than max_depth due to pruning.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    parent_array: list[int] = [-1]  # root
+    frontier: list[tuple[int, int]] = [(0, 0)]  # (node_idx, depth)
+    depth_tracker: list[int] = [0]  # depth[i] = tree depth of node i
+
+    while frontier:
+        next_frontier: list[tuple[int, int]] = []
+
+        for node, depth in frontier:
+            if depth >= max_depth:
+                # Reached max depth; don't generate children
+                continue
+
+            # Decide how many children this node gets
+            if branching_factor == 1:
+                num_children = 1  # linear chain
+            else:
+                # Each potential child is kept with probability (1 - pruning_prob)
+                # where pruning_prob increases with depth.
+                effective_pruning_prob = pruning_prob * (pruning_depth_scale ** depth)
+                effective_pruning_prob = min(effective_pruning_prob, 0.95)  # cap at 95%
+                num_children = sum(
+                    rng.random() > effective_pruning_prob
+                    for _ in range(branching_factor)
+                )
+
+            # Add children to the tree
+            for _ in range(num_children):
+                child_idx = len(parent_array)
+                parent_array.append(node)
+                depth_tracker.append(depth + 1)
+                next_frontier.append((child_idx, depth + 1))
+
+            # Check if we've exceeded target node count
+            if target_nodes is not None and len(parent_array) >= target_nodes:
+                # Trim frontier to avoid growing too large
+                frontier = []
+                break
+
+        frontier = next_frontier
+
+    return parent_array
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# From complete balanced tree -> sample first N nodes in BFS order
+# ─────────────────────────────────────────────────────────────────────────
+
+def sample_balanced_tree_nodes(
+    branching_factor: int,
+    max_depth: int,
+    num_nodes: int,
+    rng: np.random.Generator | None = None,
+) -> list[int]:
+    """
+    Build a balanced tree and sample an EAGLE-like subset by:
+    1. Creating full tree to max_depth
+    2. Randomly removing nodes level-by-level to get closer to num_nodes
+    3. Returning first num_nodes in BFS order
+
+    This preserves ancestor relationships while creating irregular branching.
+
+    Parameters
+    ----------
+    branching_factor : int
+    max_depth : int
+    num_nodes : int
+        Target number of nodes.
+    rng : np.random.Generator, optional
+
+    Returns
+    -------
+    parent_array : list[int]
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    # Start with a balanced tree
+    full_parent = build_tree(branching_factor, max_depth)
+
+    # If full tree is smaller or close to target, just return it truncated
+    if len(full_parent) <= num_nodes * 1.2:
+        return full_parent[:num_nodes]
+
+    # Build a BFS-pruned version
+    # Keep track of which nodes to include
+    kept = {0}  # always keep root
+    frontier = [0]
+
+    while len(kept) < num_nodes and frontier:
+        next_frontier = []
+        for node in frontier:
+            # Each child has a probability to be kept, weighted by how far we are from target
+            remaining_budget = num_nodes - len(kept)
+            potential_children = sum(
+                1 for child_offset in range(1, branching_factor + 1)
+                if node * branching_factor + child_offset < len(full_parent)
+            )
+            
+            if potential_children > 0 and remaining_budget > 0:
+                keep_prob = min(1.0, remaining_budget / (potential_children + 1))
+            else:
+                keep_prob = 0.0
+
+            for child_offset in range(1, branching_factor + 1):
+                child = node * branching_factor + child_offset
+                if child < len(full_parent) and len(kept) < num_nodes:
+                    if rng.random() < keep_prob:
+                        kept.add(child)
+                        next_frontier.append(child)
+
+        frontier = next_frontier
+
+    # Build new parent array from kept nodes (mapping to their BFS rank within kept)
+    node_to_rank = {node: i for i, node in enumerate(sorted(kept))}
+    new_parent = []
+    for old_node in sorted(kept):
+        old_par = full_parent[old_node]
+        if old_par == -1:
+            new_parent.append(-1)
+        else:
+            new_parent.append(node_to_rank[old_par])
+
+    return new_parent
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +355,33 @@ def tree_attention_mask_n(branching_factor: int, N: int) -> np.ndarray:
         while j >= 0:
             mask[i, j] = True
             j = int(parent[j])
+    return mask
+
+
+def tree_attention_mask_pruned(parent_array: list[int]) -> np.ndarray:
+    """
+    Ancestor attention mask for a pruned (irregular) tree.
+
+    Given an explicit parent array for a potentially pruned/irregular tree,
+    construct the [N, N] bool attention mask where mask[i, j] = True iff
+    j is an ancestor of i (or j == i).
+
+    Parameters
+    ----------
+    parent_array : list[int]
+        parent_array[i] = parent node index; parent_array[0] = -1 (root).
+
+    Returns
+    -------
+    mask : np.ndarray, shape (N, N), dtype bool
+    """
+    N = len(parent_array)
+    mask = np.zeros((N, N), dtype=bool)
+    for i in range(N):
+        j = i
+        while j >= 0:
+            mask[i, j] = True
+            j = parent_array[j]
     return mask
 
 
