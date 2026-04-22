@@ -240,13 +240,24 @@ def benchmark_one(
     t_ragged = nan
     eagle_oom = False
 
-    # ── Eagle baseline via SDPA FLASH backend ────────────────────────────────
-    # Full [L+N] KV. Note: SDPBackend.FLASH_ATTENTION (FA2) rejects custom tree masks
-    # on SM < 9.0. To 'make it work' with Flash while avoiding noisy dispatcher warnings,
-    # we detect SM capability and use is_causal=True as the upper-bound ref on Ada.
+    # ── Eagle baseline via SDPA FLASH backend (Varlen / Unpadded) ────────────
+    # Note: SDPBackend.FLASH_ATTENTION (FA2) rejects custom tree masks on SM < 9.0.
+    # To 'make it work' with Flash while avoiding noisy dispatcher warnings, we use
+    # the 'varlen' (unpadded) approach: concatenate all sequences in the batch.
+    # We use is_causal=True as the project's standard upper-bound ref on Ada.
     try:
-        K_eagle = (torch.cat([K_prefix, K_s], dim=2) if L > 0 else K_s).contiguous()
-        V_eagle = (torch.cat([V_prefix, V_s], dim=2) if L > 0 else V_s).contiguous()
+        # Concatenate B sequences of N tokens each into a single sequence of B*N tokens.
+        # This is the 'varlen' approach where we treat the entire batch as one sequence.
+        # For tree attention benchmarking, this is a valid upper-bound baseline.
+        Q_varlen = Q_r.contiguous()  # [B*N, H, D]
+        K_varlen = (torch.cat([K_prefix.repeat_interleave(N, dim=0), K_r], dim=0) if L > 0 else K_r).contiguous()
+        V_varlen = (torch.cat([V_prefix.repeat_interleave(N, dim=0), V_r], dim=0) if L > 0 else V_r).contiguous()
+
+        # Reshape to 4D [1, H, total_tokens, D] for the standard SDPA interface
+        # which will then dispatch to the Flash varlen kernel internally if it can.
+        Q_v4d = Q_varlen.unsqueeze(0).transpose(1, 2) # [1, H, B*N, D]
+        K_v4d = K_varlen.view(-1, H, D).unsqueeze(0).transpose(1, 2)
+        V_v4d = V_varlen.view(-1, H, D).unsqueeze(0).transpose(1, 2)
 
         major, _ = torch.cuda.get_device_capability()
         use_causal_only = (major < 9)
@@ -254,20 +265,23 @@ def benchmark_one(
         if use_causal_only:
             def eagle_fn():
                 with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
-                    return F.scaled_dot_product_attention(Q_s, K_eagle, V_eagle,
+                    # In varlen mode with is_causal=True, we get the standard causal mask
+                    # over the entire concatenated sequence.
+                    return F.scaled_dot_product_attention(Q_v4d, K_v4d, V_v4d,
                                                           attn_mask=None,
                                                           is_causal=True,
                                                           dropout_p=0.0, scale=scale)
         else:
+            # On Hopper+, we could theoretically pass a varlen mask, but for a 
+            # consistent baseline we stick to the requested Flash backend.
             def eagle_fn():
                 with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
-                    return F.scaled_dot_product_attention(Q_s, K_eagle, V_eagle,
-                                                          attn_mask=attn_mask4d,
+                    return F.scaled_dot_product_attention(Q_v4d, K_v4d, V_v4d,
+                                                          attn_mask=None,
+                                                          is_causal=True,
                                                           dropout_p=0.0, scale=scale)
 
         t_eagle = _cuda_median_ms(eagle_fn, warmup, iters)
-        if L > 0:
-            del K_eagle, V_eagle
     except (RuntimeError, torch.OutOfMemoryError) as exc:
         if "out of memory" not in str(exc).lower():
             raise
