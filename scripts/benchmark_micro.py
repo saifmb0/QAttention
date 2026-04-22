@@ -80,7 +80,7 @@ def _tree_n(b: int, d: int, token_cap: int = 0) -> int:
 # Defaults designed to show the kernel crossover clearly.
 # Eagle-3 operates at b∈{8-12}, d=7 (N~48-72).  We push d up to 20 so N
 # reaches 200+ at b=12, revealing the asymptotic speedup ceiling.
-DEFAULT_BATCH_SIZES       = [8, 16, 32, 64, 128]
+DEFAULT_BATCH_SIZES       = [1, 4, 8, 16]
 DEFAULT_BRANCHING_FACTORS = [8, 10, 12, 14, 16, 18, 20]
 DEFAULT_DEPTHS            = [5, 7, 9, 12, 14, 16, 20, 24, 28, 32]
 DEFAULT_PREFIX_LENGTHS    = [0, 1024, 4096, 8192, 16384, 32768, 65536]  # Simulated past KV-cache lengths: tree-only + realistic verify-step lengths
