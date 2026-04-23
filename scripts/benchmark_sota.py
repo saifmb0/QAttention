@@ -417,45 +417,56 @@ def _make_runner_sdpa_flash_tree(Q_p, K_p, V_p, masks_np, B, N, device, dtype):
 
 def _make_runner_flashinfer_tree(Q, K, V, cu_sl, B, N, H, D, masks_np, device):
     """
-    FlashInfer per-sample prefill with the EXACT tree-ancestor boolean mask.
+    FlashInfer batched prefill with the EXACT tree-ancestor boolean mask.
 
     This is the Naive baseline ragged competitor: correct tree semantics, FlashInfer
     kernel, no padding waste between sequences.
-    Uses flashinfer.single_prefill_with_kv_cache with custom_mask= per item.
-
-    Architecture note: serial per-item dispatch — measures FlashInfer's kernel
-    efficiency on the correct problem, not batch dispatch overhead.  Each item
-    is warmed independently before timing.
+    Uses flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper with custom_mask.
     """
     if not HAS_FLASHINFER:
         return None
     try:
-        import flashinfer  # type: ignore
-        starts = cu_sl[:-1].cpu().tolist()
-        ends   = cu_sl[1:].cpu().tolist()
-        qs = [Q[s:e].to(torch.float16) for s, e in zip(starts, ends)]
-        ks = [K[s:e].to(torch.float16) for s, e in zip(starts, ends)]
-        vs = [V[s:e].to(torch.float16) for s, e in zip(starts, ends)]
-        # Boolean masks per item [N, N] — True = attend
-        bool_masks = [
-            torch.from_numpy(m.astype(bool)).to(device)
+        import flashinfer
+        import flashinfer.prefill
+
+        # Flatten all masks into a single 1D boolean tensor [sum(N_i * N_i)]
+        # FlashInfer's BatchPrefillWithRaggedKVCacheWrapper expects this for custom_mask
+        flattened_mask = torch.cat([
+            torch.from_numpy(m.astype(bool)).flatten()
             for m in masks_np
-        ]
+        ]).to(device)
+
+        # 128MB workspace as recommended by FlashInfer docs
+        workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+        wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace, kv_layout="NHD"
+        )
+
+        # cu_sl is [B+1], FlashInfer expects int32 for indptrs on the SAME device as Q
+        qo_indptr = cu_sl.to(device=device, dtype=torch.int32)
+        kv_indptr = cu_sl.to(device=device, dtype=torch.int32)
+
+        # Plan the attention (this allocates auxiliary data structures)
+        wrapper.plan(
+            qo_indptr,
+            kv_indptr,
+            H, H, D,  # num_qo_heads, num_kv_heads, head_dim
+            custom_mask=flattened_mask,
+            causal=False,
+            q_data_type=Q.dtype,
+        )
 
         def fn():
-            for q_i, k_i, v_i, mask_i in zip(qs, ks, vs, bool_masks):
-                flashinfer.single_prefill_with_kv_cache(
-                    q_i, k_i, v_i,
-                    custom_mask=mask_i,
-                    causal=False,
-                )
+            return wrapper.run(Q, K, V)
 
-        # Warmup — also validates API signature
+        # Warmup — also validates API signature and results
         try:
             fn()
             torch.cuda.synchronize()
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"[flashinfer_tree] batched plan/run failed: {e}")
             return None
+
         return fn
     except Exception as exc:
         warnings.warn(f"[flashinfer_tree] setup failed: {exc}")

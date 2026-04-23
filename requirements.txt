@@ -1,7 +1,14 @@
+--extra-index-url https://flashinfer.ai/whl/cu129
+
 # Core deep learning + kernel toolchain
 # Pin ranges that are known to work on Kaggle T4 (SM75) images as of 2026-03
 torch>=2.1.0,<3.0.0
 triton>=2.1.0,<4.0.0
+
+# FlashInfer — ragged tree-attention competitor baseline
+flashinfer-python>=0.6.8.post1
+flashinfer-cubin>=0.6.8.post1
+flashinfer-jit-cache>=0.6.8.post1
 
 # Numerical / data
 numpy>=1.24.0

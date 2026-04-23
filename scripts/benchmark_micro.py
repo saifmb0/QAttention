@@ -242,46 +242,70 @@ def benchmark_one(
 
     # ── Eagle baseline via FlashInfer (SGLang production path) ────────────
     # SGLang and other high-performance frameworks use FlashInfer for tree-structured
-    # attention. We use single_prefill_with_kv_cache with the exact boolean tree mask.
+    # attention. We use BatchPrefillWithRaggedKVCacheWrapper for efficiency.
     try:
         import flashinfer
-        # Prepare ragged inputs for per-item dispatch
-        starts = cu[:-1].cpu().tolist()
-        ends   = cu[1:].cpu().tolist()
+        import flashinfer.prefill
         
-        # FlashInfer expects [L, H, D] for single_prefill
-        qs = [Q_r[s:e].contiguous() for s, e in zip(starts, ends)]
+        # Prepare packed KV cache if there is a prefix
         if L > 0:
-            ks = [torch.cat([K_prefix[i].permute(1,0,2), K_r[s:e]], dim=0).contiguous() 
-                  for i, (s, e) in enumerate(zip(starts, ends))]
-            vs = [torch.cat([V_prefix[i].permute(1,0,2), V_r[s:e]], dim=0).contiguous() 
-                  for i, (s, e) in enumerate(zip(starts, ends))]
-        else:
-            ks = [K_r[s:e].contiguous() for s, e in zip(starts, ends)]
-            vs = [V_r[s:e].contiguous() for s, e in zip(starts, ends)]
+            # K_prefix: [B, H, L, D] -> [B, L, H, D]
+            K_p = K_prefix.permute(0, 2, 1, 3).reshape(B * L, H, D)
+            V_p = V_prefix.permute(0, 2, 1, 3).reshape(B * L, H, D)
             
-        # Boolean masks per item [N, L+N] — True = attend
-        bool_masks = []
-        for i in range(B):
-            m_tree = torch.from_numpy(mask_np).to(device=device, dtype=torch.bool)
-            if L > 0:
-                m_pre = torch.ones(N, L, device=device, dtype=torch.bool)
-                m_full = torch.cat([m_pre, m_tree], dim=1)
-                bool_masks.append(m_full)
-            else:
-                bool_masks.append(m_tree)
+            # Interleave prefix and tree tokens for each sequence
+            K_full_list = []
+            V_full_list = []
+            starts = cu[:-1].cpu().tolist()
+            ends   = cu[1:].cpu().tolist()
+            for i, (s, e) in enumerate(zip(starts, ends)):
+                K_full_list.append(K_p[i*L : (i+1)*L])
+                K_full_list.append(K_r[s:e])
+                V_full_list.append(V_p[i*L : (i+1)*L])
+                V_full_list.append(V_r[s:e])
+            
+            K_full = torch.cat(K_full_list, dim=0).contiguous()
+            V_full = torch.cat(V_full_list, dim=0).contiguous()
+            kv_lens = torch.tensor([L + N] * B, dtype=torch.int32, device=device)
+        else:
+            K_full = K_r.contiguous()
+            V_full = V_r.contiguous()
+            kv_lens = torch.tensor([N] * B, dtype=torch.int32, device=device)
+            
+        kv_indptr = torch.cat([torch.tensor([0], dtype=torch.int32, device=device), 
+                               torch.cumsum(kv_lens, dim=0, dtype=torch.int32)])
+        
+        # Query is always just the tree nodes [B*N, H, D]
+        qo_indptr = torch.arange(0, B * N + 1, N, dtype=torch.int32, device=device)
+        
+        # Flattened masks: each sequence has [N, L+N] mask
+        m_tree = torch.from_numpy(mask_np).to(device=device, dtype=torch.bool)
+        if L > 0:
+            m_pre = torch.ones(N, L, device=device, dtype=torch.bool)
+            m_full = torch.cat([m_pre, m_tree], dim=1)
+            flattened_mask = m_full.repeat(B, 1).flatten()
+        else:
+            flattened_mask = m_tree.repeat(B, 1).flatten()
+
+        workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+        wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace, kv_layout="NHD"
+        )
+        
+        wrapper.plan(
+            qo_indptr,
+            kv_indptr,
+            H, H, D,
+            custom_mask=flattened_mask,
+            causal=False,
+            sm_scale=scale,
+            q_data_type=Q_r.dtype,
+        )
 
         def eagle_fn():
-            for q_i, k_i, v_i, mask_i in zip(qs, ks, vs, bool_masks):
-                flashinfer.single_prefill_with_kv_cache(
-                    q_i, k_i, v_i,
-                    custom_mask=mask_i,
-                    causal=False,
-                    scale=scale
-                )
+            return wrapper.run(Q_r, K_full, V_full)
 
         t_eagle = _cuda_median_ms(eagle_fn, warmup, iters)
-        del qs, ks, vs, bool_masks
     except (ImportError, RuntimeError) as exc:
         # Fallback to NaN if FlashInfer is not installed or fails
         t_eagle = nan
