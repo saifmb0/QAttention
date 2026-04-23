@@ -17,8 +17,8 @@ at small N; this sweep intentionally goes beyond realistic EAGLE configs to
 establish the crossover point and the asymptotic speedup ceiling.
 
 Both kernels compute IDENTICAL attention over the same b-ary tree topology:
-    • eagle_tree:  PyTorch SDPA with explicit tree-ancestor bool mask,
-                                 backend forced to SDPBackend.FLASH_ATTENTION.
+    • eagle_tree:  FlashInfer single_prefill_with_kv_cache with explicit 
+                 tree-ancestor bool mask (SGLang production path).
   • ragged:      Our Triton kernel with O(d+1) ancestor-walk per query,
                  ragged packed layout, no mask tensor.
 
@@ -142,7 +142,7 @@ class MicroRow:
     num_tree_nodes:   int
     num_heads:        int
     head_dim:         int
-    eagle_tree_ms:    float     # Eagle baseline via SDPA FLASH + tree bool mask
+    eagle_tree_ms:    float     # Eagle baseline via FlashInfer (SGLang path) + tree bool mask
     ragged_ms:        float     # our ragged kernel (+ flash prefix + LSE merge when L>0)
     speedup:          float     # eagle_tree_ms / ragged_ms  (>1 → ragged wins)
 
@@ -169,10 +169,10 @@ def benchmark_one(
         simulating real speculative-decoding verify where the past KV cache
         already contains L committed tokens.
 
-    The Eagle baseline uses SDPA over the full [L+N] KV with explicit tree bool
-    mask and SDPBackend.FLASH_ATTENTION forced. The ragged approach uses flash
-    attention for the prefix and the Triton kernel for the tree, merging via
-    online-softmax (no large matrix materialised).
+    The Eagle baseline uses FlashInfer over the full [L+N] KV with explicit tree 
+    bool mask. The ragged approach uses flash attention for the prefix and the 
+    Triton kernel for the tree, merging via online-softmax (no large matrix 
+    materialised).
     """
     N   = _tree_n(b, d, token_cap)
     tot = B * N
@@ -240,45 +240,56 @@ def benchmark_one(
     t_ragged = nan
     eagle_oom = False
 
-    # ── Eagle baseline via SDPA FLASH backend (Varlen / Nested) ─────────────
-    # Flash Attention (FA2) on SM < 9.0 (Ada) only supports SDPA when using
-    # no mask or is_causal=True.  The 'varlen' approach via torch.nested
-    # handles multiple sequences of different lengths (Q: N, KV: L+N)
-    # natively within the Flash backend without cross-sequence leakage.
+    # ── Eagle baseline via FlashInfer (SGLang production path) ────────────
+    # SGLang and other high-performance frameworks use FlashInfer for tree-structured
+    # attention. We use single_prefill_with_kv_cache with the exact boolean tree mask.
     try:
-        # Prepare lists of [L_i, H, D] tensors for nesting
-        Q_list = [Q_s[i].permute(1, 0, 2).contiguous() for i in range(B)] # [N, H, D]
+        import flashinfer
+        # Prepare ragged inputs for per-item dispatch
+        starts = cu[:-1].cpu().tolist()
+        ends   = cu[1:].cpu().tolist()
+        
+        # FlashInfer expects [L, H, D] for single_prefill
+        qs = [Q_r[s:e].contiguous() for s, e in zip(starts, ends)]
         if L > 0:
-            K_list = [torch.cat([K_prefix[i].permute(1, 0, 2), K_s[i].permute(1, 0, 2)], dim=0).contiguous() for i in range(B)]
-            V_list = [torch.cat([V_prefix[i].permute(1, 0, 2), V_s[i].permute(1, 0, 2)], dim=0).contiguous() for i in range(B)]
+            ks = [torch.cat([K_prefix[i].permute(1,0,2), K_r[s:e]], dim=0).contiguous() 
+                  for i, (s, e) in enumerate(zip(starts, ends))]
+            vs = [torch.cat([V_prefix[i].permute(1,0,2), V_r[s:e]], dim=0).contiguous() 
+                  for i, (s, e) in enumerate(zip(starts, ends))]
         else:
-            K_list = [K_s[i].permute(1, 0, 2).contiguous() for i in range(B)]
-            V_list = [V_s[i].permute(1, 0, 2).contiguous() for i in range(B)]
-
-        # Create Nested Tensors [B, L, H, D]
-        Q_n = torch.nested.nested_tensor(Q_list, dtype=torch.float16, device=device)
-        K_n = torch.nested.nested_tensor(K_list, dtype=torch.float16, device=device)
-        V_n = torch.nested.nested_tensor(V_list, dtype=torch.float16, device=device)
-
-        # Transpose to [B, H, L, D] as expected by SDPA
-        Q_eagle = Q_n.transpose(1, 2)
-        K_eagle = K_n.transpose(1, 2)
-        V_eagle = V_n.transpose(1, 2)
+            ks = [K_r[s:e].contiguous() for s, e in zip(starts, ends)]
+            vs = [V_r[s:e].contiguous() for s, e in zip(starts, ends)]
+            
+        # Boolean masks per item [N, L+N] — True = attend
+        bool_masks = []
+        for i in range(B):
+            m_tree = torch.from_numpy(mask_np).to(device=device, dtype=torch.bool)
+            if L > 0:
+                m_pre = torch.ones(N, L, device=device, dtype=torch.bool)
+                m_full = torch.cat([m_pre, m_tree], dim=1)
+                bool_masks.append(m_full)
+            else:
+                bool_masks.append(m_tree)
 
         def eagle_fn():
-            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
-                return F.scaled_dot_product_attention(Q_eagle, K_eagle, V_eagle,
-                                                      attn_mask=None,
-                                                      is_causal=True,
-                                                      dropout_p=0.0, scale=scale)
+            for q_i, k_i, v_i, mask_i in zip(qs, ks, vs, bool_masks):
+                flashinfer.single_prefill_with_kv_cache(
+                    q_i, k_i, v_i,
+                    custom_mask=mask_i,
+                    causal=False,
+                    scale=scale
+                )
 
         t_eagle = _cuda_median_ms(eagle_fn, warmup, iters)
-        del Q_n, K_n, V_n, Q_eagle, K_eagle, V_eagle
-    except (RuntimeError, torch.OutOfMemoryError) as exc:
-        if "out of memory" not in str(exc).lower():
-            raise
-        eagle_oom = True
-        print(f"    [OOM] Eagle SDPA skipped for B={B} b={b} d={d} L={L} N={N}")
+        del qs, ks, vs, bool_masks
+    except (ImportError, RuntimeError) as exc:
+        # Fallback to NaN if FlashInfer is not installed or fails
+        t_eagle = nan
+        if "out of memory" in str(exc).lower():
+            eagle_oom = True
+            print(f"    [OOM] FlashInfer skipped for B={B} b={b} d={d} L={L} N={N}")
+        else:
+            print(f"    [SKIP] FlashInfer baseline unavailable: {exc}")
     finally:
         torch.cuda.empty_cache()
 
