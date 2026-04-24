@@ -261,7 +261,7 @@ def _get_autotune_configs() -> list:
 # ---------------------------------------------------------------------------
 @triton.autotune(
     configs=_get_autotune_configs(),
-    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH", "max_seqlen", "total_tokens"],
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH", "max_seqlen"],
 )
 @triton.jit
 def _ragged_attn_sparse_kernel(
@@ -395,7 +395,7 @@ def _ragged_attn_sparse_kernel(
 
 @triton.autotune(
     configs=_get_autotune_configs(),
-    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH", "max_seqlen", "total_tokens"],
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH", "max_seqlen"],
 )
 @triton.jit
 def _ragged_attn_sparse_kernel_lse(
@@ -587,7 +587,7 @@ def ragged_attention_with_lse(
 
 @triton.autotune(
     configs=_get_autotune_configs(),
-    key=["HEAD_DIM", "MAX_DEPTH", "max_seqlen", "total_tokens"],
+    key=["HEAD_DIM", "MAX_DEPTH", "max_seqlen"],
 )
 @triton.jit
 def _ragged_attn_parents_kernel_lse(

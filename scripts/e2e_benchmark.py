@@ -884,7 +884,6 @@ def run_generation(
                               tree_position_ids, input_ids, retrieve_indices):
         e0 = torch.cuda.Event(enable_timing=True)
         e1 = torch.cuda.Event(enable_timing=True)
-        e0.record()
 
         # ── Extract parent array from EAGLE-3's tree_mask ────────────────────
         # EAGLE sets mdl.base_model.model.tree_mask = [1, 1, N, N] float before
@@ -920,6 +919,10 @@ def run_generation(
                 _state["tree_parents"] = None
         else:
             _state["tree_parents"] = None
+
+        # Start timing after parent extraction so verify_ms measures tree_decoding
+        # only — parent extraction is ragged-path overhead not present in vanilla.
+        e0.record()
 
         # Raise the flag so the matmul hook knows we are inside tree_decoding.
         # This is the ONLY window where the hook should intercept matmuls.
@@ -1166,10 +1169,10 @@ def _ragged_tree_attn(
         # B=1: tree_parents is already [N_q], skip .repeat(1)
         parents_packed = tree_parents if B == 1 else tree_parents.repeat(B)
         out_tree_r, lse_tree_r = ragged_attention_with_parents(
-            Q_r, K_r, V_r, cu, parents_packed, max_depth)
+            Q_r, K_r, V_r, cu, parents_packed, max_depth, max_seqlen=N_q)
     else:
         out_tree_r, lse_tree_r = ragged_attention_with_lse(
-            Q_r, K_r, V_r, cu, branching_factor, max_depth)
+            Q_r, K_r, V_r, cu, branching_factor, max_depth, max_seqlen=N_q)
 
     if prof is not None:
         evts[4].record()                                        # ── [4] ragged_kernel done
