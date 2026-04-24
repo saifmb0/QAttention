@@ -1,22 +1,38 @@
+# Updated requirements.txt for sd-ragged (Hopper/Ada optimization)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Indices for CUDA 12.1/12.4 and optimized SM90/SM89 kernels
+--extra-index-url https://download.pytorch.org/whl/cu121
 --extra-index-url https://flashinfer.ai/whl/cu129
 
-# Core deep learning + kernel toolchain
-# Pin ranges that are known to work on Kaggle T4 (SM75) images as of 2026-03
-torch>=2.1.0,<3.0.0
-triton>=2.1.0,<4.0.0
+# Core toolchain - Pinned to 2.8.0 for FlashInfer cu121/torch2.8 compatibility
+torch==2.8.0
+triton>=3.0.0,<4.0.0
+ninja
 
-# FlashInfer — ragged tree-attention competitor baseline
-flashinfer-python>=0.6.8.post1
-flashinfer-cubin>=0.6.8.post1
-flashinfer-jit-cache>=0.6.8.post1
+# Speculative Decoding Frameworks (EAGLE-3 requirements)
+# Note: transformers 4.53.1 is the tested standard for EAGLE-3
+transformers==4.53.1
+accelerate>=0.26.0,<1.0
+sentencepiece
+fschat
 
-# Numerical / data
+# FlashInfer - ragged tree-attention competitor baseline
+flashinfer-python
+flashinfer-cubin
+flashinfer-jit-cache
+
+# Numerical / data / visualization
 numpy>=1.24.0
 pandas>=2.0.0
-
-# Plotting
 matplotlib>=3.7.0
 
 # Testing
 pytest>=7.4.0
 pytest-timeout>=2.1.0
+
+# EAGLE Speculative Decoding Framework (NeurIPS 2025)
+# WARNING: EAGLE metadata pins torch==2.0.1. If this line causes pip resolution 
+# failures, run the following manually after installing other requirements:
+# pip install --no-deps git+https://github.com/SafeAILab/EAGLE.git
+#git+https://github.com/SafeAILab/EAGLE.git
