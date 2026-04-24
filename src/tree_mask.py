@@ -174,6 +174,7 @@ def build_pruned_tree(
 
     while frontier:
         next_frontier: list[tuple[int, int]] = []
+        _budget_hit = False
 
         for node, depth in frontier:
             if depth >= max_depth:
@@ -200,13 +201,13 @@ def build_pruned_tree(
                 depth_tracker.append(depth + 1)
                 next_frontier.append((child_idx, depth + 1))
 
-            # Check if we've exceeded target node count
             if target_nodes is not None and len(parent_array) >= target_nodes:
-                # Trim frontier to avoid growing too large
-                frontier = []
+                _budget_hit = True
                 break
 
         frontier = next_frontier
+        if _budget_hit:
+            break
 
     return parent_array
 

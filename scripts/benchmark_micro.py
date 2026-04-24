@@ -67,8 +67,9 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.ragged_attn import ragged_attention, ragged_attention_with_lse
+from src.ragged_attn import ragged_attention, ragged_attention_with_lse, fused_lse_merge, ragged_attention_with_parents
 from src.tree_mask import (
+    num_tree_nodes,
     tree_attention_mask_n,
     tree_attention_mask_pruned,
     build_pruned_tree,
@@ -76,15 +77,34 @@ from src.tree_mask import (
 )
 
 
-def _tree_n(b: int, d: int, token_cap: int = 0) -> int:
+def _tree_n(
+    b: int,
+    d: int,
+    token_cap: int = 0,
+    node_count_mode: str = "exact",
+) -> int:
     """N for a given (b, d) point in the sweep.
 
-    Formula:  round(6 * b * d / 7), minimum 30.
-    ``token_cap`` clamps the result from above when > 0; set to 0 for no cap.
-    The E2E benchmark uses cap=120 (Eagle-3 runtime max).  The micro-benchmark
-    uses cap=0 so we can probe kernel scaling at larger N.
+    Modes
+    -----
+    exact:
+        Complete b-ary tree node count for the requested depth:
+            N = (b^(d+1)-1)/(b-1)   (or d+1 when b=1).
+        This preserves true tree-depth semantics and is the integrity-first mode.
+
+    budgeted:
+        Legacy budgeted proxy used by older micro-benchmarks:
+            N = max(30, round(6*b*d/7)).
+        Keeps N in an EAGLE-like token budget for stress tests at large nominal d.
+
+    ``token_cap`` clamps N from above when > 0.
     """
-    n = max(30, round(6 * b * d / 7))
+    if node_count_mode == "exact":
+        n = num_tree_nodes(b, d)
+    elif node_count_mode == "budgeted":
+        n = max(30, round(6 * b * d / 7))
+    else:
+        raise ValueError(f"Unknown node_count_mode={node_count_mode!r}")
     return min(n, token_cap) if token_cap > 0 else n
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -93,10 +113,10 @@ def _tree_n(b: int, d: int, token_cap: int = 0) -> int:
 # Defaults designed to show the kernel crossover clearly.
 # Eagle-3 operates at b∈{8-12}, d=7 (N~48-72).  We push d up to 20 so N
 # reaches 200+ at b=12, revealing the asymptotic speedup ceiling.
-DEFAULT_BATCH_SIZES       = [1, 4, 8, 16]
-DEFAULT_BRANCHING_FACTORS = [8, 10, 12, 14]
-DEFAULT_DEPTHS            = [5, 7, 9, 12, 14, 16, 20]
-DEFAULT_PREFIX_LENGTHS    = [0, 1024, 4096, 8192, 16384, 32768, 65536]  # Simulated past KV-cache lengths: tree-only + realistic verify-step lengths
+DEFAULT_BATCH_SIZES       = [1]
+DEFAULT_BRANCHING_FACTORS = [8, 10, 12, 14, 16, 24, 32]
+DEFAULT_DEPTHS            = [5, 7, 9, 12, 14, 16, 24, 32]
+DEFAULT_PREFIX_LENGTHS    = [0]  # Simulated past KV-cache lengths: tree-only + realistic verify-step lengths
 DEFAULT_TOKEN_CAP         = 0     # 0 = no cap; E2E benchmark uses 120
 DEFAULT_NUM_HEADS         = 32    # LLaMA-3.1-8B
 DEFAULT_HEAD_DIM          = 128   # LLaMA-3.1-8B
@@ -106,6 +126,10 @@ BENCH_ITERS               = 50
 # Hard ceiling on total tokens per batch (B × N) to avoid OOM.
 # At H=32, D=128, fp16: one Q/K/V set ≈ 3 × B×N × 32 × 128 × 2 bytes.
 MAX_BATCH_TOKENS = 2_000_000
+# Dense Eagle baseline needs an explicit [N, N] tree mask. Guard pathological
+# cases so we skip invalid comparisons rather than silently capping N.
+MAX_TREE_MASK_ELEMENTS = 100_000_000
+MAX_FLATTENED_MASK_ELEMENTS = 250_000_000
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,6 +153,27 @@ def _cuda_median_ms(fn, warmup: int, iters: int) -> float:
     return float(np.median(times))
 
 
+def _wrap_cuda_graph(fn):
+    """Capture fn in a CUDA Graph for overhead-free replay, if supported.
+
+    Both kernels MUST use the same timing methodology for a fair comparison.
+    CUDA Graphs eliminate Python dispatch and inter-kernel scheduling bubbles.
+    If graph capture fails (dynamic allocations, FlashInfer backend quirks, etc.)
+    we fall back to direct timing so neither kernel is silently disadvantaged.
+
+    Returns (callable, graphed: bool).
+    """
+    try:
+        torch.cuda.synchronize()
+        fn()  # pre-capture warmup — flushes lazy init and JIT compilation
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            fn()
+        return g.replay, True
+    except Exception:
+        return fn, False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Data
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,6 +184,7 @@ class MicroRow:
     prefix_length:    int       # L — simulated past KV-cache length (0 = tree-only)
     branching_factor: int
     depth:            int
+    effective_depth:  int       # actual max depth represented by the benchmarked tree
     num_tree_nodes:   int
     num_heads:        int
     head_dim:         int
@@ -158,6 +204,7 @@ def benchmark_one(
     device: torch.device,
     token_cap: int = 0,
     use_pruned_trees: bool = False,
+    node_count_mode: str = "budgeted",
 ) -> MicroRow:
     """Benchmark one (B, b, d, L) configuration.  Returns a MicroRow.
 
@@ -174,12 +221,53 @@ def benchmark_one(
     Triton kernel for the tree, merging via online-softmax (no large matrix 
     materialised).
     """
-    N   = _tree_n(b, d, token_cap)
-    tot = B * N
+    N   = _tree_n(b, d, token_cap, node_count_mode=node_count_mode)
     nan = float("nan")
 
-    if tot > MAX_BATCH_TOKENS:
-        return MicroRow(B, L, b, d, N, H, D, nan, nan, nan)
+    # ── Tree mask: [N, N] bool (True = attend) ──────────────────────────────
+    if use_pruned_trees:
+        # Generate EAGLE-like pruned tree
+        # Keep topology invariant across batch sizes so B-scaling is comparable.
+        rng_seed = b * 10000 + d * 100 + N
+        rng = np.random.default_rng(rng_seed)
+        parent_array = build_pruned_tree(b, d, target_nodes=N, rng=rng)
+        # Adjust N to actual tree size
+        N = len(parent_array)
+        if N == 0:
+            return MicroRow(B, L, b, d, 0, 0, H, D, nan, nan, nan)
+        tot = B * N
+        if tot > MAX_BATCH_TOKENS:
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+        if N * N > MAX_TREE_MASK_ELEMENTS:
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+        if B * N * (L + N) > MAX_FLATTENED_MASK_ELEMENTS:
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+        mask_np = tree_attention_mask_pruned(parent_array)   # [N, N] bool
+        
+        depths = [0] * len(parent_array)
+        for i in range(1, len(parent_array)):
+            depths[i] = depths[parent_array[i]] + 1
+        actual_d = max(depths) if depths else 0
+        
+        # Kernel requires parents[root] = root (0 instead of -1)
+        p_array = [max(0, p) for p in parent_array]
+        parents_tensor = torch.tensor(p_array * B, dtype=torch.int32, device=device)
+    else:
+        tot = B * N
+        if tot > MAX_BATCH_TOKENS:
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+        if N * N > MAX_TREE_MASK_ELEMENTS:
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+        if B * N * (L + N) > MAX_FLATTENED_MASK_ELEMENTS:
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+            
+        mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
+        
+        actual_d = 0
+        k = N - 1
+        while k > 0:
+            k = (k - 1) // b
+            actual_d += 1
 
     torch.manual_seed(B * 10000 + b * 100 + d)
 
@@ -202,21 +290,6 @@ def benchmark_one(
         K_prefix = torch.randn(B, H, L, D, device=device, dtype=torch.float16)
         V_prefix = torch.randn(B, H, L, D, device=device, dtype=torch.float16)
 
-    # ── Tree mask: [N, N] bool (True = attend) ──────────────────────────────
-    if use_pruned_trees:
-        # Generate EAGLE-like pruned tree
-        rng_seed = B * 10000 + b * 100 + d
-        rng = np.random.default_rng(rng_seed)
-        parent_array = build_pruned_tree(b, d, target_nodes=N, rng=rng)
-        # Adjust N to actual tree size
-        N = len(parent_array)
-        tot = B * N
-        if tot > MAX_BATCH_TOKENS:
-            return MicroRow(B, L, b, d, N, H, D, nan, nan, nan)
-        mask_np = tree_attention_mask_pruned(parent_array)   # [N, N] bool
-    else:
-        mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
-
     # Convert to float additive bias for SDPA
     # Flash / Efficient backends often require float masks or no masks at all.
     NEG_INF = torch.finfo(torch.float16).min / 2
@@ -236,9 +309,10 @@ def benchmark_one(
         attn_mask4d = tree_bias.unsqueeze(0).unsqueeze(0).expand(B, 1, -1, -1).contiguous()
     del tree_mask_t, tree_bias
 
-    t_eagle  = nan
-    t_ragged = nan
-    eagle_oom = False
+    t_eagle       = nan
+    t_ragged      = nan
+    eagle_oom     = False
+    _eagle_graphed = None  # set by eagle block; checked by ragged block for symmetry
 
     # ── Eagle baseline via FlashInfer (SGLang production path) ────────────
     # SGLang and other high-performance frameworks use FlashInfer for tree-structured
@@ -305,7 +379,9 @@ def benchmark_one(
         def eagle_fn():
             return wrapper.run(Q_r, K_full, V_full)
 
-        t_eagle = _cuda_median_ms(eagle_fn, warmup, iters)
+        # Apply CUDA Graph (same methodology as ragged — fair apples-to-apples)
+        eagle_g_fn, _eagle_graphed = _wrap_cuda_graph(eagle_fn)
+        t_eagle = _cuda_median_ms(eagle_g_fn, warmup, iters)
     except (ImportError, RuntimeError) as exc:
         # Fallback to NaN if FlashInfer is not installed or fails
         t_eagle = nan
@@ -331,25 +407,32 @@ def benchmark_one(
                     )
                 )
                 # Part 2: ragged tree kernel (returns LSE for merge)
-                o_tr, lse_tr = ragged_attention_with_lse(
-                    Q_r, K_r, V_r, cu, b, d)
+                if use_pruned_trees:
+                    o_tr, lse_tr = ragged_attention_with_parents(
+                        Q_r, K_r, V_r, cu, parents_tensor, actual_d, max_seqlen=N)
+                else:
+                    o_tr, lse_tr = ragged_attention_with_lse(
+                        Q_r, K_r, V_r, cu, b, actual_d, max_seqlen=N)
                 o_tree = o_tr.view(B, N, H, D).permute(0, 2, 1, 3)
                 lse_tree = lse_tr.view(B, N, H).permute(0, 2, 1)   # [B,H,N]
                 # Part 3: online-softmax merge
-                lse_p   = lse_pre.float()
-                lse_t   = lse_tree.float()
-                lse_max = torch.maximum(lse_p, lse_t)
-                w_p     = torch.exp(lse_p - lse_max)
-                w_t     = torch.exp(lse_t - lse_max)
-                w_sum   = (w_p + w_t).clamp_min(1e-8).unsqueeze(-1)
-                return ((w_p.unsqueeze(-1) * out_pre.float()
-                         + w_t.unsqueeze(-1) * o_tree.float())
-                        / w_sum).to(Q_s.dtype)
+                return fused_lse_merge(lse_pre.float(), lse_tree.float(), out_pre, o_tree)
         else:
             def ragged_fn():
-                return ragged_attention(Q_r, K_r, V_r, cu, b, d)
+                if use_pruned_trees:
+                    return ragged_attention_with_parents(
+                        Q_r, K_r, V_r, cu, parents_tensor, actual_d, max_seqlen=N)[0]
+                else:
+                    return ragged_attention(Q_r, K_r, V_r, cu, b, actual_d, max_seqlen=N)
 
-        t_ragged = _cuda_median_ms(ragged_fn, warmup, iters)
+        # Apply CUDA Graph (same methodology as eagle baseline — fair comparison)
+        ragged_g_fn, _ragged_graphed = _wrap_cuda_graph(ragged_fn)
+        if _ragged_graphed != _eagle_graphed:
+            print(
+                f"    [WARN] Timing asymmetry: eagle_graph={_eagle_graphed} "
+                f"ragged_graph={_ragged_graphed} — rerun with investigation"
+            )
+        t_ragged = _cuda_median_ms(ragged_g_fn, warmup, iters)
     except (RuntimeError, torch.OutOfMemoryError) as exc:
         if "out of memory" not in str(exc).lower():
             raise
@@ -372,7 +455,7 @@ def benchmark_one(
         del K_prefix, V_prefix
     torch.cuda.empty_cache()
 
-    return MicroRow(B, L, b, d, N, H, D,
+    return MicroRow(B, L, b, d, actual_d, N, H, D,
                     round(t_eagle,  4) if not math.isnan(t_eagle)  else nan,
                     round(t_ragged, 4) if not math.isnan(t_ragged) else nan,
                     round(speedup,  4) if not math.isnan(speedup)  else nan)
@@ -396,9 +479,18 @@ def main() -> None:
     parser.add_argument("--token-cap",  type=int, default=DEFAULT_TOKEN_CAP,
                         help="Cap N from above (0 = no cap, default). "
                              "Set to 120 to match Eagle-3 E2E configs.")
-    parser.add_argument("--pruned-trees", action="store_true",
-                        help="Use EAGLE-like pruned trees instead of fully balanced trees. "
-                             "This creates sparse, irregular trees more realistic to EAGLE.")
+    parser.add_argument(
+        "--node-count-mode",
+        choices=["exact", "budgeted"],
+        default="budgeted",
+        help=(
+            "How N is derived from (b,d): "
+            "'exact' = complete b-ary tree node count (integrity-first); "
+            "'budgeted' = EAGLE-like proxy N≈6*b*d/7 with floor 30 (production-style)."
+        ),
+    )
+    parser.add_argument("--balanced-trees", action="store_true",
+                        help="Use complete balanced trees instead of EAGLE-like pruned trees.")
     parser.add_argument("--num-heads",  type=int, default=DEFAULT_NUM_HEADS)
     parser.add_argument("--head-dim",   type=int, default=DEFAULT_HEAD_DIM)
     parser.add_argument("--warmup",     type=int, default=WARMUP_ITERS)
@@ -406,6 +498,15 @@ def main() -> None:
     parser.add_argument("--out-dir",    default="results")
     parser.add_argument("--csv-name",   default="micro_benchmark.csv")
     args = parser.parse_args()
+
+    args.pruned_trees = not args.balanced_trees
+    if args.pruned_trees and args.node_count_mode == "exact" and args.token_cap == 0:
+        print(
+            "[ERROR] --node-count-mode exact with pruned trees and no --token-cap "
+            "explodes N and is not a production-like EAGLE setup.\n"
+            "Use default budgeted mode, or specify --token-cap, or add --balanced-trees."
+        )
+        sys.exit(2)
 
     if not torch.cuda.is_available():
         print("[ERROR]  CUDA required.")
@@ -437,12 +538,13 @@ def main() -> None:
     print(f"  Prefix:   L∈{prefix_lengths}  "
           "(0 = tree-only, >0 = flash prefix + ragged tree + LSE merge)")
     print(f"  N range:  "
-          + "  ".join(f"b={b},d={depths[0]}→{_tree_n(b,depths[0],token_cap)}"
-                       f"/d={depths[-1]}→{_tree_n(b,depths[-1],token_cap)}"
+          + "  ".join(f"b={b},d={depths[0]}→{_tree_n(b,depths[0],token_cap,args.node_count_mode)}"
+                       f"/d={depths[-1]}→{_tree_n(b,depths[-1],token_cap,args.node_count_mode)}"
                        for b in bfs))
     print(f"  Timing:   {args.warmup} warmup + {args.iters} iters (median)")
     tree_mode = "EAGLE-like pruned (irregular branching)" if args.pruned_trees else "fully balanced"
     print(f"  Trees:    {tree_mode}")
+    print(f"  N mode:   {args.node_count_mode}")
     print("=" * 72)
 
     configs = [(B, b, d, L)
@@ -453,32 +555,41 @@ def main() -> None:
     rows: List[MicroRow] = []
 
     for ci, (B, b, d, L) in enumerate(configs):
-        N = _tree_n(b, d, token_cap)
+        N = _tree_n(b, d, token_cap, args.node_count_mode)
         row = benchmark_one(B, b, d, L, H, D,
                             args.warmup, args.iters, device, token_cap,
-                            use_pruned_trees=args.pruned_trees)
+                            use_pruned_trees=args.pruned_trees,
+                            node_count_mode=args.node_count_mode)
         rows.append(row)
 
         def _f(v):
             return f"{v:.3f}" if not math.isnan(v) else " n/a "
 
         spd_s = f"{row.speedup:.2f}×" if not math.isnan(row.speedup) else "  n/a"
+        d_eff_s = f"{row.effective_depth:>2d}" if row.effective_depth >= 0 else "na"
         print(f"  [{ci+1:3d}/{len(configs)}]  "
-              f"B={B:3d} b={b} d={d:>2d} L={L:>4d} N={N:3d}  "
+              f"B={B:3d} b={b} d={d:>2d} d_eff={d_eff_s} L={L:>4d} N={N:3d}  "
               f"eagle={_f(row.eagle_tree_ms):>8s} ms  "
               f"ragged={_f(row.ragged_ms):>8s} ms  "
               f"speedup={spd_s:>7s}")
 
     # ── Write CSV ────────────────────────────────────────────────────────────
+    import datetime
     os.makedirs(args.out_dir, exist_ok=True)
-    csv_path = os.path.join(args.out_dir, csv_name)
+    _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    base, ext = os.path.splitext(csv_name)
+    csv_path = os.path.join(args.out_dir, f"{base}_{_ts}{ext}")
+    csv_latest = os.path.join(args.out_dir, csv_name)
+    
     fieldnames = list(asdict(rows[0]).keys())
-    with open(csv_path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        for r in rows:
-            w.writerow(asdict(r))
+    for _p in (csv_path, csv_latest):
+        with open(_p, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for r in rows:
+                w.writerow(asdict(r))
     print(f"\n  Saved: {csv_path}")
+    print(f"  Saved: {csv_latest} (latest)")
 
     # ── Pivot: speedup table ─────────────────────────────────────────────────
     # Group by (B, b, L) and show speedup at each depth.

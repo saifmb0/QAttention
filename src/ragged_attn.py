@@ -261,7 +261,7 @@ def _get_autotune_configs() -> list:
 # ---------------------------------------------------------------------------
 @triton.autotune(
     configs=_get_autotune_configs(),
-    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH"],
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH", "max_seqlen", "total_tokens"],
 )
 @triton.jit
 def _ragged_attn_sparse_kernel(
@@ -273,6 +273,7 @@ def _ragged_attn_sparse_kernel(
     stride_ot, stride_oh, stride_od,
     scale,
     max_seqlen,
+    total_tokens,
     H:                tl.constexpr,
     HEAD_DIM:         tl.constexpr,
     BRANCHING_FACTOR: tl.constexpr,
@@ -351,7 +352,7 @@ def _ragged_attn_sparse_kernel(
 
         # Element-wise dot: scores[m] = Σ_d q[m,d] × k_anc[m,d]
         # Each query row uses its OWN k vector → no tl.dot (not a matmul).
-        raw   = tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale
+        raw   = (tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale).to(tl.float32)
         s     = tl.where(is_new, raw, float("-inf"))   # [BLOCK_M]
 
         # ── Online softmax update (FA-2 Eq. 4, single-element block) ───────
@@ -394,7 +395,7 @@ def _ragged_attn_sparse_kernel(
 
 @triton.autotune(
     configs=_get_autotune_configs(),
-    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH"],
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH", "max_seqlen", "total_tokens"],
 )
 @triton.jit
 def _ragged_attn_sparse_kernel_lse(
@@ -407,6 +408,7 @@ def _ragged_attn_sparse_kernel_lse(
     stride_lse_t, stride_lse_h,
     scale,
     max_seqlen,
+    total_tokens,
     H:                tl.constexpr,
     HEAD_DIM:         tl.constexpr,
     BRANCHING_FACTOR: tl.constexpr,
@@ -456,7 +458,7 @@ def _ragged_attn_sparse_kernel_lse(
                   + d_range [None,:] * stride_kd)
         k_anc = tl.load(k_ptrs, mask=is_new[:, None], other=0.0)
 
-        raw   = tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale
+        raw   = (tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale).to(tl.float32)
         s     = tl.where(is_new, raw, float("-inf"))
 
         m_new = tl.maximum(m_i, s)
@@ -501,6 +503,7 @@ def ragged_attention_with_lse(
     cu_seqlens:       torch.Tensor,
     branching_factor: int,
     max_depth:        int,
+    max_seqlen:       int = None,
 ) -> tuple:
     """Ancestor-sparse attention returning (output, lse) for online-softmax merging.
 
@@ -535,11 +538,13 @@ def ragged_attention_with_lse(
     device = Q.device
     scale  = 1.0 / math.sqrt(D)
 
-    cu_sl_cpu  = cu_seqlens.cpu()
-    sl_list    = cu_sl_cpu.tolist()
-    max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
-
-    cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
+    if max_seqlen is None:
+        cu_sl_cpu  = cu_seqlens.cpu()
+        sl_list    = cu_sl_cpu.tolist()
+        max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+        cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
+    else:
+        cu_seqlens_dev = cu_seqlens.to(device=device, dtype=torch.int32, non_blocking=True)
 
     O   = torch.empty_like(Q)
     LSE = torch.empty(total_tokens, H, dtype=torch.float32, device=device)
@@ -556,6 +561,7 @@ def ragged_attention_with_lse(
         LSE.stride(0), LSE.stride(1),
         scale,
         max_seqlen,
+        total_tokens,
         H=H,
         HEAD_DIM=D,
         BRANCHING_FACTOR=branching_factor,
@@ -581,7 +587,7 @@ def ragged_attention_with_lse(
 
 @triton.autotune(
     configs=_get_autotune_configs(),
-    key=["HEAD_DIM", "MAX_DEPTH"],
+    key=["HEAD_DIM", "MAX_DEPTH", "max_seqlen", "total_tokens"],
 )
 @triton.jit
 def _ragged_attn_parents_kernel_lse(
@@ -595,6 +601,7 @@ def _ragged_attn_parents_kernel_lse(
     stride_lse_t, stride_lse_h,
     scale,
     max_seqlen,
+    total_tokens,
     H:                tl.constexpr,
     HEAD_DIM:         tl.constexpr,
     MAX_DEPTH:        tl.constexpr,
@@ -647,8 +654,11 @@ def _ragged_attn_parents_kernel_lse(
     prev = tl.full([BLOCK_M], -1, dtype=tl.int32)
 
     # ── Ancestor-sparse loop ────────────────────────────────────────────────
-    for _step in range(MAX_DEPTH + 1):
-        is_new = (cur != prev) & valid_q
+    step = 0
+    is_new = (cur != prev) & valid_q
+    active = tl.max(is_new.to(tl.int32))
+
+    while (step <= MAX_DEPTH) and (active > 0):
         kv_abs = (seq_start + cur).to(tl.int64)
 
         # ── Scatter-gather K[ancestor] ──────────────────────────────────────
@@ -658,7 +668,7 @@ def _ragged_attn_parents_kernel_lse(
                   + d_range [None,:] * stride_kd)
         k_anc = tl.load(k_ptrs, mask=is_new[:, None], other=0.0)
 
-        raw   = tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale
+        raw   = (tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale).to(tl.float32)
         s     = tl.where(is_new, raw, float("-inf"))
 
         # ── Online softmax update ───────────────────────────────────────────
@@ -682,6 +692,10 @@ def _ragged_attn_parents_kernel_lse(
         prev = cur
         parent_global = (seq_start + cur).to(tl.int64)
         cur = tl.load(parent_ptr + parent_global, mask=valid_q, other=0).to(tl.int32)
+        
+        is_new = (cur != prev) & valid_q
+        active = tl.max(is_new.to(tl.int32))
+        step += 1
 
     # ── Write LSE ───────────────────────────────────────────────────────────
     l_safe = tl.where(l_i == 0.0, 1.0, l_i)
@@ -706,6 +720,7 @@ def ragged_attention_with_parents(
     cu_seqlens:  torch.Tensor,   # [B+1] int32
     parents:     torch.Tensor,   # [total_tokens] int32 — local parent index
     max_depth:   int,
+    max_seqlen:  int = None,
 ) -> tuple:
     """Ancestor-sparse attention with explicit parent array.
 
@@ -744,11 +759,14 @@ def ragged_attention_with_parents(
     device = Q.device
     scale  = 1.0 / math.sqrt(D)
 
-    cu_sl_cpu  = cu_seqlens.cpu()
-    sl_list    = cu_sl_cpu.tolist()
-    max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+    if max_seqlen is None:
+        cu_sl_cpu  = cu_seqlens.cpu()
+        sl_list    = cu_sl_cpu.tolist()
+        max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+        cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
+    else:
+        cu_seqlens_dev = cu_seqlens.to(device=device, dtype=torch.int32, non_blocking=True)
 
-    cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
     parents_dev    = parents.to(device=device, dtype=torch.int32, non_blocking=True)
 
     O   = torch.empty_like(Q)
@@ -767,6 +785,7 @@ def ragged_attention_with_parents(
         LSE.stride(0), LSE.stride(1),
         scale,
         max_seqlen,
+        total_tokens,
         H=H,
         HEAD_DIM=D,
         MAX_DEPTH=max_depth,
@@ -878,7 +897,7 @@ def _ragged_attn_paged_kernel(
                   + d_range    [None, :] * stride_kd)
         k_anc = tl.load(k_ptrs, mask=is_new[:, None], other=0.0)
 
-        raw = tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale
+        raw = (tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale).to(tl.float32)
         s   = tl.where(is_new, raw, float("-inf"))
 
         m_new = tl.maximum(m_i, s)
@@ -1065,6 +1084,7 @@ def ragged_attention(
     cu_seqlens:       torch.Tensor,   # [B+1]  int32
     branching_factor: int,
     max_depth:        int,
+    max_seqlen:       int = None,
 ) -> torch.Tensor:
     """
     Ancestor-sparse ragged attention for b-ary tree speculative decoding.
@@ -1113,12 +1133,13 @@ def ragged_attention(
     # Compute max_seqlen from CPU cu_seqlens BEFORE moving to device.
     # This avoids a blocking GPU→CPU round-trip (.cpu().tolist()) that was
     # previously adding ~20–50 μs to every call for small batches.
-    cu_sl_cpu  = cu_seqlens.cpu()   # no-op if already CPU (common case)
-    sl_list    = cu_sl_cpu.tolist() # pure Python; no CUDA sync
-    max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
-
-    cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32,
-                                   non_blocking=True)
+    if max_seqlen is None:
+        cu_sl_cpu  = cu_seqlens.cpu()   # no-op if already CPU (common case)
+        sl_list    = cu_sl_cpu.tolist() # pure Python; no CUDA sync
+        max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+        cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
+    else:
+        cu_seqlens_dev = cu_seqlens.to(device=device, dtype=torch.int32, non_blocking=True)
 
     O = torch.empty_like(Q)
 
@@ -1134,6 +1155,7 @@ def ragged_attention(
         O.stride(0), O.stride(1), O.stride(2),
         scale,
         max_seqlen,
+        total_tokens,
         H=H,
         HEAD_DIM=D,
         BRANCHING_FACTOR=branching_factor,
