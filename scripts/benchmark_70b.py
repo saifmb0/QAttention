@@ -480,6 +480,78 @@ def _run_w4a16(args, n_tokens: int, prefix_sweep: List[int],
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# W4A16 gptqmodel benchmark (no llamacu build required)
+# ─────────────────────────────────────────────────────────────────────────────
+def _run_w4a16_gptqmodel(
+    args, n_tokens: int, prefix_sweep: List[int],
+    n_reps: int, branching: int, depth: int,
+) -> dict:
+    """W4A16 benchmark via gptqmodel + Marlin kernel.  No CUDA extension build."""
+    from gptqmodel import GPTQModel
+
+    print(f"  Loading W4A16 model via gptqmodel (Marlin) ...")
+    model = GPTQModel.from_quantized(args.base_model, device="cuda:0")
+    model.eval()
+
+    cfg   = model.config
+    dtype = torch.float16
+    H     = cfg.num_attention_heads
+    Hkv   = getattr(cfg, "num_key_value_heads", H)
+    D     = cfg.hidden_size // H
+    L     = cfg.num_hidden_layers
+    device = torch.device("cuda:0")
+    print(f"  Loaded: {L} layers, hidden={cfg.hidden_size}")
+
+    results = {}
+    for prefix_len in prefix_sweep:
+        print(f"  prefix={prefix_len} ...", end="", flush=True)
+        hidden  = torch.randn(1, n_tokens, cfg.hidden_size, dtype=dtype, device=device)
+        pos_ids = torch.arange(n_tokens, device=device).unsqueeze(0)
+        pkv = tuple(
+            (torch.randn(1, Hkv, prefix_len, D, dtype=dtype, device=device),
+             torch.randn(1, Hkv, prefix_len, D, dtype=dtype, device=device))
+            for _ in range(L)
+        )
+
+        def _fwd():
+            with torch.no_grad():
+                model.model(inputs_embeds=hidden, position_ids=pos_ids,
+                            past_key_values=pkv, use_cache=False,
+                            output_attentions=False, output_hidden_states=False)
+
+        prof_v = _LayerProfiler(); prof_r = _LayerProfiler()
+        prof_v.attach(model)
+        for _ in range(5): _fwd()
+        torch.cuda.synchronize(); prof_v.reset()
+
+        t0 = time.perf_counter()
+        for _ in range(n_reps): _fwd()
+        torch.cuda.synchronize()
+        vanilla_ms = (time.perf_counter() - t0) * 1e3
+        prof_v.detach()
+
+        prof_r.attach(model)
+        torch.cuda.synchronize(); prof_r.reset()
+        with _ragged_ctx(model, branching, depth, prefix_len, dtype):
+            t0 = time.perf_counter()
+            for _ in range(n_reps): _fwd()
+            torch.cuda.synchronize()
+            ragged_ms = (time.perf_counter() - t0) * 1e3
+        prof_r.detach()
+
+        _, attn_v, mlp_v, total_v = prof_v.per_step(n_reps)
+        _, attn_r, mlp_r, total_r = prof_r.per_step(n_reps)
+        results[prefix_len] = dict(
+            vanilla_ms=vanilla_ms / n_reps, ragged_ms=ragged_ms / n_reps,
+            attn_v=attn_v, mlp_v=mlp_v, total_v=total_v,
+            attn_r=attn_r, mlp_r=mlp_r, total_r=total_r,
+        )
+        print(f" vanilla={vanilla_ms/n_reps:.1f}ms  ragged={ragged_ms/n_reps:.1f}ms")
+
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Reporting
 # ─────────────────────────────────────────────────────────────────────────────
 def _print_header(mode: str, n_tokens: int, branching: int, depth: int,
@@ -552,10 +624,12 @@ def main():
                     help="HF repo or local path to the base LLaMA model")
     ap.add_argument("--eagle-model", type=str, default=None,
                     help="HF repo or local path to the EAGLE draft model")
+    ap.add_argument("--backend", choices=["gptqmodel", "llamacu"], default="gptqmodel",
+                    help="W4A16 backend: gptqmodel (no build, default) or llamacu")
     ap.add_argument("--llamacu-path", type=str, default=None,
-                    help="Path to SpecMQuant repo root (for W4A16 mode)")
+                    help="Path to SpecMQuant repo root (llamacu backend only)")
     ap.add_argument("--memory-limit", type=float, default=0.85,
-                    help="GPU memory fraction for llamacu pool (W4A16 mode)")
+                    help="GPU memory fraction for llamacu pool (llamacu backend only)")
     ap.add_argument("--prefix-sweep", type=int, nargs="+", default=PREFIX_SWEEP,
                     help="Prefix lengths to benchmark")
     ap.add_argument("--n-tokens",  type=int, default=60,
@@ -660,49 +734,57 @@ def main():
 
     # ── W4A16 mode ────────────────────────────────────────────────────────────
     elif args.mode == "w4a16":
-        if not args.base_model or not args.eagle_model:
-            print("--base-model and --eagle-model required for w4a16 mode")
-            sys.exit(1)
-        results = _run_w4a16(args, n_tokens, args.prefix_sweep,
-                             args.reps, branching, depth)
-        _print_header("w4a16", n_tokens, branching, depth, LLAMA_70B["num_hidden_layers"])
-        _print_w4a16_table(results)
+        if not args.base_model:
+            print("--base-model required for w4a16 mode"); sys.exit(1)
 
-        # Also run BF16 single-layer for the attn/MLP split since llamacu
-        # doesn't expose per-phase timing natively.
-        print("\n  [Supplement] BF16 single-layer attn/MLP split for Amdahl estimate:")
-        dtype  = torch.bfloat16
-        n_lay  = LLAMA_70B["num_hidden_layers"]
-        layer  = _build_synthetic_layer(LLAMA_70B | {"num_hidden_layers": 1},
-                                         dtype, device)
-        prof_v = _LayerProfiler(); prof_v.attach_single(layer)
-        synth = {}
-        for prefix_len in args.prefix_sweep:
-            print(f"  prefix={prefix_len} ...", end="", flush=True)
-            _run_synthetic(layer, n_tokens, prefix_len, args.reps,
-                           branching, depth, dtype, device,
-                           use_ragged=False, prof=prof_v)
-            _, attn_v, mlp_v, total_v = prof_v.per_step(args.reps)
-            synth[prefix_len] = dict(attn_frac=attn_v / total_v if total_v else 0,
-                                     mlp_frac=mlp_v / total_v if total_v else 0)
-            prof_v.reset()
-            print(f" attn={attn_v*n_lay:.1f}ms ({attn_v/total_v*100:.0f}%)  "
-                  f"mlp={mlp_v*n_lay:.1f}ms ({mlp_v/total_v*100:.0f}%)")
+        if args.backend == "gptqmodel":
+            results = _run_w4a16_gptqmodel(args, n_tokens, args.prefix_sweep,
+                                            args.reps, branching, depth)
+            _print_header("w4a16-gptqmodel", n_tokens, branching, depth,
+                          LLAMA_70B["num_hidden_layers"])
+            _print_sweep_table(results, 1, args.draft_ms,
+                               label="W4A16 VANILLA vs RAGGED  (full model, all layers)")
+            _note_draft(args.draft_ms)
 
-        print(f"\n  W4A16 Amdahl projection (ragged 24% attn saving assumed):")
-        hdr2 = f"  {'prefix':>6}  {'draft_ms':>9}  {'decode_ms':>10}  " \
-               f"{'attn%':>6}  {'saving_ms':>9}  {'E2E_spd':>8}"
-        print(hdr2)
-        print("  " + "─" * (len(hdr2) - 2))
-        for prefix, r in sorted(results.items()):
-            draft = r["draft_ms"]; dec = r["decode_ms"]
-            afrac = synth.get(prefix, {}).get("attn_frac", 0.26)
-            saving = dec * afrac * 0.24
-            step_v = draft + dec
-            step_r = draft + dec - saving
-            spd = step_v / step_r if step_r else 1.0
-            print(f"  {prefix:>6}  {draft:>9.2f}  {dec:>10.2f}  "
-                  f"{afrac*100:>5.0f}%  {saving:>9.2f}  {spd:>8.4f}×")
+        else:  # llamacu
+            if not args.eagle_model:
+                print("--eagle-model required for w4a16/llamacu mode"); sys.exit(1)
+            results = _run_w4a16(args, n_tokens, args.prefix_sweep,
+                                 args.reps, branching, depth)
+            _print_header("w4a16-llamacu", n_tokens, branching, depth,
+                          LLAMA_70B["num_hidden_layers"])
+            _print_w4a16_table(results)
+
+            print("\n  [Supplement] BF16 single-layer attn/MLP split for Amdahl estimate:")
+            dtype  = torch.bfloat16
+            n_lay  = LLAMA_70B["num_hidden_layers"]
+            layer  = _build_synthetic_layer(LLAMA_70B | {"num_hidden_layers": 1},
+                                             dtype, device)
+            prof_v = _LayerProfiler(); prof_v.attach_single(layer)
+            synth = {}
+            for prefix_len in args.prefix_sweep:
+                print(f"  prefix={prefix_len} ...", end="", flush=True)
+                _run_synthetic(layer, n_tokens, prefix_len, args.reps,
+                               branching, depth, dtype, device,
+                               use_ragged=False, prof=prof_v)
+                _, attn_v, mlp_v, total_v = prof_v.per_step(args.reps)
+                synth[prefix_len] = dict(attn_frac=attn_v / total_v if total_v else 0)
+                prof_v.reset()
+                print(f" attn={attn_v*n_lay:.1f}ms ({attn_v/total_v*100:.0f}%)  "
+                      f"mlp={mlp_v*n_lay:.1f}ms ({mlp_v/total_v*100:.0f}%)")
+
+            print(f"\n  W4A16 Amdahl projection (ragged 24% attn saving assumed):")
+            hdr2 = (f"  {'prefix':>6}  {'draft_ms':>9}  {'decode_ms':>10}  "
+                    f"{'attn%':>6}  {'saving_ms':>9}  {'E2E_spd':>8}")
+            print(hdr2); print("  " + "─" * (len(hdr2) - 2))
+            for prefix, r in sorted(results.items()):
+                draft = r["draft_ms"]; dec = r["decode_ms"]
+                afrac = synth.get(prefix, {}).get("attn_frac", 0.26)
+                saving = dec * afrac * 0.24
+                step_v = draft + dec; step_r = draft + dec - saving
+                spd = step_v / step_r if step_r else 1.0
+                print(f"  {prefix:>6}  {draft:>9.2f}  {dec:>10.2f}  "
+                      f"{afrac*100:>5.0f}%  {saving:>9.2f}  {spd:>8.4f}×")
 
 
 def _note_draft(draft_ms: Optional[float]):
@@ -711,8 +793,7 @@ def _note_draft(draft_ms: Optional[float]):
         print(f"  Draft time used for Amdahl: {draft_ms:.1f} ms (--draft-ms override)")
     else:
         print("  Draft time not provided — pass --draft-ms <value> for E2E projection.")
-        print("  Tip: for 70B EAGLE (BF16), ~120 ms on A100 is a reasonable estimate.")
-        print("       for W4A16 mode, draft is measured directly.")
+        print("  Tip: for 70B EAGLE (BF16 draft on A100), ~120 ms is a reasonable estimate.")
     print()
 
 
