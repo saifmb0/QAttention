@@ -519,18 +519,21 @@ def _run_one_growmap(draft_engine, target_engine, tokenizer, vocab_size,
                 total_steps += n_steps
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - t_start
-        tok_s   = total_tok / max(elapsed, 1e-9)
+        tok_s       = total_tok / max(elapsed, 1e-9)
+        acc_per_step = total_tok / max(total_steps, 1)
         print(f"  [{label:7s}]  {tok_s:7.1f} tok/s   "
               f"{total_tok} tok / {total_steps} steps   "
+              f"acc/step={acc_per_step:.2f}   "
               + (f"kernel_fires={kernel_fires[0]}" if use_ragged else ""))
-        return tok_s
+        return tok_s, acc_per_step
 
-    v_tok   = _run_simulation(use_ragged=False, label="vanilla")
-    r_tok   = _run_simulation(use_ragged=True,  label="ragged")
+    v_tok, v_acc   = _run_simulation(use_ragged=False, label="vanilla")
+    r_tok, r_acc   = _run_simulation(use_ragged=True,  label="ragged")
     speedup = r_tok / v_tok
-    print(f"\n  ▸ Speedup: {speedup:.3f}×  ({v_tok:.1f} → {r_tok:.1f} tok/s)")
+    print(f"\n  ▸ Speedup: {speedup:.3f}×  ({v_tok:.1f} → {r_tok:.1f} tok/s)"
+          f"  acc/step: vanilla={v_acc:.2f}  ragged={r_acc:.2f}")
 
-    return v_tok, r_tok, speedup
+    return v_tok, r_tok, speedup, v_acc, r_acc
 
 
 def run_e2e(args):
@@ -617,18 +620,18 @@ def run_e2e_sweep(args):
         torch.cuda.empty_cache()
         print(f"\n  Loading models…")
         draft_engine, target_engine, tokenizer, vocab_size = _load_engines(args, M, T)
-        v_tok, r_tok, speedup = _run_one_growmap(
+        v_tok, r_tok, speedup, v_acc, r_acc = _run_one_growmap(
             draft_engine, target_engine, tokenizer, vocab_size,
             gm, gmap_path, prompts, M, T, top_p, device, dtype,
         )
-        rows.append((sz, v_tok, r_tok, speedup))
+        rows.append((sz, v_tok, r_tok, speedup, v_acc, r_acc))
 
     print(f"\n{'═'*72}")
     print(f"  E2E sweep summary  ({len(prompts)} prompts, M={M})")
     print(f"{'─'*72}")
-    print(f"  {'tree_size':>10}  {'vanilla tok/s':>14}  {'ragged tok/s':>13}  {'speedup':>9}")
-    for sz, v, r, sp in rows:
-        print(f"  {sz:>10}  {v:>14.2f}  {r:>13.2f}  {sp:>8.3f}×")
+    print(f"  {'tree_size':>10}  {'vanilla tok/s':>14}  {'ragged tok/s':>13}  {'speedup':>9}  {'v acc/step':>11}  {'r acc/step':>11}")
+    for sz, v, r, sp, va, ra in rows:
+        print(f"  {sz:>10}  {v:>14.2f}  {r:>13.2f}  {sp:>8.3f}×  {va:>11.2f}  {ra:>11.2f}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

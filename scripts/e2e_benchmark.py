@@ -260,6 +260,36 @@ class _RaggedProfiler:
 # Module-level profiler — set by run_generation, read by _ragged_tree_attn
 _ACTIVE_PROFILER: Optional[_RaggedProfiler] = None
 
+# ── Vanilla attention timer (Exp 1 — Amdahl table) ───────────────────────────
+# When --attn-profile is set, we patch F.scaled_dot_product_attention once at
+# module load to record per-call CUDA events.  The _IN_ATTN_PROFILE flag ensures
+# timing only fires during tree_verify (never during prefill or draft-model).
+
+_IN_ATTN_PROFILE: bool = False
+_ATTN_EVENTS: List[Tuple["torch.cuda.Event", "torch.cuda.Event"]] = []
+
+_orig_sdpa = torch.nn.functional.scaled_dot_product_attention
+
+
+def _sdpa_timed(query, key, value, attn_mask=None, dropout_p=0.0,
+                is_causal=False, scale=None, **kwargs):
+    if not _IN_ATTN_PROFILE:
+        return _orig_sdpa(query, key, value, attn_mask=attn_mask,
+                          dropout_p=dropout_p, is_causal=is_causal,
+                          scale=scale, **kwargs)
+    e0 = torch.cuda.Event(enable_timing=True)
+    e1 = torch.cuda.Event(enable_timing=True)
+    e0.record()
+    out = _orig_sdpa(query, key, value, attn_mask=attn_mask,
+                     dropout_p=dropout_p, is_causal=is_causal,
+                     scale=scale, **kwargs)
+    e1.record()
+    _ATTN_EVENTS.append((e0, e1))
+    return out
+
+
+torch.nn.functional.scaled_dot_product_attention = _sdpa_timed
+
 
 # ── Version gate ─────────────────────────────────────────────────────────────
 # EAGLE 3.0.x was authored + tested against transformers 4.53.1 and
@@ -1016,6 +1046,7 @@ def run_generation(
     branching_factor: int = 4,
     max_depth: int = 7,
     profile: bool = False,
+    attn_profile: bool = False,
     extra_prefix_ids: Optional[torch.Tensor] = None,
     max_length: int = 2048,
     use_cuda_graph: bool = False,
@@ -1129,7 +1160,10 @@ def run_generation(
         # call on the newly-accepted tokens (q_len=2–4, kv_len >> q_len),
         # routing non-tree Q/K/V through the ragged kernel and crashing when
         # seq_len is not a power of 2.
+        global _IN_ATTN_PROFILE
         _state["in_tree_verify"] = True
+        if attn_profile and not use_ragged:
+            _IN_ATTN_PROFILE = True
         try:
             result = _orig_tree_decoding(
                 mdl, tree_candidates, past_key_values,
@@ -1137,6 +1171,7 @@ def run_generation(
             )
         finally:
             _state["in_tree_verify"] = False
+            _IN_ATTN_PROFILE = False
         e1.record()
         torch.cuda.synchronize()
         _state["verify_ms"].append(e0.elapsed_time(e1))  # type: ignore[attr-defined]
@@ -1290,6 +1325,32 @@ def run_generation(
         # Clear module-level profiler reference
         if _profiler is not None:
             _ACTIVE_PROFILER = None
+
+    # ── Amdahl table (--attn-profile, vanilla path only) ─────────────────────
+    if attn_profile and not use_ragged and _ATTN_EVENTS:
+        torch.cuda.synchronize()
+        total_attn_ms = sum(e0.elapsed_time(e1) for e0, e1 in _ATTN_EVENTS)
+        _ATTN_EVENTS.clear()
+        n_steps_total = sum(len(list(_state["verify_ms"])) for _ in [None])  # type: ignore
+        n_steps_total = sum(r.num_steps for r in records)
+        total_verify_ms = sum(r.mean_verify_ms * r.num_steps for r in records)
+        total_wall_ms   = sum(r.wall_ms for r in records)
+        attn_pct_verify = total_attn_ms / total_verify_ms * 100 if total_verify_ms else 0
+        attn_pct_wall   = total_attn_ms / total_wall_ms   * 100 if total_wall_ms   else 0
+        non_attn_ms     = total_verify_ms - total_attn_ms
+        n_calls         = n_steps_total * 32  # 32 layers
+        print(f"\n  ┌── AMDAHL PROFILE  ({n_steps_total} steps × 32 layers = {n_calls} SDPA calls) {'─'*18}")
+        print(f"  │ {'Component':<20s}  {'Total ms':>10s}  {'Per-step ms':>12s}  {'% verify':>9s}  {'% wall':>7s}")
+        print(f"  │ {'─'*20}  {'─'*10}  {'─'*12}  {'─'*9}  {'─'*7}")
+        print(f"  │ {'attention (SDPA)':<20s}  {total_attn_ms:>10.1f}  "
+              f"{total_attn_ms/n_steps_total:>12.3f}  {attn_pct_verify:>8.1f}%  {attn_pct_wall:>6.1f}%")
+        print(f"  │ {'non-attention':<20s}  {non_attn_ms:>10.1f}  "
+              f"{non_attn_ms/n_steps_total:>12.3f}  {100-attn_pct_verify:>8.1f}%  "
+              f"{non_attn_ms/total_wall_ms*100:>6.1f}%")
+        print(f"  │ {'verify total':<20s}  {total_verify_ms:>10.1f}  "
+              f"{total_verify_ms/n_steps_total:>12.3f}  {'100.0':>8s}%  "
+              f"{total_verify_ms/total_wall_ms*100:>6.1f}%")
+        print(f"  └{'─'*70}")
 
     return records
 
@@ -1671,6 +1732,256 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Exp 2: Depth sweep — acceptance rate vs depth (vanilla only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_eagle_model(args, max_length: int):
+    """Load EAGLE-3 model + tokenizer. Returns (model, model_type, is_llama3)."""
+    _patch_transformers_for_eagle()
+    import eagle.model.ea_model as _eagle_ea
+    from eagle.model.ea_model import EaModel
+
+    is_eagle3  = not args.no_eagle3
+    model_type = args.model_type
+    is_llama3  = model_type in ("llama3", "llama-3-instruct")
+
+    model = EaModel.from_pretrained(
+        base_model_path=args.base_model,
+        ea_model_path=args.eagle_model,
+        total_token=-1,
+        depth=-1,
+        top_k=-1,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+        device_map="cuda",
+        is_eagle3=is_eagle3,
+        max_length=max_length,
+    )
+    model.eval()
+    return model, model_type, is_llama3
+
+
+def run_depth_sweep(args) -> None:
+    """
+    Exp 2: Acceptance rate vs tree depth (vanilla EAGLE-3 only).
+
+    Runs at fixed b=16, L=0 over depths from --depths, records
+    mean_accepted_per_step at each depth to reveal the Model Wall plateau.
+    Saves results/depth_sweep.csv.
+    """
+    import csv as _csv
+
+    is_eagle3  = not args.no_eagle3
+    model_type = args.model_type
+    is_llama3  = model_type in ("llama3", "llama-3-instruct")
+    depths     = [int(x) for x in args.depths.split(",")]
+    b          = int(args.branching_factors.split(",")[0])  # first value (default 16)
+
+    _hf_token = (args.hf_token or os.environ.get("HF_TOKEN")
+                 or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+    if _hf_token:
+        os.environ["HF_TOKEN"] = _hf_token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = _hf_token
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+    prompts = _load_sharegpt_prompts(args.num_prompts, seed=args.prompt_seed,
+                                     hf_token=_hf_token)
+
+    print("\n" + "=" * 72)
+    print("  EAGLE-3 Depth Sweep  ·  Acceptance Rate vs Depth  (vanilla only)")
+    print("=" * 72)
+    print(f"  Branching b={b}, L=0, {len(prompts)} prompts")
+    print(f"  Depths: {depths}")
+    p = torch.cuda.get_device_properties(0)
+    print(f"  GPU: {p.name}  {p.total_memory // 1024**3} GB")
+    print("=" * 72)
+
+    max_length = 2048
+    model, model_type, is_llama3 = _load_eagle_model(args, max_length)
+
+    rows = []
+    for d in depths:
+        tt = _default_total_token(b, d)
+        model.ea_layer.total_tokens = tt
+        model.ea_layer.depth        = d
+        model.ea_layer.top_k        = b
+
+        print(f"\n  ── depth={d:2d}  N={tt:4d}  b={b} {'─'*50}")
+        recs = run_generation(
+            model, prompts, model_type,
+            max_new_tokens=args.max_new_tokens,
+            is_llama3=is_llama3,
+            use_ragged=False,
+            branching_factor=b,
+            max_depth=d,
+            max_length=max_length,
+        )
+        acc   = sum(r.mean_accepted_per_step for r in recs) / len(recs)
+        toks  = sum(r.tok_per_sec            for r in recs) / len(recs)
+        vms   = sum(r.mean_verify_ms         for r in recs) / len(recs)
+        vfrac = sum(r.verify_fraction        for r in recs) / len(recs)
+        print(f"    → depth={d:2d} N={tt:4d}  acc/step={acc:.3f}  "
+              f"{toks:.1f} tok/s  verify={vms:.1f}ms ({vfrac:.0%})")
+        rows.append({"depth": d, "N_tree": tt, "branching": b,
+                     "acc_per_step": acc, "tok_per_sec": toks,
+                     "verify_ms": vms, "verify_fraction": vfrac})
+
+    # Save
+    out_dir = args.out_dir
+    os.makedirs(out_dir, exist_ok=True)
+    csv_path = os.path.join(out_dir, "depth_sweep.csv")
+    fields = ["depth", "N_tree", "branching", "acc_per_step",
+              "tok_per_sec", "verify_ms", "verify_fraction"]
+    with open(csv_path, "w", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"\n  Saved: {csv_path}")
+
+    # Print summary table
+    print(f"\n  {'depth':>6}  {'N_tree':>7}  {'acc/step':>9}  {'tok/s':>7}  {'verify_ms':>10}  {'verify_frac':>12}")
+    print(f"  {'─'*6}  {'─'*7}  {'─'*9}  {'─'*7}  {'─'*10}  {'─'*12}")
+    for r in rows:
+        print(f"  {r['depth']:>6d}  {r['N_tree']:>7d}  {r['acc_per_step']:>9.3f}  "
+              f"{r['tok_per_sec']:>7.1f}  {r['verify_ms']:>10.1f}  {r['verify_fraction']:>11.1%}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Exp 4: Cross-system — EAGLE-3 at Sequoia-matching N values
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Target (b, d) configs that produce N values matching Sequoia tree sizes
+_CROSS_SYSTEM_CONFIGS = [
+    # target_N, b, d
+    (62,  12,  6),   # ≈ S=64
+    (123, 16,  9),   # ≈ S=128  (also in existing sweep)
+    (247, 24, 19),   # ≈ S=256
+    (576, 24, 28),   # ≈ S=512
+    (988, 32, 36),   # ≈ S=1024 (OOM risk on 20GB)
+]
+
+
+def run_cross_system(args) -> None:
+    """
+    Exp 4: EAGLE-3 vanilla vs ragged at N values matching Sequoia tree sizes.
+
+    Produces results/cross_system_eagle.csv with columns:
+      N_tree | vanilla_tok_s | ragged_tok_s | speedup | v_acc | r_acc |
+      v_verify_ms | r_verify_ms | verify_fraction
+
+    Combine with Sequoia e2e-sweep results (from benchmark_sequoia.py) to
+    produce the unified cross-system Table 4.
+    """
+    import csv as _csv
+
+    model_type = args.model_type
+    is_llama3  = model_type in ("llama3", "llama-3-instruct")
+
+    _hf_token = (args.hf_token or os.environ.get("HF_TOKEN")
+                 or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+    if _hf_token:
+        os.environ["HF_TOKEN"] = _hf_token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = _hf_token
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+    prompts = _load_sharegpt_prompts(args.num_prompts, seed=args.prompt_seed,
+                                     hf_token=_hf_token)
+
+    print("\n" + "=" * 72)
+    print("  EAGLE-3 Cross-System Configs  (Sequoia-matching N values)")
+    print("=" * 72)
+    for tgt, b, d in _CROSS_SYSTEM_CONFIGS:
+        print(f"  target_N={tgt:4d}  b={b}  d={d}  actual_N={_default_total_token(b, d)}")
+    p = torch.cuda.get_device_properties(0)
+    print(f"  GPU: {p.name}  {p.total_memory // 1024**3} GB")
+    print("=" * 72)
+
+    rows = []
+    for tgt_n, b, d in _CROSS_SYSTEM_CONFIGS:
+        tt = _default_total_token(b, d)
+        max_length = max(2048, tt + 512 + args.max_new_tokens)
+        print(f"\n  ── target_N={tgt_n}  (b={b} d={d} N={tt}) {'─'*40}")
+
+        try:
+            model, model_type2, is_llama32 = _load_eagle_model(args, max_length)
+            model.ea_layer.total_tokens = tt
+            model.ea_layer.depth        = d
+            model.ea_layer.top_k        = b
+
+            v_recs = run_generation(model, prompts, model_type,
+                                    max_new_tokens=args.max_new_tokens,
+                                    is_llama3=is_llama3,
+                                    use_ragged=False,
+                                    branching_factor=b, max_depth=d,
+                                    max_length=max_length)
+            r_recs = run_generation(model, prompts, model_type,
+                                    max_new_tokens=args.max_new_tokens,
+                                    is_llama3=is_llama3,
+                                    use_ragged=True,
+                                    branching_factor=b, max_depth=d,
+                                    max_length=max_length)
+
+            def _mean(recs, key):
+                return sum(getattr(r, key) for r in recs) / len(recs)
+
+            v_toks = _mean(v_recs, "tok_per_sec")
+            r_toks = _mean(r_recs, "tok_per_sec")
+            v_acc  = _mean(v_recs, "mean_accepted_per_step")
+            r_acc  = _mean(r_recs, "mean_accepted_per_step")
+            v_vms  = _mean(v_recs, "mean_verify_ms")
+            r_vms  = _mean(r_recs, "mean_verify_ms")
+            vfrac  = _mean(v_recs, "verify_fraction")
+            speedup = r_toks / v_toks if v_toks else float("nan")
+
+            print(f"  target_N={tgt_n:4d}  N={tt}  vanilla={v_toks:.1f} tok/s  "
+                  f"ragged={r_toks:.1f} tok/s  speedup={speedup:.3f}×  "
+                  f"acc_v={v_acc:.2f}  acc_r={r_acc:.2f}")
+            rows.append({"target_N": tgt_n, "actual_N": tt, "b": b, "d": d,
+                         "vanilla_tok_s": v_toks, "ragged_tok_s": r_toks,
+                         "speedup": speedup, "v_acc_per_step": v_acc,
+                         "r_acc_per_step": r_acc, "v_verify_ms": v_vms,
+                         "r_verify_ms": r_vms, "verify_fraction": vfrac})
+
+            del model
+            torch.cuda.empty_cache()
+
+        except torch.cuda.OutOfMemoryError as oom:
+            print(f"  [OOM at target_N={tgt_n}] {oom}")
+            rows.append({"target_N": tgt_n, "actual_N": tt, "b": b, "d": d,
+                         **{k: float("nan") for k in [
+                             "vanilla_tok_s", "ragged_tok_s", "speedup",
+                             "v_acc_per_step", "r_acc_per_step",
+                             "v_verify_ms", "r_verify_ms", "verify_fraction"]}})
+
+    # Save
+    out_dir = args.out_dir
+    os.makedirs(out_dir, exist_ok=True)
+    csv_path = os.path.join(out_dir, "cross_system_eagle.csv")
+    fields = ["target_N", "actual_N", "b", "d", "vanilla_tok_s", "ragged_tok_s",
+              "speedup", "v_acc_per_step", "r_acc_per_step",
+              "v_verify_ms", "r_verify_ms", "verify_fraction"]
+    with open(csv_path, "w", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"\n  Saved: {csv_path}")
+
+    print(f"\n  {'target_N':>9}  {'N':>5}  {'vanilla':>8}  {'ragged':>8}  "
+          f"{'speedup':>8}  {'v_acc':>6}  {'r_acc':>6}")
+    print(f"  {'─'*9}  {'─'*5}  {'─'*8}  {'─'*8}  {'─'*8}  {'─'*6}  {'─'*6}")
+    for r in rows:
+        v, rg = r["vanilla_tok_s"], r["ragged_tok_s"]
+        sp    = r["speedup"]
+        va, ra = r["v_acc_per_step"], r["r_acc_per_step"]
+        if not (v != v):  # not NaN
+            print(f"  {r['target_N']:>9d}  {r['actual_N']:>5d}  {v:>8.1f}  "
+                  f"{rg:>8.1f}  {sp:>7.3f}×  {va:>6.2f}  {ra:>6.2f}")
+        else:
+            print(f"  {r['target_N']:>9d}  {r['actual_N']:>5d}  {'OOM':>8}  "
+                  f"{'OOM':>8}  {'—':>8}  {'—':>6}  {'—':>6}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1682,6 +1993,12 @@ def main() -> None:
                     "kernel wins and where it doesn't.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--section", default="e2e",
+                        choices=["e2e", "depth-sweep", "cross-system"],
+                        help="Which benchmark section to run. "
+                             "e2e: full 2D sweep (default). "
+                             "depth-sweep: acceptance rate vs depth (Exp 2, vanilla only). "
+                             "cross-system: EAGLE-3 at Sequoia-matching N values (Exp 4).")
     # Model
     parser.add_argument("--base-model",  default="meta-llama/Llama-3.1-8B-Instruct")
     parser.add_argument("--eagle-model", default="yuhuili/EAGLE3-LLaMA3.1-Instruct-8B")
@@ -1726,6 +2043,11 @@ def main() -> None:
                              "Prints a breakdown of prefix_split / flash_prefix / "
                              "tree_reshape / ragged_kernel / out_reshape / lse_merge "
                              "timing per prompt, plus hook dispatch stats.")
+    parser.add_argument("--attn-profile", action="store_true",
+                        help="Measure attention fraction of verify time in the vanilla path "
+                             "(Amdahl table). Patches F.scaled_dot_product_attention with "
+                             "CUDA event timing, gated to fire only during tree_verify. "
+                             "Prints: attn_ms | non_attn_ms | attn_pct_verify | attn_pct_wall.")
     parser.add_argument(
         "--context-lengths",
         default="0",

@@ -1,0 +1,155 @@
+/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+We recommend installing via `pip install torch-c-dlpack-ext`
+  warnings.warn(
+========================================================================
+  sd-ragged  ·  Micro Benchmark  ·  FlashInfer / DeFT / Cascade vs Ragged
+========================================================================
+  GPU:      NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB  peak BW 288 GB/s
+  Dims:     H=32, D=128  (fp16)
+  Grid:     N_branches(BS)∈[4, 8, 16, 32]  b∈[10]  d∈[7]  N_cap=none
+  context_len:  L∈[512, 1024, 2048, 4096]  (shared prefix; cascade enabled when L>0)
+  N range:  b=10,d=7→60/d=7→60
+  Timing:   5 warmup + 20 iters (median)
+  Trees:    EAGLE-like pruned (irregular branching)
+  N mode:   budgeted
+  Baselines: FlashInfer-tree  FlashInfer-cascade  DeFT [SKIP — third_party/FastTree not found]
+========================================================================
+  [  1/16]  B=  4 b=10 d= 7 d_eff= 3 L= 512 N= 60  fi_tree=   0.184ms  cascade=   0.084ms  deft=    n/a ms  ragged=   0.086ms  spd_tree=  2.14×  bw=262.857GB/s  bw_util=91.270%
+  [  2/16]  B=  8 b=10 d= 7 d_eff= 3 L= 512 N= 60  fi_tree=   0.300ms  cascade=   0.138ms  deft=    n/a ms  ragged=   0.165ms  spd_tree=  1.82×  bw=274.445GB/s  bw_util=95.294%
+  [  3/16]  B= 16 b=10 d= 7 d_eff= 3 L= 512 N= 60  fi_tree=   0.594ms  cascade=   0.298ms  deft=    n/a ms  ragged=   0.376ms  spd_tree=  1.58×  bw=240.367GB/s  bw_util=83.461%
+  [  4/16]  B= 32 b=10 d= 7 d_eff= 3 L= 512 N= 60  fi_tree=   1.112ms  cascade=   0.664ms  deft=    n/a ms  ragged=   0.827ms  spd_tree=  1.34×  bw=218.775GB/s  bw_util=75.963%
+  [  5/16]  B=  4 b=10 d= 7 d_eff= 3 L=1024 N= 60  fi_tree=   0.335ms  cascade=   0.119ms  deft=    n/a ms  ragged=   0.123ms  spd_tree=  2.72×  bw=183.546GB/s  bw_util=63.731%
+  [  6/16]  B=  8 b=10 d= 7 d_eff= 3 L=1024 N= 60  fi_tree=   0.523ms  cascade=   0.218ms  deft=    n/a ms  ragged=   0.259ms  spd_tree=  2.02×  bw=174.891GB/s  bw_util=60.726%
+  [  7/16]  B= 16 b=10 d= 7 d_eff= 3 L=1024 N= 60  fi_tree=   1.045ms  cascade=   0.419ms  deft=    n/a ms  ragged=   0.492ms  spd_tree=  2.12×  bw=183.618GB/s  bw_util=63.756%
+  [  8/16]  B= 32 b=10 d= 7 d_eff= 3 L=1024 N= 60  fi_tree=   1.962ms  cascade=   0.890ms  deft=    n/a ms  ragged=   1.058ms  spd_tree=  1.85×  bw=170.997GB/s  bw_util=59.374%
+  [  9/16]  B=  4 b=10 d= 7 d_eff= 3 L=2048 N= 60  fi_tree=   0.705ms  cascade=   0.215ms  deft=    n/a ms  ragged=   0.229ms  spd_tree=  3.08×  bw= 98.861GB/s  bw_util=34.327%
+  [ 10/16]  B=  8 b=10 d= 7 d_eff= 3 L=2048 N= 60  fi_tree=   1.158ms  cascade=   0.389ms  deft=    n/a ms  ragged=   0.413ms  spd_tree=  2.81×  bw=109.582GB/s  bw_util=38.049%
+  [ 11/16]  B= 16 b=10 d= 7 d_eff= 3 L=2048 N= 60  fi_tree=   2.288ms  cascade=   0.672ms  deft=    n/a ms  ragged=   0.735ms  spd_tree=  3.11×  bw=123.011GB/s  bw_util=42.712%
+  [ 12/16]  B= 32 b=10 d= 7 d_eff= 3 L=2048 N= 60  fi_tree=   4.218ms  cascade=   1.361ms  deft=    n/a ms  ragged=   1.546ms  spd_tree=  2.73×  bw=116.980GB/s  bw_util=40.618%
+  [ 13/16]  B=  4 b=10 d= 7 d_eff= 3 L=4096 N= 60  fi_tree=   1.499ms  cascade=   0.386ms  deft=    n/a ms  ragged=   0.391ms  spd_tree=  3.83×  bw= 57.801GB/s  bw_util=20.070%
+  [ 14/16]  B=  8 b=10 d= 7 d_eff= 3 L=4096 N= 60  fi_tree=   2.305ms  cascade=   0.708ms  deft=    n/a ms  ragged=   0.722ms  spd_tree=  3.19×  bw= 62.638GB/s  bw_util=21.749%
+  [ 15/16]  B= 16 b=10 d= 7 d_eff= 3 L=4096 N= 60  fi_tree=   4.529ms  cascade=   1.138ms  deft=    n/a ms  ragged=   1.211ms  spd_tree=  3.74×  bw= 74.704GB/s  bw_util=25.939%
+  [ 16/16]  B= 32 b=10 d= 7 d_eff= 3 L=4096 N= 60  fi_tree=   8.348ms  cascade=   2.311ms  deft=    n/a ms  ragged=   2.521ms  spd_tree=  3.31×  bw= 71.752GB/s  bw_util=24.914%
+
+  Saved: results/micro_benchmark_pruned_20260502_132406.csv
+  Saved: results/micro_benchmark_pruned.csv (latest)
+
+  Speedup table [context_len=512]  (fi_tree / ragged — >1 means ragged wins)
+  ────────────────────────────────────────────────────────────────────────
+  B=  4 b=10 │ d= 7
+   vs_tree       │  2.14
+   vs_casc       │  0.98
+   vs_deft       │   n/a
+   bw GB/s       │ 262.86
+  B=  8 b=10 │ d= 7
+   vs_tree       │  1.82
+   vs_casc       │  0.84
+   vs_deft       │   n/a
+   bw GB/s       │ 274.45
+  B= 16 b=10 │ d= 7
+   vs_tree       │  1.58
+   vs_casc       │  0.79
+   vs_deft       │   n/a
+   bw GB/s       │ 240.37
+  B= 32 b=10 │ d= 7
+   vs_tree       │  1.34
+   vs_casc       │  0.80
+   vs_deft       │   n/a
+   bw GB/s       │ 218.77
+
+  Speedup table [context_len=1024]  (fi_tree / ragged — >1 means ragged wins)
+  ────────────────────────────────────────────────────────────────────────
+  B=  4 b=10 │ d= 7
+   vs_tree       │  2.72
+   vs_casc       │  0.97
+   vs_deft       │   n/a
+   bw GB/s       │ 183.55
+  B=  8 b=10 │ d= 7
+   vs_tree       │  2.02
+   vs_casc       │  0.84
+   vs_deft       │   n/a
+   bw GB/s       │ 174.89
+  B= 16 b=10 │ d= 7
+   vs_tree       │  2.12
+   vs_casc       │  0.85
+   vs_deft       │   n/a
+   bw GB/s       │ 183.62
+  B= 32 b=10 │ d= 7
+   vs_tree       │  1.85
+   vs_casc       │  0.84
+   vs_deft       │   n/a
+   bw GB/s       │ 171.00
+
+  Speedup table [context_len=2048]  (fi_tree / ragged — >1 means ragged wins)
+  ────────────────────────────────────────────────────────────────────────
+  B=  4 b=10 │ d= 7
+   vs_tree       │  3.08
+   vs_casc       │  0.94
+   vs_deft       │   n/a
+   bw GB/s       │ 98.86
+  B=  8 b=10 │ d= 7
+   vs_tree       │  2.81
+   vs_casc       │  0.94
+   vs_deft       │   n/a
+   bw GB/s       │ 109.58
+  B= 16 b=10 │ d= 7
+   vs_tree       │  3.11
+   vs_casc       │  0.91
+   vs_deft       │   n/a
+   bw GB/s       │ 123.01
+  B= 32 b=10 │ d= 7
+   vs_tree       │  2.73
+   vs_casc       │  0.88
+   vs_deft       │   n/a
+   bw GB/s       │ 116.98
+
+  Speedup table [context_len=4096]  (fi_tree / ragged — >1 means ragged wins)
+  ────────────────────────────────────────────────────────────────────────
+  B=  4 b=10 │ d= 7
+   vs_tree       │  3.83
+   vs_casc       │  0.99
+   vs_deft       │   n/a
+   bw GB/s       │ 57.80
+  B=  8 b=10 │ d= 7
+   vs_tree       │  3.19
+   vs_casc       │  0.98
+   vs_deft       │   n/a
+   bw GB/s       │ 62.64
+  B= 16 b=10 │ d= 7
+   vs_tree       │  3.74
+   vs_casc       │  0.94
+   vs_deft       │   n/a
+   bw GB/s       │ 74.70
+  B= 32 b=10 │ d= 7
+   vs_tree       │  3.31
+   vs_casc       │  0.92
+   vs_deft       │   n/a
+   bw GB/s       │ 71.75
+
+========================================================================
+  MICRO BENCHMARK SUMMARY
+========================================================================
+  Configs tested:   16
+  Valid results:    16
+  Ragged wins (vs fi_tree):  16 / 16  (100%)
+  Median speedup (vs fi_tree): 2.72×
+  Best speedup:     3.83×  (B=4, b=10, d=7, L=4096)
+  Worst speedup:    1.34×  (B=32, b=10, d=7, L=512)
+  Median BW:        147.0 GB/s  (51.0% of peak 288 GB/s)
+
+  [L=512]  wins 4/4  median 1.70×  best 2.14× (B=4, b=10, d=7)
+
+  [L=1024]  wins 4/4  median 2.07×  best 2.72× (B=4, b=10, d=7)
+
+  [L=2048]  wins 4/4  median 2.94×  best 3.11× (B=16, b=10, d=7)
+
+  [L=4096]  wins 4/4  median 3.53×  best 3.83× (B=4, b=10, d=7)
+
+  N_branches scaling  (speedup vs fi_tree, per context_len):
+    b=10 d=7:
+      L= 512: B=4:2.14×  B=8:1.82×  B=16:1.58×  B=32:1.34×
+      L=1024: B=4:2.72×  B=8:2.02×  B=16:2.12×  B=32:1.85×
+      L=2048: B=4:3.08×  B=8:2.81×  B=16:3.11×  B=32:2.73×
+      L=4096: B=4:3.83×  B=8:3.19×  B=16:3.74×  B=32:3.31×
+========================================================================
+
