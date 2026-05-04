@@ -1,13 +1,14 @@
-while true;  do
+FILE_NAME=abstract
+while true; do
   echo "$(date) Waiting for save..."
-  # This waits for the file to be closed after a write
-  inotifywait -q -e close_write "./paper.tex"
+  # This waits for the file to be closed after a write 
+  inotifywait -q -e close_write "$FILE_NAME.tex"
 
   echo "Compiling..."
-  pdflatex -interaction=nonstopmode ./paper.tex
+  pdflatex -interaction=nonstopmode "$FILE_NAME.tex"
 
   # Clean up temp files
-  rm -f redacted.log redacted.aux redacted.out
+  rm -f "$FILE_NAME.log" "$FILE_NAME.aux" "$FILE_NAME.out"
 
   echo "Done iteration. Monitoring again..."
 done

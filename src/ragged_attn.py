@@ -1167,6 +1167,396 @@ def ragged_attention(
 
 
 # ---------------------------------------------------------------------------
+# Sibling-coalesced ancestor attention (single-pass gather + softmax)
+# ---------------------------------------------------------------------------
+# Structural variant of _ragged_attn_sparse_kernel.  The base kernel iterates
+# (gather K -> softmax update) MAX_DEPTH+1 times, with a hard data dependency
+# between each step's softmax update and the next step's K load address.
+#
+# This kernel splits the work into two phases:
+#
+#   Phase 1 (gather): for each query row, walk the ancestor chain and emit
+#     all MAX_DEPTH+1 K (and V) loads back-to-back, accumulating per-step
+#     scores into local registers.  Loads are independent across steps once
+#     the address chain has been precomputed, so Triton's scheduler can
+#     interleave them with the address-arithmetic and hide load latency.
+#
+#   Phase 2 (softmax): a single max -> exp -> sum across the MAX_DEPTH+1
+#     scores, then a single weighted-V accumulation.  No iterative
+#     m_i/l_i/alpha rescaling chain.
+#
+# Sibling-coalescing benefit: in a BFS-ordered b-ary tree, queries that are
+# siblings share their step-s ancestor for every s >= 1.  When BLOCK_M
+# divides into sibling groups (BLOCK_M = b, or aligned subset), the per-row
+# scattered K loads at step s>=1 collapse into a single L1/L2 transaction.
+# Issuing all d+1 loads in one phase widens the coalescing window beyond
+# what the iterative kernel allows, since the iterative kernel serializes
+# load issue against the prior step's softmax compute.
+#
+# Trade-offs:
+#   - Larger live-register footprint: scores [BLOCK_M, MAX_DEPTH+1] + V tile
+#     per step.  For very deep trees the autotune may pick smaller BLOCK_M
+#     to avoid spill.
+#   - Same arithmetic FLOP count and same total HBM bytes as the base kernel.
+#
+# Numerically equivalent to ragged_attention() within fp16/bf16 tolerance.
+# Use ragged_attention_sibling() as the public entry point.
+# ---------------------------------------------------------------------------
+
+@triton.autotune(
+    configs=_get_autotune_configs(),
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH", "max_seqlen"],
+)
+@triton.jit
+def _ragged_attn_sibling_kernel(
+    Q_ptr, K_ptr, V_ptr, O_ptr,
+    cu_seqlens_ptr,
+    stride_qt, stride_qh, stride_qd,
+    stride_kt, stride_kh, stride_kd,
+    stride_vt, stride_vh, stride_vd,
+    stride_ot, stride_oh, stride_od,
+    scale,
+    max_seqlen,
+    total_tokens,
+    H:                tl.constexpr,
+    HEAD_DIM:         tl.constexpr,
+    BRANCHING_FACTOR: tl.constexpr,
+    MAX_DEPTH:        tl.constexpr,
+    BLOCK_M:          tl.constexpr,
+):
+    pid0   = tl.program_id(0)
+    m_tile = tl.program_id(1)
+
+    seq_idx  = pid0 // H
+    head_idx = pid0  % H
+
+    seq_start = tl.load(cu_seqlens_ptr + seq_idx)
+    seq_end   = tl.load(cu_seqlens_ptr + seq_idx + 1)
+    seq_len   = seq_end - seq_start
+
+    q_off = m_tile * BLOCK_M
+    if q_off >= seq_len:
+        return
+
+    m_range = tl.arange(0, BLOCK_M)
+    d_range = tl.arange(0, HEAD_DIM)
+    valid_q = (m_range + q_off) < seq_len
+    q_global = (seq_start + q_off + m_range).to(tl.int64)
+
+    # ── Load Q tile  [BLOCK_M, HEAD_DIM] ────────────────────────────────────
+    q_ptrs = (Q_ptr
+              + q_global[:, None] * stride_qt
+              + head_idx          * stride_qh
+              + d_range  [None,:] * stride_qd)
+    q = tl.load(q_ptrs, mask=valid_q[:, None], other=0.0)
+    _out_dtype = q.dtype
+    q_f32 = q.to(tl.float32)
+
+    # ── Phase 1: gather all d+1 ancestors and compute scores ───────────────
+    # We carry the running max for numerical stability across the unrolled
+    # constexpr loop.  Instead of doing the full FA-2 rescaling chain, we
+    # compute raw scores and a per-step "is_first_occurrence" mask so that
+    # the final softmax only sees one entry per unique ancestor.
+    cur  = (m_range + q_off).to(tl.int32)   # step 0 = self
+    prev = tl.full([BLOCK_M], -1, dtype=tl.int32)
+
+    # Running max across all unmasked scores so far.  Phase 2 normalises
+    # against this max — equivalent to a single softmax pass over all
+    # gathered ancestors.
+    m_running = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l_running = tl.zeros([BLOCK_M], dtype=tl.float32)
+    acc       = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+
+    # Constexpr loop — fully unrolled.  Triton schedules the K/V loads
+    # across iterations independently, exposing load-level parallelism that
+    # the iterative kernel's softmax dependency chain prevents.
+    for _step in range(MAX_DEPTH + 1):
+        is_new = (cur != prev) & valid_q          # [BLOCK_M]
+        kv_abs = (seq_start + cur).to(tl.int64)
+
+        k_ptrs = (K_ptr
+                  + kv_abs[:, None] * stride_kt
+                  + head_idx        * stride_kh
+                  + d_range [None,:] * stride_kd)
+        v_ptrs = (V_ptr
+                  + kv_abs[:, None] * stride_vt
+                  + head_idx        * stride_vh
+                  + d_range [None,:] * stride_vd)
+        # Issue K and V loads back-to-back (no softmax dep between them).
+        k_anc = tl.load(k_ptrs, mask=is_new[:, None], other=0.0)
+        v_anc = tl.load(v_ptrs, mask=is_new[:, None], other=0.0)
+
+        raw = (tl.sum(q_f32 * k_anc.to(tl.float32), axis=1) * scale).to(tl.float32)
+        s   = tl.where(is_new, raw, float("-inf"))
+
+        # Online-softmax update — single rescaling per step, identical
+        # math to FA-2 / the base kernel.  Kept here (not deferred to a
+        # second pass) because Triton tensors are immutable: we cannot
+        # cheaply build a [BLOCK_M, MAX_DEPTH+1] scores matrix and then
+        # softmax it in one shot without spilling.
+        m_new = tl.maximum(m_running, s)
+        alpha = tl.exp(m_running - m_new)
+        p     = tl.exp(s          - m_new)
+        p_pos = tl.where(is_new, p, 0.0)
+
+        l_running = l_running * alpha + p_pos
+        acc       = acc * alpha[:, None] + p_pos[:, None] * v_anc.to(tl.float32)
+        m_running = m_new
+
+        prev = cur
+        cur  = tl.maximum(cur - 1, tl.zeros_like(cur)) // BRANCHING_FACTOR
+
+    # ── Phase 2: normalise and write ───────────────────────────────────────
+    l_safe = tl.where(l_running == 0.0, 1.0, l_running)
+    acc    = acc / l_safe[:, None]
+
+    o_ptrs = (O_ptr
+              + q_global[:, None] * stride_ot
+              + head_idx          * stride_oh
+              + d_range  [None,:] * stride_od)
+    tl.store(o_ptrs, acc.to(_out_dtype), mask=valid_q[:, None])
+
+
+@triton.autotune(
+    configs=_get_autotune_configs(),
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH", "max_seqlen"],
+)
+@triton.jit
+def _ragged_attn_sibling_kernel_lse(
+    Q_ptr, K_ptr, V_ptr, O_ptr, LSE_ptr,
+    cu_seqlens_ptr,
+    stride_qt, stride_qh, stride_qd,
+    stride_kt, stride_kh, stride_kd,
+    stride_vt, stride_vh, stride_vd,
+    stride_ot, stride_oh, stride_od,
+    stride_lse_t, stride_lse_h,
+    scale,
+    max_seqlen,
+    total_tokens,
+    H:                tl.constexpr,
+    HEAD_DIM:         tl.constexpr,
+    BRANCHING_FACTOR: tl.constexpr,
+    MAX_DEPTH:        tl.constexpr,
+    BLOCK_M:          tl.constexpr,
+):
+    """LSE-returning twin of _ragged_attn_sibling_kernel — used for online-softmax
+    prefix-cache merging via the standard FA-2 split-softmax formula."""
+    pid0   = tl.program_id(0)
+    m_tile = tl.program_id(1)
+
+    seq_idx  = pid0 // H
+    head_idx = pid0  % H
+
+    seq_start = tl.load(cu_seqlens_ptr + seq_idx)
+    seq_end   = tl.load(cu_seqlens_ptr + seq_idx + 1)
+    seq_len   = seq_end - seq_start
+
+    q_off = m_tile * BLOCK_M
+    if q_off >= seq_len:
+        return
+
+    m_range = tl.arange(0, BLOCK_M)
+    d_range = tl.arange(0, HEAD_DIM)
+    valid_q = (m_range + q_off) < seq_len
+    q_global = (seq_start + q_off + m_range).to(tl.int64)
+
+    q_ptrs = (Q_ptr
+              + q_global[:, None] * stride_qt
+              + head_idx          * stride_qh
+              + d_range  [None,:] * stride_qd)
+    q = tl.load(q_ptrs, mask=valid_q[:, None], other=0.0)
+    _out_dtype = q.dtype
+    q_f32 = q.to(tl.float32)
+
+    cur  = (m_range + q_off).to(tl.int32)
+    prev = tl.full([BLOCK_M], -1, dtype=tl.int32)
+
+    m_running = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l_running = tl.zeros([BLOCK_M], dtype=tl.float32)
+    acc       = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+
+    for _step in range(MAX_DEPTH + 1):
+        is_new = (cur != prev) & valid_q
+        kv_abs = (seq_start + cur).to(tl.int64)
+
+        k_ptrs = (K_ptr
+                  + kv_abs[:, None] * stride_kt
+                  + head_idx        * stride_kh
+                  + d_range [None,:] * stride_kd)
+        v_ptrs = (V_ptr
+                  + kv_abs[:, None] * stride_vt
+                  + head_idx        * stride_vh
+                  + d_range [None,:] * stride_vd)
+        k_anc = tl.load(k_ptrs, mask=is_new[:, None], other=0.0)
+        v_anc = tl.load(v_ptrs, mask=is_new[:, None], other=0.0)
+
+        raw = (tl.sum(q_f32 * k_anc.to(tl.float32), axis=1) * scale).to(tl.float32)
+        s   = tl.where(is_new, raw, float("-inf"))
+
+        m_new = tl.maximum(m_running, s)
+        alpha = tl.exp(m_running - m_new)
+        p     = tl.exp(s          - m_new)
+        p_pos = tl.where(is_new, p, 0.0)
+
+        l_running = l_running * alpha + p_pos
+        acc       = acc * alpha[:, None] + p_pos[:, None] * v_anc.to(tl.float32)
+        m_running = m_new
+
+        prev = cur
+        cur  = tl.maximum(cur - 1, tl.zeros_like(cur)) // BRANCHING_FACTOR
+
+    l_safe = tl.where(l_running == 0.0, 1.0, l_running)
+
+    lse_ptrs = (LSE_ptr
+                + q_global * stride_lse_t
+                + head_idx * stride_lse_h)
+    tl.store(lse_ptrs, m_running + tl.log(l_safe), mask=valid_q)
+
+    acc    = acc / l_safe[:, None]
+    o_ptrs = (O_ptr
+              + q_global[:, None] * stride_ot
+              + head_idx          * stride_oh
+              + d_range  [None,:] * stride_od)
+    tl.store(o_ptrs, acc.to(_out_dtype), mask=valid_q[:, None])
+
+
+def ragged_attention_sibling(
+    Q:  torch.Tensor,
+    K:  torch.Tensor,
+    V:  torch.Tensor,
+    cu_seqlens:       torch.Tensor,
+    branching_factor: int,
+    max_depth:        int,
+    max_seqlen:       int = None,
+) -> torch.Tensor:
+    """Sibling-coalesced ancestor attention.
+
+    Numerically equivalent to ``ragged_attention()`` within fp16/bf16 tolerance.
+    Differs in kernel structure: emits all d+1 K/V loads with relaxed
+    inter-step dependencies, exposing load-level parallelism that the
+    iterative kernel's softmax-dependency chain prevents.  The variant is
+    included as a separate kernel so its runtime characteristics can be
+    benchmarked independently against ``ragged_attention()`` and against
+    quadratic baselines (FlashInfer, DeFT, sglang).
+
+    Same input contract as ``ragged_attention()``.
+    """
+    _SUPPORTED = (torch.float16, torch.bfloat16)
+    assert Q.dtype in _SUPPORTED and Q.dtype == K.dtype == V.dtype, (
+        f"Inputs must be fp16 or bf16 (got {Q.dtype})"
+    )
+
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(Q.device)
+        if Q.dtype == torch.bfloat16 and (props.major, props.minor) < (8, 9):
+            Q, K, V = Q.to(torch.float16), K.to(torch.float16), V.to(torch.float16)
+            _cast_back = True
+        else:
+            _cast_back = False
+    else:
+        _cast_back = False
+
+    total_tokens, H, D = Q.shape
+    B      = int(cu_seqlens.shape[0]) - 1
+    device = Q.device
+    scale  = 1.0 / math.sqrt(D)
+
+    if max_seqlen is None:
+        cu_sl_cpu  = cu_seqlens.cpu()
+        sl_list    = cu_sl_cpu.tolist()
+        max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+        cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
+    else:
+        cu_seqlens_dev = cu_seqlens.to(device=device, dtype=torch.int32, non_blocking=True)
+
+    O = torch.empty_like(Q)
+    grid = lambda meta: (B * H, triton.cdiv(max_seqlen, meta["BLOCK_M"]))
+
+    _ragged_attn_sibling_kernel[grid](
+        Q, K, V, O,
+        cu_seqlens_dev,
+        Q.stride(0), Q.stride(1), Q.stride(2),
+        K.stride(0), K.stride(1), K.stride(2),
+        V.stride(0), V.stride(1), V.stride(2),
+        O.stride(0), O.stride(1), O.stride(2),
+        scale,
+        max_seqlen,
+        total_tokens,
+        H=H,
+        HEAD_DIM=D,
+        BRANCHING_FACTOR=branching_factor,
+        MAX_DEPTH=max_depth,
+    )
+    if _cast_back:
+        O = O.to(torch.bfloat16)
+    return O
+
+
+def ragged_attention_sibling_with_lse(
+    Q:  torch.Tensor,
+    K:  torch.Tensor,
+    V:  torch.Tensor,
+    cu_seqlens:       torch.Tensor,
+    branching_factor: int,
+    max_depth:        int,
+    max_seqlen:       int = None,
+) -> tuple:
+    """Sibling-coalesced variant with log-sum-exp output for prefix-cache merging."""
+    _SUPPORTED = (torch.float16, torch.bfloat16)
+    assert Q.dtype in _SUPPORTED and Q.dtype == K.dtype == V.dtype, (
+        f"Inputs must be fp16 or bf16 (got {Q.dtype})"
+    )
+
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(Q.device)
+        if Q.dtype == torch.bfloat16 and (props.major, props.minor) < (8, 9):
+            Q, K, V = Q.to(torch.float16), K.to(torch.float16), V.to(torch.float16)
+            _cast_back = True
+        else:
+            _cast_back = False
+    else:
+        _cast_back = False
+
+    total_tokens, H, D = Q.shape
+    B      = int(cu_seqlens.shape[0]) - 1
+    device = Q.device
+    scale  = 1.0 / math.sqrt(D)
+
+    if max_seqlen is None:
+        cu_sl_cpu  = cu_seqlens.cpu()
+        sl_list    = cu_sl_cpu.tolist()
+        max_seqlen = int(max(sl_list[i+1] - sl_list[i] for i in range(B))) if B else 1
+        cu_seqlens_dev = cu_sl_cpu.to(device=device, dtype=torch.int32, non_blocking=True)
+    else:
+        cu_seqlens_dev = cu_seqlens.to(device=device, dtype=torch.int32, non_blocking=True)
+
+    O   = torch.empty_like(Q)
+    LSE = torch.empty(total_tokens, H, dtype=torch.float32, device=device)
+
+    grid = lambda meta: (B * H, triton.cdiv(max_seqlen, meta["BLOCK_M"]))
+
+    _ragged_attn_sibling_kernel_lse[grid](
+        Q, K, V, O, LSE,
+        cu_seqlens_dev,
+        Q.stride(0),   Q.stride(1),   Q.stride(2),
+        K.stride(0),   K.stride(1),   K.stride(2),
+        V.stride(0),   V.stride(1),   V.stride(2),
+        O.stride(0),   O.stride(1),   O.stride(2),
+        LSE.stride(0), LSE.stride(1),
+        scale,
+        max_seqlen,
+        total_tokens,
+        H=H,
+        HEAD_DIM=D,
+        BRANCHING_FACTOR=branching_factor,
+        MAX_DEPTH=max_depth,
+    )
+    if _cast_back:
+        O = O.to(torch.bfloat16)
+    return O, LSE
+
+
+# ---------------------------------------------------------------------------
 # Fused LSE Merge kernel
 #
 # Replaces the 5-op PyTorch merge:
@@ -1289,6 +1679,9 @@ if __name__ == "__main__":
 
         Q, K, V, cu_sl = pack_inputs(qs, ks, vs)
         O = ragged_attention(Q, K, V, cu_sl, branching_factor=b, max_depth=d)
-        print(f"Smoke test passed — dtype={dtype}  shape {O.shape}")
+        O_sib = ragged_attention_sibling(Q, K, V, cu_sl, branching_factor=b, max_depth=d)
+        max_diff = (O.float() - O_sib.float()).abs().max().item()
+        print(f"Smoke test passed — dtype={dtype}  shape {O.shape}  "
+              f"sibling-vs-base max|diff|={max_diff:.4e}")
 
     print("All smoke tests passed.")

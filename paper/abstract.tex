@@ -50,10 +50,9 @@
   \textbf{Draft Collapse: Tree-Sparse Attention for Scalable Speculative Decoding}%
 }
 
-\author{
-  Saif Mahmoud \orcidlink{0009-0004-8879-9335} \\
-  College of Engineering, Al Ain University \\
-  \textit{contact@saifmb.com}
+\author{%
+  Anonymous Author(s) \\
+  Affiliation withheld for double-blind review
 }
 
 \date{}
@@ -65,53 +64,56 @@
 % ABSTRACT
 % =====================================================================
 \begin{abstract}
-Tree-structured speculative decoding---employed by
+Tree-structured speculative decoding---used by
 EAGLE-2/3~\cite{li2024eagle2,li2025eagle3},
 Medusa~\cite{cai2024medusa}, and Sequoia~\cite{chen2024sequoia}---verifies
-hundreds to thousands of draft tokens per step.
-During verification, each token attends only to its
-$\depth{+}1$ ancestors in the tree, yet production attention kernels
-(FlashAttention-2~\cite{dao2023flashattention2},
+hundreds to thousands of draft tokens per target step.
+During verification each draft token attends only to its
+$\depth{+}1$ ancestors along the path from the tree root, yet production
+attention kernels (FlashAttention-2~\cite{dao2023flashattention2},
 FlashInfer~\cite{ye2025flashinfer}, DeFT~\cite{yao2024deft})
-perform $\bigO{\numtokens^2}$ work, oblivious to this sparsity.
+tile over all $\numtokens$ KV positions and burn $\bigO{\numtokens^2}$
+work masking the rest to $-\infty$.
 
-We present \textbf{\method{}}, a Triton kernel that reduces per-head complexity from
-$\bigO{\numtokens^2}$ to $\bigO{\numtokens \cdot \depth}$.
-We evaluate \method{} across three complementary benchmarks on an NVIDIA H100 SXM:
-(i)~a \emph{kernel comparison} against FlashAttention-2, FlashInfer, and DeFT
-at complete $\branching$-ary trees ($\branching \in \{2,3,4\}$, $\depth \leq 8$),
-where \method{} achieves up to
-\textbf{49$\boldsymbol\times$} over FlashAttention-2,
-\textbf{309$\boldsymbol\times$} over FlashInfer, and
-\textbf{114$\boldsymbol\times$} over DeFT; and
-(ii)~a \emph{micro-benchmark} at EAGLE-3-class configurations
-($\branching \in \{8\text{--}20\}$, $\depth \leq 32$, $\batchsize \leq 128$,
-$\headdim=128$, $\nheads=32$) with a \emph{simulated prefix KV cache}
-($\prefixlen \in \{0, 1024, 4096\}$), and (iii)~a \emph{end-to-end} evaluation on Llama-3.1-8B-Instruct.
+We present \textbf{\method{}}, a Triton ragged-attention kernel that reduces
+per-head verification cost from $\bigO{\numtokens^2}$ to
+$\bigO{\numtokens \cdot \depth}$ — \emph{linear} in tree size.
+The kernel inverts the FlashAttention-2 inner loop: rather than streaming
+KV blocks and masking, it walks each query's ancestor chain in BFS order
+($\parent(k){=}\lfloor(k{-}1)/\branching\rfloor$), issuing $\depth{+}1$
+scattered K/V loads per query row that feed a single-element online-softmax
+update. We provide three variants — a closed-form b-ary kernel, an
+explicit-parent kernel for EAGLE-3's dynamic/pruned trees, and a paged-KV
+kernel compatible with PagedAttention~\cite{kwon2023efficient} serving — all
+with an LSE-returning entry point for prefix-cache merging. Outputs match a
+dense FA-2 reference to fp16/bf16 tolerance across the full test matrix.
 
-Our main findings:
-\textbf{(1)}~With no prefix ($\prefixlen=0$),
-\method{} wins 92\% of 350 configurations (median 3.1$\times$, peak 8.9$\times$);
-\textbf{(2)}~With a realistic prefix ($\prefixlen=1024$),
-\method{} wins \emph{100\% of configurations}, including at EAGLE-3's
-default operating point ($\branching=10$, $\depth=7$): 1.76--2.82$\times$
-across batch sizes;
-\textbf{(3)}~At $\prefixlen=4096$, the advantage grows further
-(median 4.3$\times$, worst-case 1.83$\times$), and EAGLE OOMs
-at 102 of 350 configurations while \method{} completes normally;
-\textbf{(4)}~End-to-end integration via module-level attention patching
-in EAGLE-3 yields \textbf{1.10$\boldsymbol\times$} wall-clock speedup
-at $\depth=32$ ($\numtokens=274$, $\batchsize=1$)---the first
-configuration where ragged tree attention breaks even and wins
-in a full generation pipeline.
-
-Crucially, our E2E depth sweep reveals a \textbf{Model Wall}:
-mean accepted tokens per step plateau at ${\sim}5$--$8$ regardless of
-tree depth, while per-token acceptance rate drops from 5.7\% ($\depth{=}16$)
-to 1.7\% ($\depth{=}32$).
-Once the systems bottleneck (attention cost) is removed, the binding
-constraint becomes draft-model accuracy---not verification speed.
-%All code, data, and reproduction scripts are open-sourced.
+Across kernel and end-to-end benchmarks on RTX 4000 Ada:
+\textbf{(1)}~At $\prefixlen{=}0$, $\batchsize{=}1$, $\branching{=}32$,
+$\depth{=}32$ (tree size ${\approx}880$), \method{} is
+\textbf{12$\boldsymbol\times$} faster than FlashInfer, with the gap
+widening monotonically in tree size, depth, and prefix length — the
+signature of linear-vs-quadratic scaling against
+DeFT and FlashInfer.
+\textbf{(2)}~Speed alone does not unlock arbitrarily deep drafts: across
+our sweeps mean accepted tokens per step plateau at ${\sim}6.6$ at large
+depth, echoing the hidden-state drift ceiling reported by EAGLE-3,
+Medusa, and Qwen-class draft analyses --- once attention is no longer
+the bottleneck, draft-model fidelity is.
+\textbf{(3)}~In FP16 end-to-end on Llama-3.1-8B-Instruct, attention is
+only ${\sim}5\%$ of the verification step at the tree sizes EAGLE-3 was
+tuned for, precisely because that policy was forced to keep trees small
+to dodge FlashInfer's quadratic blow-up; Amdahl's law then caps E2E gains.
+\textbf{(4)}~Under W4A16 weight quantization, attention's share of
+verification rises and the asymmetry surfaces: \method{} delivers up to
+\textbf{1.5$\boldsymbol\times$} E2E with Sequoia at $\numtokens{=}1024$
+and up to \textbf{1.8$\boldsymbol\times$} E2E with EAGLE-3 at
+$\prefixlen{=}4096$, $\branching{=}32$, $\depth{=}32$ — regimes that
+were previously off-limits.
+\textbf{(5)}~By making large trees cheap, \method{} reopens a design
+space the field had closed for systems reasons: tree-construction
+policies (e.g., Sequoia's scaling acceptance curves) can now be revisited
+on their statistical merits rather than against a quadratic verifier.
 \end{abstract}
 
 \newpage

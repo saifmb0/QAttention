@@ -40,7 +40,7 @@ import torch
 import torch.nn.functional as F
 
 from src.tree_mask import tree_attention_mask, num_tree_nodes
-from src.ragged_attn import pack_inputs, ragged_attention
+from src.ragged_attn import pack_inputs, ragged_attention, ragged_attention_sibling
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +348,55 @@ def test_linear_chain():
         verbose=True,
     )
     assert stats.passed, f"Linear chain (b=1, d=8) failed  peak_abs={stats.peak_abs_err:.6f}"
+
+
+# ---------------------------------------------------------------------------
+# Sibling-coalesced kernel parity check
+# ---------------------------------------------------------------------------
+
+_SIBLING_PARITY_CONFIGS = [
+    (1, 2, 3),
+    (4, 2, 5),
+    (4, 3, 5),
+    (8, 2, 5),
+    (8, 3, 5),
+    (4, 4, 4),
+    (2, 8, 3),
+]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("batch_size,branching_factor,depth", _SIBLING_PARITY_CONFIGS)
+def test_sibling_parity_with_base(batch_size: int, branching_factor: int, depth: int):
+    """ragged_attention_sibling must match ragged_attention numerically.
+
+    Both kernels implement the same FA-2 online softmax over the d+1 ancestor
+    chain — the sibling variant only re-orders load issue.  Any divergence
+    indicates a bug in the new kernel's softmax accumulation, not an
+    algorithmic difference.  Tolerance is fp16-safe (atol/rtol = 1e-2),
+    matching the existing ragged-vs-SDPA test budget.
+    """
+    device = torch.device("cuda")
+    torch.manual_seed(batch_size * 100 + branching_factor * 10 + depth)
+
+    N = num_tree_nodes(branching_factor, depth)
+    H, D = 4, 64
+    qs = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(batch_size)]
+    ks = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(batch_size)]
+    vs = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(batch_size)]
+    Q, K, V, cu_sl = pack_inputs(qs, ks, vs)
+    Q, K, V = Q.to(device), K.to(device), V.to(device)
+
+    O_base = ragged_attention(Q, K, V, cu_sl,
+                              branching_factor=branching_factor, max_depth=depth)
+    O_sib  = ragged_attention_sibling(Q, K, V, cu_sl,
+                                      branching_factor=branching_factor, max_depth=depth)
+
+    assert torch.allclose(O_base.float(), O_sib.float(), atol=1e-2, rtol=1e-2), (
+        f"Sibling kernel diverges from base kernel: "
+        f"B={batch_size} b={branching_factor} d={depth}  "
+        f"peak_abs={(O_base.float() - O_sib.float()).abs().max().item():.6e}"
+    )
 
 
 # ---------------------------------------------------------------------------

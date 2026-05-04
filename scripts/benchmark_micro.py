@@ -67,7 +67,13 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.ragged_attn import ragged_attention, ragged_attention_with_lse, fused_lse_merge, ragged_attention_with_parents
+from src.ragged_attn import (
+    ragged_attention,
+    ragged_attention_with_lse,
+    ragged_attention_sibling,
+    fused_lse_merge,
+    ragged_attention_with_parents,
+)
 from src.tree_mask import (
     num_tree_nodes,
     tree_attention_mask_n,
@@ -190,7 +196,9 @@ class MicroRow:
     head_dim:         int
     eagle_tree_ms:    float     # Eagle baseline via FlashInfer (SGLang path) + tree bool mask
     ragged_ms:        float     # our ragged kernel (+ flash prefix + LSE merge when L>0)
+    ragged_sibling_ms: float    # ours — sibling-coalesced single-pass variant; L=0 only (no merge wired)
     speedup:          float     # eagle_tree_ms / ragged_ms  (>1 → ragged wins)
+    speedup_sibling_vs_base: float  # ragged_ms / ragged_sibling_ms  (>1 → sibling wins)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -234,14 +242,14 @@ def benchmark_one(
         # Adjust N to actual tree size
         N = len(parent_array)
         if N == 0:
-            return MicroRow(B, L, b, d, 0, 0, H, D, nan, nan, nan)
+            return MicroRow(B, L, b, d, 0, 0, H, D, nan, nan, nan, nan, nan)
         tot = B * N
         if tot > MAX_BATCH_TOKENS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
         if N * N > MAX_TREE_MASK_ELEMENTS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
         if B * N * (L + N) > MAX_FLATTENED_MASK_ELEMENTS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
         mask_np = tree_attention_mask_pruned(parent_array)   # [N, N] bool
         
         depths = [0] * len(parent_array)
@@ -255,11 +263,11 @@ def benchmark_one(
     else:
         tot = B * N
         if tot > MAX_BATCH_TOKENS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
         if N * N > MAX_TREE_MASK_ELEMENTS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
         if B * N * (L + N) > MAX_FLATTENED_MASK_ELEMENTS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan)
+            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
             
         mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
         
@@ -309,9 +317,10 @@ def benchmark_one(
         attn_mask4d = tree_bias.unsqueeze(0).unsqueeze(0).expand(B, 1, -1, -1).contiguous()
     del tree_mask_t, tree_bias
 
-    t_eagle       = nan
-    t_ragged      = nan
-    eagle_oom     = False
+    t_eagle        = nan
+    t_ragged       = nan
+    t_sibling      = nan
+    eagle_oom      = False
     _eagle_graphed = None  # set by eagle block; checked by ragged block for symmetry
 
     # ── Eagle baseline via FlashInfer (SGLang production path) ────────────
@@ -445,9 +454,34 @@ def benchmark_one(
     finally:
         torch.cuda.empty_cache()
 
+    # ── Sibling-coalesced kernel ─────────────────────────────────────────────
+    # Numerically equivalent to ragged_attention; structurally distinct
+    # (single-pass gather + softmax).  Timed only at L=0 because the LSE-merge
+    # path with prefix isn't wired to the sibling variant in this script —
+    # the comparison of interest is sibling vs base ragged for tree-only work.
+    if L == 0 and not use_pruned_trees:
+        try:
+            def sibling_fn():
+                return ragged_attention_sibling(
+                    Q_r, K_r, V_r, cu, b, actual_d, max_seqlen=N
+                )
+            sibling_g_fn, _ = _wrap_cuda_graph(sibling_fn)
+            t_sibling = _cuda_median_ms(sibling_g_fn, warmup, iters)
+        except (RuntimeError, torch.OutOfMemoryError) as exc:
+            if "out of memory" not in str(exc).lower():
+                print(f"    [SKIP] Sibling kernel failed: {exc}")
+            else:
+                print(f"    [OOM] Sibling kernel OOMed for B={B} b={b} d={d} L={L} N={N}")
+        finally:
+            torch.cuda.empty_cache()
+
     speedup = nan
     if not (math.isnan(t_eagle) or math.isnan(t_ragged) or t_ragged <= 0):
         speedup = t_eagle / t_ragged
+
+    speedup_sib_vs_base = nan
+    if not (math.isnan(t_ragged) or math.isnan(t_sibling) or t_sibling <= 0):
+        speedup_sib_vs_base = t_ragged / t_sibling
 
     # Cleanup
     del Q_r, K_r, V_r, cu, Q_s, K_s, V_s, attn_mask4d
@@ -456,9 +490,12 @@ def benchmark_one(
     torch.cuda.empty_cache()
 
     return MicroRow(B, L, b, d, actual_d, N, H, D,
-                    round(t_eagle,  4) if not math.isnan(t_eagle)  else nan,
-                    round(t_ragged, 4) if not math.isnan(t_ragged) else nan,
-                    round(speedup,  4) if not math.isnan(speedup)  else nan)
+                    round(t_eagle,    4) if not math.isnan(t_eagle)    else nan,
+                    round(t_ragged,   4) if not math.isnan(t_ragged)   else nan,
+                    round(t_sibling,  4) if not math.isnan(t_sibling)  else nan,
+                    round(speedup,    4) if not math.isnan(speedup)    else nan,
+                    round(speedup_sib_vs_base, 4)
+                        if not math.isnan(speedup_sib_vs_base) else nan)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
