@@ -8,7 +8,6 @@ build/
 
 # Benchmark outputs (machine-generated; reproduce with run_benchmarks.sh)
 logs/
-results/
 
 # Third-party repos cloned by setup.sh
 third_party/

@@ -1,0 +1,2 @@
+context_length,depth,total_token,top_k,label,vanilla_tok_s,vanilla_acc,vanilla_verify
+0,6,31,6,b=6 d=6 tt=31,72.6,6.24,0.6313
