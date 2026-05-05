@@ -33,8 +33,8 @@
 }
 
 % ── Macros ──────────────────────────────────────────────────────────
-\newcommand{\method}{TreeFlash}
-\newcommand{\methodshort}{TreeFlash}
+\newcommand{\method}{QAttention}
+\newcommand{\methodshort}{QAttention}
 \newcommand{\bigO}[1]{\mathcal{O}(#1)}
 \newcommand{\numtokens}{N}
 \newcommand{\depth}{d}
@@ -47,7 +47,7 @@
 \DeclareMathOperator{\parent}{parent}
 
 \title{%
-  \textbf{Draft Collapse: Tree-Sparse Attention for Scalable Speculative Decoding}%
+  \textbf{QAttention: Linear Tree-Sparse Attention for Scalable Speculative Decoding}%
 }
 
 \author{%
@@ -75,7 +75,7 @@ FlashInfer~\cite{ye2025flashinfer}, DeFT~\cite{yao2024deft})
 tile over all $\numtokens$ KV positions and burn $\bigO{\numtokens^2}$
 work masking the rest to $-\infty$.
 
-We present \textbf{\method{}}, a Triton ragged-attention kernel that reduces
+We present \textbf{\method{}}, a Triton sparse attention kernel that reduces
 per-head verification cost from $\bigO{\numtokens^2}$ to
 $\bigO{\numtokens \cdot \depth}$ — \emph{linear} in tree size.
 The kernel inverts the FlashAttention-2 inner loop: rather than streaming
