@@ -89,12 +89,12 @@ with an LSE-returning entry point for prefix-cache merging. Outputs match a
 dense FA-2 reference to fp16/bf16 tolerance across the full test matrix.
 
 Across kernel and end-to-end benchmarks on RTX 4000 Ada:
-\textbf{(1)}~At $\prefixlen{=}0$, $\batchsize{=}1$, $\branching{=}32$,
-$\depth{=}32$ (tree size ${\approx}880$), \method{} is
-\textbf{12$\boldsymbol\times$} faster than FlashInfer, with the gap
+\textbf{(1)}~Across 192 micro-benchmark configurations (\method{} wins 186/192,
+97\%), the median kernel speedup over FlashInfer is \textbf{2.0$\boldsymbol\times$}
+and the peak is \textbf{6.2$\boldsymbol\times$} ($\batchsize{=}16$,
+$\branching{=}6$, $\depth{=}4$, $\prefixlen{=}4096$), with the gap
 widening monotonically in tree size, depth, and prefix length — the
-signature of linear-vs-quadratic scaling against
-DeFT and FlashInfer.
+signature of linear-vs-quadratic scaling against DeFT and FlashInfer.
 \textbf{(2)}~Speed alone does not unlock arbitrarily deep drafts: across
 our sweeps mean accepted tokens per step plateau at ${\sim}6.6$ at large
 depth, echoing the hidden-state drift ceiling reported by EAGLE-3,
@@ -104,12 +104,11 @@ the bottleneck, draft-model fidelity is.
 only ${\sim}5\%$ of the verification step at the tree sizes EAGLE-3 was
 tuned for, precisely because that policy was forced to keep trees small
 to dodge FlashInfer's quadratic blow-up; Amdahl's law then caps E2E gains.
-\textbf{(4)}~Under W4A16 weight quantization, attention's share of
-verification rises and the asymmetry surfaces: \method{} delivers up to
-\textbf{1.5$\boldsymbol\times$} E2E with Sequoia at $\numtokens{=}1024$
-and up to \textbf{1.8$\boldsymbol\times$} E2E with EAGLE-3 at
-$\prefixlen{=}4096$, $\branching{=}32$, $\depth{=}32$ — regimes that
-were previously off-limits.
+\textbf{(4)}~Even in FP16, \method{} delivers up to
+\textbf{1.58$\boldsymbol\times$} E2E with EAGLE-3 at
+$\prefixlen{=}4096$, $\branching{=}24$, $\depth{=}24$ (averaged over 3
+runs: 1.580/1.581/1.582$\times$) — a regime previously avoided because
+of FlashInfer's quadratic cost.
 \textbf{(5)}~By making large trees cheap, \method{} reopens a design
 space the field had closed for systems reasons: tree-construction
 policies (e.g., Sequoia's scaling acceptance curves) can now be revisited
