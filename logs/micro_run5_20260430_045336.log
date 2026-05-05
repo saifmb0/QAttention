@@ -1,0 +1,1595 @@
+/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+We recommend installing via `pip install torch-c-dlpack-ext`
+  warnings.warn(
+========================================================================
+  sd-ragged  ·  Micro Benchmark  ·  FlashInfer / DeFT / Cascade vs Ragged
+========================================================================
+  GPU:      NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB  peak BW 288 GB/s
+  Dims:     H=32, D=128  (fp16)
+  Grid:     N_branches(BS)∈[1, 2, 4, 8]  b∈[6, 10, 16, 24, 32, 36]  d∈[6, 10, 16, 24, 32, 36]  N_cap=none
+  context_len:  L∈[0, 1024, 4096, 8192, 16384]  (shared prefix; cascade enabled when L>0)
+  N range:  b=6,d=6→31/d=36→185  b=10,d=6→51/d=36→309  b=16,d=6→82/d=36→494  b=24,d=6→123/d=36→741  b=32,d=6→165/d=36→987  b=36,d=6→185/d=36→1111
+  Timing:   10 warmup + 50 iters (median)
+  Trees:    EAGLE-like pruned (irregular branching)
+  N mode:   budgeted
+  Baselines: FlashInfer-tree  FlashInfer-cascade  DeFT [SKIP — third_party/FastTree not found]
+========================================================================
+  [  1/720]  B=  1 b=6 d= 6 d_eff= 3 L=   0 N= 31  fi_tree=   0.010ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.010ms  spd_tree=  1.00×  bw=248.000GB/s  bw_util=86.111%
+  [  2/720]  B=  1 b=6 d=10 d_eff= 3 L=   0 N= 51  fi_tree=   0.010ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.010ms  spd_tree=  1.00×  bw=416.000GB/s  bw_util=144.444%
+  [  3/720]  B=  1 b=6 d=16 d_eff= 3 L=   0 N= 82  fi_tree=   0.016ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.010ms  spd_tree=  1.60×  bw=656.000GB/s  bw_util=227.778%
+  [  4/720]  B=  1 b=6 d=24 d_eff= 4 L=   0 N=123  fi_tree=   0.021ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.010ms  spd_tree=  2.10×  bw=1190.400GB/s  bw_util=413.333%
+  [  5/720]  B=  1 b=6 d=32 d_eff= 4 L=   0 N=165  fi_tree=   0.031ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.012ms  spd_tree=  2.51×  bw=1332.142GB/s  bw_util=462.549%
+  [  6/720]  B=  1 b=6 d=36 d_eff= 4 L=   0 N=185  fi_tree=   0.032ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.012ms  spd_tree=  2.57×  bw=1488.000GB/s  bw_util=516.667%
+  [  7/720]  B=  1 b=10 d= 6 d_eff= 2 L=   0 N= 51  fi_tree=   0.009ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.008ms  spd_tree=  1.14×  bw=462.452GB/s  bw_util=160.573%
+  [  8/720]  B=  1 b=10 d=10 d_eff= 3 L=   0 N= 86  fi_tree=   0.016ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.010ms  spd_tree=  1.54×  bw=696.000GB/s  bw_util=241.667%
+  [  9/720]  B=  1 b=10 d=16 d_eff= 3 L=   0 N=137  fi_tree=   0.027ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.010ms  spd_tree=  2.60×  bw=1096.000GB/s  bw_util=380.556%
+  [ 10/720]  B=  1 b=10 d=24 d_eff= 3 L=   0 N=206  fi_tree=   0.035ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.014ms  spd_tree=  2.42×  bw=1177.143GB/s  bw_util=408.730%
+  [ 11/720]  B=  1 b=10 d=32 d_eff= 3 L=   0 N=274  fi_tree=   0.044ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.018ms  spd_tree=  2.39×  bw=1217.778GB/s  bw_util=422.839%
+  [ 12/720]  B=  1 b=10 d=36 d_eff= 4 L=   0 N=309  fi_tree=   0.051ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.018ms  spd_tree=  2.78×  bw=1653.333GB/s  bw_util=574.074%
+  [ 13/720]  B=  1 b=16 d= 6 d_eff= 2 L=   0 N= 82  fi_tree=   0.016ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.008ms  spd_tree=  1.97×  bw=648.402GB/s  bw_util=225.139%
+  [ 14/720]  B=  1 b=16 d=10 d_eff= 2 L=   0 N=137  fi_tree=   0.028ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.010ms  spd_tree=  2.70×  bw=921.600GB/s  bw_util=320.000%
+  [ 15/720]  B=  1 b=16 d=16 d_eff= 3 L=   0 N=219  fi_tree=   0.039ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.017ms  spd_tree=  2.24×  bw=1077.895GB/s  bw_util=374.269%
+  [ 16/720]  B=  1 b=16 d=24 d_eff= 3 L=   0 N=329  fi_tree=   0.054ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.018ms  spd_tree=  3.07×  bw=1581.449GB/s  bw_util=549.114%
+  [ 17/720]  B=  1 b=16 d=32 d_eff= 3 L=   0 N=439  fi_tree=   0.139ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.022ms  spd_tree=  6.23×  bw=1646.762GB/s  bw_util=571.792%
+  [ 18/720]  B=  1 b=16 d=36 d_eff= 3 L=   0 N=494  fi_tree=   0.144ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.022ms  spd_tree=  6.41×  bw=1807.273GB/s  bw_util=627.525%
+  [ 19/720]  B=  1 b=24 d= 6 d_eff= 2 L=   0 N=123  fi_tree=   0.026ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.009ms  spd_tree=  2.88×  bw=952.889GB/s  bw_util=330.864%
+  [ 20/720]  B=  1 b=24 d=10 d_eff= 2 L=   0 N=206  fi_tree=   0.035ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.013ms  spd_tree=  2.62×  bw=1048.615GB/s  bw_util=364.103%
+  [ 21/720]  B=  1 b=24 d=16 d_eff= 3 L=   0 N=329  fi_tree=   0.053ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.016ms  spd_tree=  3.26×  bw=1701.647GB/s  bw_util=590.850%
+  [ 22/720]  B=  1 b=24 d=24 d_eff= 3 L=   0 N=494  fi_tree=   0.144ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.022ms  spd_tree=  6.48×  bw=1844.380GB/s  bw_util=640.410%
+  [ 23/720]  B=  1 b=24 d=32 d_eff= 3 L=   0 N=658  fi_tree=   0.201ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.028ms  spd_tree=  7.21×  bw=1958.599GB/s  bw_util=680.069%
+  [ 24/720]  B=  1 b=24 d=36 d_eff= 3 L=   0 N=741  fi_tree=   0.250ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.030ms  spd_tree=  8.36×  bw=2067.217GB/s  bw_util=717.784%
+  [ 25/720]  B=  1 b=32 d= 6 d_eff= 2 L=   0 N=165  fi_tree=   0.031ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.010ms  spd_tree=  3.05×  bw=1150.781GB/s  bw_util=399.577%
+  [ 26/720]  B=  1 b=32 d=10 d_eff= 2 L=   0 N=274  fi_tree=   0.044ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.014ms  spd_tree=  3.09×  bw=1274.822GB/s  bw_util=442.647%
+  [ 27/720]  B=  1 b=32 d=16 d_eff= 2 L=   0 N=439  fi_tree=   0.132ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.019ms  spd_tree=  6.78×  bw=1478.737GB/s  bw_util=513.450%
+  [ 28/720]  B=  1 b=32 d=24 d_eff= 3 L=   0 N=658  fi_tree=   0.192ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.028ms  spd_tree=  6.93×  bw=1976.296GB/s  bw_util=686.214%
+  [ 29/720]  B=  1 b=32 d=32 d_eff= 3 L=   0 N=878  fi_tree=   0.453ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.034ms  spd_tree= 13.39×  bw=2128.485GB/s  bw_util=739.057%
+  [ 30/720]  B=  1 b=32 d=36 d_eff= 3 L=   0 N=987  fi_tree=   0.516ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.039ms  spd_tree= 13.27×  bw=2105.263GB/s  bw_util=730.994%
+  [ 31/720]  B=  1 b=36 d= 6 d_eff= 2 L=   0 N=185  fi_tree=   0.036ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.014ms  spd_tree=  2.54×  bw=956.355GB/s  bw_util=332.068%
+  [ 32/720]  B=  1 b=36 d=10 d_eff= 2 L=   0 N=309  fi_tree=   0.053ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.016ms  spd_tree=  3.28×  bw=1345.136GB/s  bw_util=467.061%
+  [ 33/720]  B=  1 b=36 d=16 d_eff= 2 L=   0 N=494  fi_tree=   0.150ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.021ms  spd_tree=  7.00×  bw=1536.000GB/s  bw_util=533.333%
+  [ 34/720]  B=  1 b=36 d=24 d_eff= 3 L=   0 N=741  fi_tree=   0.259ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.029ms  spd_tree=  9.03×  bw=2171.428GB/s  bw_util=753.968%
+  [ 35/720]  B=  1 b=36 d=32 d_eff= 3 L=   0 N=987  fi_tree=   0.515ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.037ms  spd_tree= 13.95×  bw=2235.149GB/s  bw_util=776.093%
+  [ 36/720]  B=  1 b=36 d=36 d_eff= 3 L=   0 N=1111  fi_tree=   0.646ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.040ms  spd_tree= 16.17×  bw=2314.043GB/s  bw_util=803.487%
+  [ 37/720]  B=  2 b=6 d= 6 d_eff= 3 L=   0 N= 31  fi_tree=   0.009ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.008ms  spd_tree=  1.12×  bw=620.000GB/s  bw_util=215.278%
+  [ 38/720]  B=  2 b=6 d=10 d_eff= 3 L=   0 N= 51  fi_tree=   0.010ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.009ms  spd_tree=  1.11×  bw=924.444GB/s  bw_util=320.988%
+  [ 39/720]  B=  2 b=6 d=16 d_eff= 3 L=   0 N= 82  fi_tree=   0.019ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.011ms  spd_tree=  1.73×  bw=1192.727GB/s  bw_util=414.141%
+  [ 40/720]  B=  2 b=6 d=24 d_eff= 4 L=   0 N=123  fi_tree=   0.025ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.017ms  spd_tree=  1.45×  bw=1400.471GB/s  bw_util=486.274%
+  [ 41/720]  B=  2 b=6 d=32 d_eff= 4 L=   0 N=165  fi_tree=   0.056ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.019ms  spd_tree=  2.91×  bw=1678.411GB/s  bw_util=582.782%
+  [ 42/720]  B=  2 b=6 d=36 d_eff= 4 L=   0 N=185  fi_tree=   0.056ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.021ms  spd_tree=  2.73×  bw=1785.600GB/s  bw_util=620.000%
+  [ 43/720]  B=  2 b=10 d= 6 d_eff= 2 L=   0 N= 51  fi_tree=   0.010ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.009ms  spd_tree=  1.17×  bw=831.072GB/s  bw_util=288.567%
+  [ 44/720]  B=  2 b=10 d=10 d_eff= 3 L=   0 N= 86  fi_tree=   0.020ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.015ms  spd_tree=  1.28×  bw=928.000GB/s  bw_util=322.222%
+  [ 45/720]  B=  2 b=10 d=16 d_eff= 3 L=   0 N=137  fi_tree=   0.047ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.016ms  spd_tree=  2.99×  bw=1422.799GB/s  bw_util=494.027%
+  [ 46/720]  B=  2 b=10 d=24 d_eff= 3 L=   0 N=206  fi_tree=   0.062ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.021ms  spd_tree=  2.90×  bw=1569.524GB/s  bw_util=544.973%
+  [ 47/720]  B=  2 b=10 d=32 d_eff= 3 L=   0 N=274  fi_tree=   0.086ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.033ms  spd_tree=  2.62×  bw=1370.000GB/s  bw_util=475.694%
+  [ 48/720]  B=  2 b=10 d=36 d_eff= 4 L=   0 N=309  fi_tree=   0.094ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.030ms  spd_tree=  3.17×  bw=2052.414GB/s  bw_util=712.644%
+  [ 49/720]  B=  2 b=16 d= 6 d_eff= 2 L=   0 N= 82  fi_tree=   0.020ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.010ms  spd_tree=  1.95×  bw=1069.656GB/s  bw_util=371.408%
+  [ 50/720]  B=  2 b=16 d=10 d_eff= 2 L=   0 N=137  fi_tree=   0.047ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.015ms  spd_tree=  3.15×  bw=1260.308GB/s  bw_util=437.607%
+  [ 51/720]  B=  2 b=16 d=16 d_eff= 3 L=   0 N=219  fi_tree=   0.069ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.026ms  spd_tree=  2.60×  bw=1417.559GB/s  bw_util=492.208%
+  [ 52/720]  B=  2 b=16 d=24 d_eff= 3 L=   0 N=329  fi_tree=   0.105ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.029ms  spd_tree=  3.59×  bw=1901.874GB/s  bw_util=660.373%
+  [ 53/720]  B=  2 b=16 d=32 d_eff= 3 L=   0 N=439  fi_tree=   0.205ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.038ms  spd_tree=  5.41×  bw=1941.621GB/s  bw_util=674.174%
+  [ 54/720]  B=  2 b=16 d=36 d_eff= 3 L=   0 N=494  fi_tree=   0.220ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.041ms  spd_tree=  5.37×  bw=1988.000GB/s  bw_util=690.278%
+  [ 55/720]  B=  2 b=24 d= 6 d_eff= 2 L=   0 N=123  fi_tree=   0.045ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.014ms  spd_tree=  3.14×  bw=1225.143GB/s  bw_util=425.397%
+  [ 56/720]  B=  2 b=24 d=10 d_eff= 2 L=   0 N=206  fi_tree=   0.063ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.020ms  spd_tree=  3.17×  bw=1412.871GB/s  bw_util=490.580%
+  [ 57/720]  B=  2 b=24 d=16 d_eff= 3 L=   0 N=329  fi_tree=   0.105ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.028ms  spd_tree=  3.80×  bw=2008.889GB/s  bw_util=697.531%
+  [ 58/720]  B=  2 b=24 d=24 d_eff= 3 L=   0 N=494  fi_tree=   0.222ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.040ms  spd_tree=  5.56×  bw=2051.282GB/s  bw_util=712.251%
+  [ 59/720]  B=  2 b=24 d=32 d_eff= 3 L=   0 N=658  fi_tree=   0.406ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.085ms  spd_tree=  4.78×  bw=1283.855GB/s  bw_util=445.783%
+  [ 60/720]  B=  2 b=24 d=36 d_eff= 3 L=   0 N=741  fi_tree=   0.526ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.152ms  spd_tree=  3.47×  bw=814.054GB/s  bw_util=282.658%
+  [ 61/720]  B=  2 b=32 d= 6 d_eff= 2 L=   0 N=165  fi_tree=   0.056ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.016ms  spd_tree=  3.45×  bw=1424.346GB/s  bw_util=494.565%
+  [ 62/720]  B=  2 b=32 d=10 d_eff= 2 L=   0 N=274  fi_tree=   0.086ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.022ms  spd_tree=  3.87×  bw=1632.506GB/s  bw_util=566.842%
+  [ 63/720]  B=  2 b=32 d=16 d_eff= 2 L=   0 N=439  fi_tree=   0.195ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.033ms  spd_tree=  5.95×  bw=1760.298GB/s  bw_util=611.215%
+  [ 64/720]  B=  2 b=32 d=24 d_eff= 3 L=   0 N=658  fi_tree=   0.406ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.089ms  spd_tree=  4.57×  bw=1228.653GB/s  bw_util=426.615%
+  [ 65/720]  B=  2 b=32 d=32 d_eff= 3 L=   0 N=878  fi_tree=   0.777ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.181ms  spd_tree=  4.30×  bw=795.217GB/s  bw_util=276.117%
+  [ 66/720]  B=  2 b=32 d=36 d_eff= 3 L=   0 N=987  fi_tree=   1.050ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.205ms  spd_tree=  5.11×  bw=797.197GB/s  bw_util=276.805%
+  [ 67/720]  B=  2 b=36 d= 6 d_eff= 2 L=   0 N=185  fi_tree=   0.062ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.019ms  spd_tree=  3.21×  bw=1381.053GB/s  bw_util=479.532%
+  [ 68/720]  B=  2 b=36 d=10 d_eff= 2 L=   0 N=309  fi_tree=   0.103ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.027ms  spd_tree=  3.88×  bw=1639.385GB/s  bw_util=569.231%
+  [ 69/720]  B=  2 b=36 d=16 d_eff= 2 L=   0 N=494  fi_tree=   0.221ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.037ms  spd_tree=  5.97×  bw=1786.572GB/s  bw_util=620.337%
+  [ 70/720]  B=  2 b=36 d=24 d_eff= 3 L=   0 N=741  fi_tree=   0.527ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.155ms  spd_tree=  3.41×  bw=805.298GB/s  bw_util=279.617%
+  [ 71/720]  B=  2 b=36 d=32 d_eff= 3 L=   0 N=987  fi_tree=   1.048ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.207ms  spd_tree=  5.07×  bw=798.416GB/s  bw_util=277.228%
+  [ 72/720]  B=  2 b=36 d=36 d_eff= 3 L=   0 N=1111  fi_tree=   1.296ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.238ms  spd_tree=  5.46×  bw=778.621GB/s  bw_util=270.354%
+  [ 73/720]  B=  4 b=6 d= 6 d_eff= 3 L=   0 N= 31  fi_tree=   0.013ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.009ms  spd_tree=  1.44×  bw=1102.222GB/s  bw_util=382.716%
+  [ 74/720]  B=  4 b=6 d=10 d_eff= 3 L=   0 N= 51  fi_tree=   0.015ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.015ms  spd_tree=  1.00×  bw=1110.490GB/s  bw_util=385.587%
+  [ 75/720]  B=  4 b=6 d=16 d_eff= 3 L=   0 N= 82  fi_tree=   0.032ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.018ms  spd_tree=  1.73×  bw=1457.778GB/s  bw_util=506.173%
+  [ 76/720]  B=  4 b=6 d=24 d_eff= 4 L=   0 N=123  fi_tree=   0.043ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.025ms  spd_tree=  1.69×  bw=1920.242GB/s  bw_util=666.751%
+  [ 77/720]  B=  4 b=6 d=32 d_eff= 4 L=   0 N=165  fi_tree=   0.084ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.034ms  spd_tree=  2.48×  bw=1920.000GB/s  bw_util=666.667%
+  [ 78/720]  B=  4 b=6 d=36 d_eff= 4 L=   0 N=185  fi_tree=   0.088ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.036ms  spd_tree=  2.46×  bw=2040.686GB/s  bw_util=708.571%
+  [ 79/720]  B=  4 b=10 d= 6 d_eff= 2 L=   0 N= 51  fi_tree=   0.016ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.014ms  spd_tree=  1.15×  bw=1053.391GB/s  bw_util=365.761%
+  [ 80/720]  B=  4 b=10 d=10 d_eff= 3 L=   0 N= 86  fi_tree=   0.033ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.024ms  spd_tree=  1.34×  bw=1167.602GB/s  bw_util=405.417%
+  [ 81/720]  B=  4 b=10 d=16 d_eff= 3 L=   0 N=137  fi_tree=   0.074ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.027ms  spd_tree=  2.75×  bw=1673.083GB/s  bw_util=580.932%
+  [ 82/720]  B=  4 b=10 d=24 d_eff= 3 L=   0 N=206  fi_tree=   0.099ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.036ms  spd_tree=  2.77×  bw=1883.428GB/s  bw_util=653.968%
+  [ 83/720]  B=  4 b=10 d=32 d_eff= 3 L=   0 N=274  fi_tree=   0.168ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.057ms  spd_tree=  2.93×  bw=1566.589GB/s  bw_util=543.954%
+  [ 84/720]  B=  4 b=10 d=36 d_eff= 4 L=   0 N=309  fi_tree=   0.190ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.053ms  spd_tree=  3.56×  bw=2289.231GB/s  bw_util=794.872%
+  [ 85/720]  B=  4 b=16 d= 6 d_eff= 2 L=   0 N= 82  fi_tree=   0.032ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.015ms  spd_tree=  2.11×  bw=1399.467GB/s  bw_util=485.926%
+  [ 86/720]  B=  4 b=16 d=10 d_eff= 2 L=   0 N=137  fi_tree=   0.075ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.025ms  spd_tree=  2.93×  bw=1480.110GB/s  bw_util=513.927%
+  [ 87/720]  B=  4 b=16 d=16 d_eff= 3 L=   0 N=219  fi_tree=   0.111ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.046ms  spd_tree=  2.40×  bw=1621.333GB/s  bw_util=562.963%
+  [ 88/720]  B=  4 b=16 d=24 d_eff= 3 L=   0 N=329  fi_tree=   0.228ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.110ms  spd_tree=  2.07×  bw=1015.070GB/s  bw_util=352.455%
+  [ 89/720]  B=  4 b=16 d=32 d_eff= 3 L=   0 N=439  fi_tree=   0.428ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.184ms  spd_tree=  2.32×  bw=797.392GB/s  bw_util=276.872%
+  [ 90/720]  B=  4 b=16 d=36 d_eff= 3 L=   0 N=494  fi_tree=   0.472ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.204ms  spd_tree=  2.32×  bw=798.694GB/s  bw_util=277.324%
+  [ 91/720]  B=  4 b=24 d= 6 d_eff= 2 L=   0 N=123  fi_tree=   0.073ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.025ms  spd_tree=  2.99×  bw=1429.333GB/s  bw_util=496.296%
+  [ 92/720]  B=  4 b=24 d=10 d_eff= 2 L=   0 N=206  fi_tree=   0.099ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.033ms  spd_tree=  3.05×  bw=1715.729GB/s  bw_util=595.739%
+  [ 93/720]  B=  4 b=24 d=16 d_eff= 3 L=   0 N=329  fi_tree=   0.226ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.109ms  spd_tree=  2.08×  bw=1022.040GB/s  bw_util=354.875%
+  [ 94/720]  B=  4 b=24 d=24 d_eff= 3 L=   0 N=494  fi_tree=   0.479ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.205ms  spd_tree=  2.34×  bw=800.000GB/s  bw_util=277.778%
+  [ 95/720]  B=  4 b=24 d=32 d_eff= 3 L=   0 N=658  fi_tree=   0.807ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.274ms  spd_tree=  2.94×  bw=795.363GB/s  bw_util=276.168%
+  [ 96/720]  B=  4 b=24 d=36 d_eff= 3 L=   0 N=741  fi_tree=   1.019ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.316ms  spd_tree=  3.22×  bw=779.806GB/s  bw_util=270.766%
+  [ 97/720]  B=  4 b=32 d= 6 d_eff= 2 L=   0 N=165  fi_tree=   0.085ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.028ms  spd_tree=  3.08×  bw=1680.167GB/s  bw_util=583.391%
+  [ 98/720]  B=  4 b=32 d=10 d_eff= 2 L=   0 N=274  fi_tree=   0.168ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.040ms  spd_tree=  4.22×  bw=1824.103GB/s  bw_util=633.369%
+  [ 99/720]  B=  4 b=32 d=16 d_eff= 2 L=   0 N=439  fi_tree=   0.415ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.180ms  spd_tree=  2.30×  bw=638.659GB/s  bw_util=221.757%
+  [100/720]  B=  4 b=32 d=24 d_eff= 3 L=   0 N=658  fi_tree=   0.810ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.274ms  spd_tree=  2.95×  bw=797.208GB/s  bw_util=276.808%
+  [101/720]  B=  4 b=32 d=32 d_eff= 3 L=   0 N=878  fi_tree=   1.491ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.369ms  spd_tree=  4.04×  bw=780.444GB/s  bw_util=270.988%
+  [102/720]  B=  4 b=32 d=36 d_eff= 3 L=   0 N=987  fi_tree=   1.915ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.419ms  spd_tree=  4.57×  bw=781.441GB/s  bw_util=271.334%
+  [103/720]  B=  4 b=36 d= 6 d_eff= 2 L=   0 N=185  fi_tree=   0.098ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.032ms  spd_tree=  3.10×  bw=1692.903GB/s  bw_util=587.814%
+  [104/720]  B=  4 b=36 d=10 d_eff= 2 L=   0 N=309  fi_tree=   0.218ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.091ms  spd_tree=  2.39×  bw=959.190GB/s  bw_util=333.052%
+  [105/720]  B=  4 b=36 d=16 d_eff= 2 L=   0 N=494  fi_tree=   0.480ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.207ms  spd_tree=  2.32×  bw=639.029GB/s  bw_util=221.885%
+  [106/720]  B=  4 b=36 d=24 d_eff= 3 L=   0 N=741  fi_tree=   1.034ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.312ms  spd_tree=  3.31×  bw=797.377GB/s  bw_util=276.867%
+  [107/720]  B=  4 b=36 d=32 d_eff= 3 L=   0 N=987  fi_tree=   1.946ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.413ms  spd_tree=  4.70×  bw=798.725GB/s  bw_util=277.335%
+  [108/720]  B=  4 b=36 d=36 d_eff= 3 L=   0 N=1111  fi_tree=   2.530ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.471ms  spd_tree=  5.37×  bw=785.231GB/s  bw_util=272.650%
+  [109/720]  B=  8 b=6 d= 6 d_eff= 3 L=   0 N= 31  fi_tree=   0.019ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.015ms  spd_tree=  1.27×  bw=1322.667GB/s  bw_util=459.259%
+  [110/720]  B=  8 b=6 d=10 d_eff= 3 L=   0 N= 51  fi_tree=   0.024ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.022ms  spd_tree=  1.05×  bw=1512.727GB/s  bw_util=525.253%
+  [111/720]  B=  8 b=6 d=16 d_eff= 3 L=   0 N= 82  fi_tree=   0.050ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.032ms  spd_tree=  1.58×  bw=1701.479GB/s  bw_util=590.791%
+  [112/720]  B=  8 b=6 d=24 d_eff= 4 L=   0 N=123  fi_tree=   0.066ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.045ms  spd_tree=  1.47×  bw=2164.364GB/s  bw_util=751.515%
+  [113/720]  B=  8 b=6 d=32 d_eff= 4 L=   0 N=165  fi_tree=   0.173ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.085ms  spd_tree=  2.03×  bw=1525.885GB/s  bw_util=529.821%
+  [114/720]  B=  8 b=6 d=36 d_eff= 4 L=   0 N=185  fi_tree=   0.210ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.142ms  spd_tree=  1.47×  bw=1028.146GB/s  bw_util=356.995%
+  [115/720]  B=  8 b=10 d= 6 d_eff= 2 L=   0 N= 51  fi_tree=   0.025ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.021ms  spd_tree=  1.20×  bw=1433.600GB/s  bw_util=497.778%
+  [116/720]  B=  8 b=10 d=10 d_eff= 3 L=   0 N= 86  fi_tree=   0.050ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.043ms  spd_tree=  1.17×  bw=1325.714GB/s  bw_util=460.317%
+  [117/720]  B=  8 b=10 d=16 d_eff= 3 L=   0 N=137  fi_tree=   0.135ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.046ms  spd_tree=  2.92×  bw=1946.417GB/s  bw_util=675.839%
+  [118/720]  B=  8 b=10 d=24 d_eff= 3 L=   0 N=206  fi_tree=   0.236ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.166ms  spd_tree=  1.43×  bw=813.827GB/s  bw_util=282.579%
+  [119/720]  B=  8 b=10 d=32 d_eff= 3 L=   0 N=274  fi_tree=   0.359ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.238ms  spd_tree=  1.51×  bw=755.862GB/s  bw_util=262.452%
+  [120/720]  B=  8 b=10 d=36 d_eff= 4 L=   0 N=309  fi_tree=   0.413ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.271ms  spd_tree=  1.52×  bw=898.415GB/s  bw_util=311.950%
+  [121/720]  B=  8 b=16 d= 6 d_eff= 2 L=   0 N= 82  fi_tree=   0.049ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.027ms  spd_tree=  1.85×  bw=1614.769GB/s  bw_util=560.684%
+  [122/720]  B=  8 b=16 d=10 d_eff= 2 L=   0 N=137  fi_tree=   0.137ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.042ms  spd_tree=  3.23×  bw=1782.619GB/s  bw_util=618.965%
+  [123/720]  B=  8 b=16 d=16 d_eff= 3 L=   0 N=219  fi_tree=   0.262ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.193ms  spd_tree=  1.36×  bw=772.510GB/s  bw_util=268.233%
+  [124/720]  B=  8 b=16 d=24 d_eff= 3 L=   0 N=329  fi_tree=   0.460ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.283ms  spd_tree=  1.63×  bw=790.725GB/s  bw_util=274.557%
+  [125/720]  B=  8 b=16 d=32 d_eff= 3 L=   0 N=439  fi_tree=   0.773ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.388ms  spd_tree=  1.99×  bw=758.331GB/s  bw_util=263.309%
+  [126/720]  B=  8 b=16 d=36 d_eff= 3 L=   0 N=494  fi_tree=   0.850ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.436ms  spd_tree=  1.95×  bw=746.667GB/s  bw_util=259.259%
+  [127/720]  B=  8 b=24 d= 6 d_eff= 2 L=   0 N=123  fi_tree=   0.131ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.042ms  spd_tree=  3.12×  bw=1673.366GB/s  bw_util=581.030%
+  [128/720]  B=  8 b=24 d=10 d_eff= 2 L=   0 N=206  fi_tree=   0.240ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.175ms  spd_tree=  1.37×  bw=637.754GB/s  bw_util=221.442%
+  [129/720]  B=  8 b=24 d=16 d_eff= 3 L=   0 N=329  fi_tree=   0.459ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.280ms  spd_tree=  1.64×  bw=793.953GB/s  bw_util=275.678%
+  [130/720]  B=  8 b=24 d=24 d_eff= 3 L=   0 N=494  fi_tree=   0.852ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.418ms  spd_tree=  2.04×  bw=784.704GB/s  bw_util=272.467%
+  [131/720]  B=  8 b=24 d=32 d_eff= 3 L=   0 N=658  fi_tree=   1.614ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.560ms  spd_tree=  2.88×  bw=779.410GB/s  bw_util=270.629%
+  [132/720]  B=  8 b=24 d=36 d_eff= 3 L=   0 N=741  fi_tree=   2.006ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.652ms  spd_tree=  3.08×  bw=756.453GB/s  bw_util=262.658%
+  [133/720]  B=  8 b=32 d= 6 d_eff= 2 L=   0 N=165  fi_tree=   0.194ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.129ms  spd_tree=  1.50×  bw=720.221GB/s  bw_util=250.077%
+  [134/720]  B=  8 b=32 d=10 d_eff= 2 L=   0 N=274  fi_tree=   0.361ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.227ms  spd_tree=  1.59×  bw=638.622GB/s  bw_util=221.744%
+  [135/720]  B=  8 b=32 d=16 d_eff= 2 L=   0 N=439  fi_tree=   0.743ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.359ms  spd_tree=  2.07×  bw=640.365GB/s  bw_util=222.349%
+  [136/720]  B=  8 b=32 d=24 d_eff= 3 L=   0 N=658  fi_tree=   1.603ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.565ms  spd_tree=  2.84×  bw=773.837GB/s  bw_util=268.693%
+  [137/720]  B=  8 b=32 d=32 d_eff= 3 L=   0 N=878  fi_tree=   2.868ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.738ms  spd_tree=  3.88×  bw=779.379GB/s  bw_util=270.618%
+  [138/720]  B=  8 b=32 d=36 d_eff= 3 L=   0 N=987  fi_tree=   3.739ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.835ms  spd_tree=  4.48×  bw=785.276GB/s  bw_util=272.665%
+  [139/720]  B=  8 b=36 d= 6 d_eff= 2 L=   0 N=185  fi_tree=   0.231ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.169ms  spd_tree=  1.37×  bw=635.519GB/s  bw_util=220.667%
+  [140/720]  B=  8 b=36 d=10 d_eff= 2 L=   0 N=309  fi_tree=   0.460ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.273ms  spd_tree=  1.68×  bw=638.562GB/s  bw_util=221.723%
+  [141/720]  B=  8 b=36 d=16 d_eff= 2 L=   0 N=494  fi_tree=   0.864ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.414ms  spd_tree=  2.09×  bw=638.733GB/s  bw_util=221.782%
+  [142/720]  B=  8 b=36 d=24 d_eff= 3 L=   0 N=741  fi_tree=   2.022ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.629ms  spd_tree=  3.22×  bw=792.182GB/s  bw_util=275.063%
+  [143/720]  B=  8 b=36 d=32 d_eff= 3 L=   0 N=987  fi_tree=   3.824ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.834ms  spd_tree=  4.59×  bw=792.196GB/s  bw_util=275.068%
+  [144/720]  B=  8 b=36 d=36 d_eff= 3 L=   0 N=1111  fi_tree=   4.913ms  cascade=    n/a ms  deft=    n/a ms  ragged=   0.950ms  spd_tree=  5.17×  bw=778.699GB/s  bw_util=270.382%
+  [145/720]  B=  1 b=6 d= 6 d_eff= 3 L=1024 N= 31  fi_tree=   0.043ms  cascade=   0.030ms  deft=    n/a ms  ragged=   0.036ms  spd_tree=  1.20×  bw= 70.857GB/s  bw_util=24.603%
+  [146/720]  B=  1 b=6 d=10 d_eff= 3 L=1024 N= 51  fi_tree=   0.046ms  cascade=   0.032ms  deft=    n/a ms  ragged=   0.039ms  spd_tree=  1.18×  bw=109.474GB/s  bw_util=38.012%
+  [147/720]  B=  1 b=6 d=16 d_eff= 3 L=1024 N= 82  fi_tree=   0.081ms  cascade=   0.053ms  deft=    n/a ms  ragged=   0.055ms  spd_tree=  1.46×  bw=121.728GB/s  bw_util=42.267%
+  [148/720]  B=  1 b=6 d=24 d_eff= 4 L=1024 N=123  fi_tree=   0.090ms  cascade=   0.060ms  deft=    n/a ms  ragged=   0.060ms  spd_tree=  1.49×  bw=201.763GB/s  bw_util=70.056%
+  [149/720]  B=  1 b=6 d=32 d_eff= 4 L=1024 N=165  fi_tree=   0.179ms  cascade=   0.117ms  deft=    n/a ms  ragged=   0.110ms  spd_tree=  1.63×  bw=148.037GB/s  bw_util=51.402%
+  [150/720]  B=  1 b=6 d=36 d_eff= 4 L=1024 N=185  fi_tree=   0.184ms  cascade=   0.118ms  deft=    n/a ms  ragged=   0.111ms  spd_tree=  1.65×  bw=164.217GB/s  bw_util=57.020%
+  [151/720]  B=  1 b=10 d= 6 d_eff= 2 L=1024 N= 51  fi_tree=   0.046ms  cascade=   0.032ms  deft=    n/a ms  ragged=   0.039ms  spd_tree=  1.19×  bw= 94.666GB/s  bw_util=32.870%
+  [152/720]  B=  1 b=10 d=10 d_eff= 3 L=1024 N= 86  fi_tree=   0.083ms  cascade=   0.053ms  deft=    n/a ms  ragged=   0.057ms  spd_tree=  1.45×  bw=124.599GB/s  bw_util=43.263%
+  [153/720]  B=  1 b=10 d=16 d_eff= 3 L=1024 N=137  fi_tree=   0.176ms  cascade=   0.112ms  deft=    n/a ms  ragged=   0.106ms  spd_tree=  1.65×  bw=105.416GB/s  bw_util=36.603%
+  [154/720]  B=  1 b=10 d=24 d_eff= 3 L=1024 N=206  fi_tree=   0.187ms  cascade=   0.122ms  deft=    n/a ms  ragged=   0.115ms  spd_tree=  1.63×  bw=147.143GB/s  bw_util=51.091%
+  [155/720]  B=  1 b=10 d=32 d_eff= 3 L=1024 N=274  fi_tree=   0.201ms  cascade=   0.136ms  deft=    n/a ms  ragged=   0.129ms  spd_tree=  1.56×  bw=174.423GB/s  bw_util=60.563%
+  [156/720]  B=  1 b=10 d=36 d_eff= 4 L=1024 N=309  fi_tree=   0.206ms  cascade=   0.142ms  deft=    n/a ms  ragged=   0.130ms  spd_tree=  1.59×  bw=234.938GB/s  bw_util=81.576%
+  [157/720]  B=  1 b=16 d= 6 d_eff= 2 L=1024 N= 82  fi_tree=   0.080ms  cascade=   0.052ms  deft=    n/a ms  ragged=   0.053ms  spd_tree=  1.50×  bw=100.923GB/s  bw_util=35.043%
+  [158/720]  B=  1 b=16 d=10 d_eff= 2 L=1024 N=137  fi_tree=   0.171ms  cascade=   0.112ms  deft=    n/a ms  ragged=   0.105ms  spd_tree=  1.62×  bw= 89.476GB/s  bw_util=31.068%
+  [159/720]  B=  1 b=16 d=16 d_eff= 3 L=1024 N=219  fi_tree=   0.188ms  cascade=   0.125ms  deft=    n/a ms  ragged=   0.119ms  spd_tree=  1.58×  bw=157.241GB/s  bw_util=54.598%
+  [160/720]  B=  1 b=16 d=24 d_eff= 3 L=1024 N=329  fi_tree=   0.203ms  cascade=   0.147ms  deft=    n/a ms  ragged=   0.130ms  spd_tree=  1.56×  bw=214.803GB/s  bw_util=74.584%
+  [161/720]  B=  1 b=16 d=32 d_eff= 3 L=1024 N=439  fi_tree=   0.495ms  cascade=   0.276ms  deft=    n/a ms  ragged=   0.205ms  spd_tree=  2.42×  bw=179.628GB/s  bw_util=62.371%
+  [162/720]  B=  1 b=16 d=36 d_eff= 3 L=1024 N=494  fi_tree=   0.502ms  cascade=   0.284ms  deft=    n/a ms  ragged=   0.213ms  spd_tree=  2.36×  bw=191.298GB/s  bw_util=66.423%
+  [163/720]  B=  1 b=24 d= 6 d_eff= 2 L=1024 N=123  fi_tree=   0.178ms  cascade=   0.111ms  deft=    n/a ms  ragged=   0.105ms  spd_tree=  1.69×  bw= 83.503GB/s  bw_util=28.994%
+  [164/720]  B=  1 b=24 d=10 d_eff= 2 L=1024 N=206  fi_tree=   0.182ms  cascade=   0.122ms  deft=    n/a ms  ragged=   0.114ms  spd_tree=  1.60×  bw=122.863GB/s  bw_util=42.661%
+  [165/720]  B=  1 b=24 d=16 d_eff= 3 L=1024 N=329  fi_tree=   0.214ms  cascade=   0.146ms  deft=    n/a ms  ragged=   0.130ms  spd_tree=  1.65×  bw=213.543GB/s  bw_util=74.147%
+  [166/720]  B=  1 b=24 d=24 d_eff= 3 L=1024 N=494  fi_tree=   0.506ms  cascade=   0.286ms  deft=    n/a ms  ragged=   0.212ms  spd_tree=  2.39×  bw=193.237GB/s  bw_util=67.096%
+  [167/720]  B=  1 b=24 d=32 d_eff= 3 L=1024 N=658  fi_tree=   0.623ms  cascade=   0.388ms  deft=    n/a ms  ragged=   0.282ms  spd_tree=  2.21×  bw=193.273GB/s  bw_util=67.109%
+  [168/720]  B=  1 b=24 d=36 d_eff= 3 L=1024 N=741  fi_tree=   0.658ms  cascade=   0.448ms  deft=    n/a ms  ragged=   0.308ms  spd_tree=  2.13×  bw=200.133GB/s  bw_util=69.491%
+  [169/720]  B=  1 b=32 d= 6 d_eff= 2 L=1024 N=165  fi_tree=   0.178ms  cascade=   0.117ms  deft=    n/a ms  ragged=   0.108ms  spd_tree=  1.64×  bw=106.868GB/s  bw_util=37.107%
+  [170/720]  B=  1 b=32 d=10 d_eff= 2 L=1024 N=274  fi_tree=   0.203ms  cascade=   0.137ms  deft=    n/a ms  ragged=   0.125ms  spd_tree=  1.63×  bw=145.311GB/s  bw_util=50.455%
+  [171/720]  B=  1 b=32 d=16 d_eff= 2 L=1024 N=439  fi_tree=   0.481ms  cascade=   0.265ms  deft=    n/a ms  ragged=   0.203ms  spd_tree=  2.37×  bw=141.899GB/s  bw_util=49.270%
+  [172/720]  B=  1 b=32 d=24 d_eff= 3 L=1024 N=658  fi_tree=   0.634ms  cascade=   0.389ms  deft=    n/a ms  ragged=   0.283ms  spd_tree=  2.24×  bw=192.744GB/s  bw_util=66.925%
+  [173/720]  B=  1 b=32 d=32 d_eff= 3 L=1024 N=878  fi_tree=   1.010ms  cascade=   0.699ms  deft=    n/a ms  ragged=   0.389ms  spd_tree=  2.59×  bw=184.842GB/s  bw_util=64.181%
+  [174/720]  B=  1 b=32 d=36 d_eff= 3 L=1024 N=987  fi_tree=   1.065ms  cascade=   0.837ms  deft=    n/a ms  ragged=   0.454ms  spd_tree=  2.34×  bw=180.307GB/s  bw_util=62.607%
+  [175/720]  B=  1 b=36 d= 6 d_eff= 2 L=1024 N=185  fi_tree=   0.187ms  cascade=   0.121ms  deft=    n/a ms  ragged=   0.113ms  spd_tree=  1.65×  bw=118.498GB/s  bw_util=41.145%
+  [176/720]  B=  1 b=36 d=10 d_eff= 2 L=1024 N=309  fi_tree=   0.215ms  cascade=   0.145ms  deft=    n/a ms  ragged=   0.129ms  spd_tree=  1.67×  bw=169.542GB/s  bw_util=58.869%
+  [177/720]  B=  1 b=36 d=16 d_eff= 2 L=1024 N=494  fi_tree=   0.507ms  cascade=   0.286ms  deft=    n/a ms  ragged=   0.214ms  spd_tree=  2.37×  bw=154.335GB/s  bw_util=53.589%
+  [178/720]  B=  1 b=36 d=24 d_eff= 3 L=1024 N=741  fi_tree=   0.660ms  cascade=   0.450ms  deft=    n/a ms  ragged=   0.312ms  spd_tree=  2.11×  bw=199.344GB/s  bw_util=69.217%
+  [179/720]  B=  1 b=36 d=32 d_eff= 3 L=1024 N=987  fi_tree=   1.087ms  cascade=   0.841ms  deft=    n/a ms  ragged=   0.457ms  spd_tree=  2.38×  bw=180.858GB/s  bw_util=62.798%
+  [180/720]  B=  1 b=36 d=36 d_eff= 3 L=1024 N=1111  fi_tree=   1.210ms  cascade=   0.962ms  deft=    n/a ms  ragged=   0.498ms  spd_tree=  2.43×  bw=185.533GB/s  bw_util=64.421%
+  [181/720]  B=  2 b=6 d= 6 d_eff= 3 L=1024 N= 31  fi_tree=   0.081ms  cascade=   0.033ms  deft=    n/a ms  ragged=   0.040ms  spd_tree=  2.03×  bw=127.180GB/s  bw_util=44.160%
+  [182/720]  B=  2 b=6 d=10 d_eff= 3 L=1024 N= 51  fi_tree=   0.081ms  cascade=   0.048ms  deft=    n/a ms  ragged=   0.058ms  spd_tree=  1.39×  bw=146.085GB/s  bw_util=50.724%
+  [183/720]  B=  2 b=6 d=16 d_eff= 3 L=1024 N= 82  fi_tree=   0.159ms  cascade=   0.105ms  deft=    n/a ms  ragged=   0.111ms  spd_tree=  1.43×  bw=121.481GB/s  bw_util=42.181%
+  [184/720]  B=  2 b=6 d=24 d_eff= 4 L=1024 N=123  fi_tree=   0.175ms  cascade=   0.112ms  deft=    n/a ms  ragged=   0.123ms  spd_tree=  1.43×  bw=198.736GB/s  bw_util=69.006%
+  [185/720]  B=  2 b=6 d=32 d_eff= 4 L=1024 N=165  fi_tree=   0.396ms  cascade=   0.151ms  deft=    n/a ms  ragged=   0.134ms  spd_tree=  2.95×  bw=241.832GB/s  bw_util=83.969%
+  [186/720]  B=  2 b=6 d=36 d_eff= 4 L=1024 N=185  fi_tree=   0.400ms  cascade=   0.150ms  deft=    n/a ms  ragged=   0.140ms  spd_tree=  2.85×  bw=260.671GB/s  bw_util=90.511%
+  [187/720]  B=  2 b=10 d= 6 d_eff= 2 L=1024 N= 51  fi_tree=   0.080ms  cascade=   0.048ms  deft=    n/a ms  ragged=   0.058ms  spd_tree=  1.37×  bw=125.996GB/s  bw_util=43.749%
+  [188/720]  B=  2 b=10 d=10 d_eff= 3 L=1024 N= 86  fi_tree=   0.168ms  cascade=   0.105ms  deft=    n/a ms  ragged=   0.116ms  spd_tree=  1.45×  bw=123.186GB/s  bw_util=42.773%
+  [189/720]  B=  2 b=10 d=16 d_eff= 3 L=1024 N=137  fi_tree=   0.359ms  cascade=   0.141ms  deft=    n/a ms  ragged=   0.126ms  spd_tree=  2.85×  bw=178.211GB/s  bw_util=61.879%
+  [190/720]  B=  2 b=10 d=24 d_eff= 3 L=1024 N=206  fi_tree=   0.413ms  cascade=   0.200ms  deft=    n/a ms  ragged=   0.188ms  spd_tree=  2.19×  bw=179.130GB/s  bw_util=62.198%
+  [191/720]  B=  2 b=10 d=32 d_eff= 3 L=1024 N=274  fi_tree=   0.509ms  cascade=   0.257ms  deft=    n/a ms  ragged=   0.263ms  spd_tree=  1.93×  bw=170.584GB/s  bw_util=59.230%
+  [192/720]  B=  2 b=10 d=36 d_eff= 4 L=1024 N=309  fi_tree=   0.521ms  cascade=   0.273ms  deft=    n/a ms  ragged=   0.277ms  spd_tree=  1.88×  bw=219.859GB/s  bw_util=76.340%
+  [193/720]  B=  2 b=16 d= 6 d_eff= 2 L=1024 N= 82  fi_tree=   0.158ms  cascade=   0.104ms  deft=    n/a ms  ragged=   0.108ms  spd_tree=  1.46×  bw= 99.341GB/s  bw_util=34.493%
+  [194/720]  B=  2 b=16 d=10 d_eff= 2 L=1024 N=137  fi_tree=   0.354ms  cascade=   0.140ms  deft=    n/a ms  ragged=   0.126ms  spd_tree=  2.81×  bw=149.911GB/s  bw_util=52.052%
+  [195/720]  B=  2 b=16 d=16 d_eff= 3 L=1024 N=219  fi_tree=   0.427ms  cascade=   0.205ms  deft=    n/a ms  ragged=   0.212ms  spd_tree=  2.02×  bw=176.232GB/s  bw_util=61.192%
+  [196/720]  B=  2 b=16 d=24 d_eff= 3 L=1024 N=329  fi_tree=   0.527ms  cascade=   0.289ms  deft=    n/a ms  ragged=   0.291ms  spd_tree=  1.81×  bw=192.113GB/s  bw_util=66.706%
+  [197/720]  B=  2 b=16 d=32 d_eff= 3 L=1024 N=439  fi_tree=   0.806ms  cascade=   0.491ms  deft=    n/a ms  ragged=   0.431ms  spd_tree=  1.87×  bw=170.762GB/s  bw_util=59.292%
+  [198/720]  B=  2 b=16 d=36 d_eff= 3 L=1024 N=494  fi_tree=   0.843ms  cascade=   0.523ms  deft=    n/a ms  ragged=   0.457ms  spd_tree=  1.84×  bw=178.296GB/s  bw_util=61.908%
+  [199/720]  B=  2 b=24 d= 6 d_eff= 2 L=1024 N=123  fi_tree=   0.349ms  cascade=   0.138ms  deft=    n/a ms  ragged=   0.125ms  spd_tree=  2.79×  bw=140.590GB/s  bw_util=48.816%
+  [200/720]  B=  2 b=24 d=10 d_eff= 2 L=1024 N=206  fi_tree=   0.415ms  cascade=   0.197ms  deft=    n/a ms  ragged=   0.199ms  spd_tree=  2.09×  bw=140.547GB/s  bw_util=48.801%
+  [201/720]  B=  2 b=24 d=16 d_eff= 3 L=1024 N=329  fi_tree=   0.535ms  cascade=   0.290ms  deft=    n/a ms  ragged=   0.291ms  spd_tree=  1.84×  bw=190.986GB/s  bw_util=66.315%
+  [202/720]  B=  2 b=24 d=24 d_eff= 3 L=1024 N=494  fi_tree=   0.842ms  cascade=   0.527ms  deft=    n/a ms  ragged=   0.459ms  spd_tree=  1.84×  bw=178.571GB/s  bw_util=62.004%
+  [203/720]  B=  2 b=24 d=32 d_eff= 3 L=1024 N=658  fi_tree=   1.238ms  cascade=   0.831ms  deft=    n/a ms  ragged=   0.630ms  spd_tree=  1.97×  bw=173.277GB/s  bw_util=60.166%
+  [204/720]  B=  2 b=24 d=36 d_eff= 3 L=1024 N=741  fi_tree=   1.338ms  cascade=   0.954ms  deft=    n/a ms  ragged=   0.681ms  spd_tree=  1.96×  bw=181.054GB/s  bw_util=62.866%
+  [205/720]  B=  2 b=32 d= 6 d_eff= 2 L=1024 N=165  fi_tree=   0.403ms  cascade=   0.153ms  deft=    n/a ms  ragged=   0.135ms  spd_tree=  2.98×  bw=171.636GB/s  bw_util=59.596%
+  [206/720]  B=  2 b=32 d=10 d_eff= 2 L=1024 N=274  fi_tree=   0.515ms  cascade=   0.258ms  deft=    n/a ms  ragged=   0.258ms  spd_tree=  1.99×  bw=140.515GB/s  bw_util=48.790%
+  [207/720]  B=  2 b=32 d=16 d_eff= 2 L=1024 N=439  fi_tree=   0.796ms  cascade=   0.438ms  deft=    n/a ms  ragged=   0.391ms  spd_tree=  2.04×  bw=147.196GB/s  bw_util=51.110%
+  [208/720]  B=  2 b=32 d=24 d_eff= 3 L=1024 N=658  fi_tree=   1.243ms  cascade=   0.821ms  deft=    n/a ms  ragged=   0.628ms  spd_tree=  1.98×  bw=174.130GB/s  bw_util=60.462%
+  [209/720]  B=  2 b=32 d=32 d_eff= 3 L=1024 N=878  fi_tree=   1.706ms  cascade=   1.308ms  deft=    n/a ms  ragged=   0.845ms  spd_tree=  2.02×  bw=170.279GB/s  bw_util=59.125%
+  [210/720]  B=  2 b=32 d=36 d_eff= 3 L=1024 N=987  fi_tree=   2.073ms  cascade=   1.640ms  deft=    n/a ms  ragged=   0.952ms  spd_tree=  2.18×  bw=172.176GB/s  bw_util=59.783%
+  [211/720]  B=  2 b=36 d= 6 d_eff= 2 L=1024 N=185  fi_tree=   0.412ms  cascade=   0.197ms  deft=    n/a ms  ragged=   0.187ms  spd_tree=  2.20×  bw=143.609GB/s  bw_util=49.864%
+  [212/720]  B=  2 b=36 d=10 d_eff= 2 L=1024 N=309  fi_tree=   0.534ms  cascade=   0.287ms  deft=    n/a ms  ragged=   0.288ms  spd_tree=  1.86×  bw=151.687GB/s  bw_util=52.669%
+  [213/720]  B=  2 b=36 d=16 d_eff= 2 L=1024 N=494  fi_tree=   0.838ms  cascade=   0.533ms  deft=    n/a ms  ragged=   0.465ms  spd_tree=  1.80×  bw=142.097GB/s  bw_util=49.339%
+  [214/720]  B=  2 b=36 d=24 d_eff= 3 L=1024 N=741  fi_tree=   1.320ms  cascade=   0.960ms  deft=    n/a ms  ragged=   0.688ms  spd_tree=  1.92×  bw=180.961GB/s  bw_util=62.834%
+  [215/720]  B=  2 b=36 d=32 d_eff= 3 L=1024 N=987  fi_tree=   2.097ms  cascade=   1.643ms  deft=    n/a ms  ragged=   0.952ms  spd_tree=  2.20×  bw=173.419GB/s  bw_util=60.215%
+  [216/720]  B=  2 b=36 d=36 d_eff= 3 L=1024 N=1111  fi_tree=   2.401ms  cascade=   1.945ms  deft=    n/a ms  ragged=   1.095ms  spd_tree=  2.19×  bw=168.850GB/s  bw_util=58.628%
+  [217/720]  B=  4 b=6 d= 6 d_eff= 3 L=1024 N= 31  fi_tree=   0.246ms  cascade=   0.052ms  deft=    n/a ms  ragged=   0.060ms  spd_tree=  4.07×  bw=168.136GB/s  bw_util=58.380%
+  [218/720]  B=  4 b=6 d=10 d_eff= 3 L=1024 N= 51  fi_tree=   0.253ms  cascade=   0.102ms  deft=    n/a ms  ragged=   0.117ms  spd_tree=  2.17×  bw=145.965GB/s  bw_util=50.682%
+  [219/720]  B=  4 b=6 d=16 d_eff= 3 L=1024 N= 82  fi_tree=   0.358ms  cascade=   0.126ms  deft=    n/a ms  ragged=   0.133ms  spd_tree=  2.70×  bw=202.430GB/s  bw_util=70.288%
+  [220/720]  B=  4 b=6 d=24 d_eff= 4 L=1024 N=123  fi_tree=   0.406ms  cascade=   0.180ms  deft=    n/a ms  ragged=   0.218ms  spd_tree=  1.86×  bw=223.861GB/s  bw_util=77.730%
+  [221/720]  B=  4 b=6 d=32 d_eff= 4 L=1024 N=165  fi_tree=   0.621ms  cascade=   0.274ms  deft=    n/a ms  ragged=   0.289ms  spd_tree=  2.15×  bw=224.768GB/s  bw_util=78.044%
+  [222/720]  B=  4 b=6 d=36 d_eff= 4 L=1024 N=185  fi_tree=   0.645ms  cascade=   0.280ms  deft=    n/a ms  ragged=   0.310ms  spd_tree=  2.08×  bw=236.015GB/s  bw_util=81.950%
+  [223/720]  B=  4 b=10 d= 6 d_eff= 2 L=1024 N= 51  fi_tree=   0.255ms  cascade=   0.101ms  deft=    n/a ms  ragged=   0.116ms  spd_tree=  2.20×  bw=126.867GB/s  bw_util=44.051%
+  [224/720]  B=  4 b=10 d=10 d_eff= 3 L=1024 N= 86  fi_tree=   0.367ms  cascade=   0.126ms  deft=    n/a ms  ragged=   0.141ms  spd_tree=  2.61×  bw=202.312GB/s  bw_util=70.247%
+  [225/720]  B=  4 b=10 d=16 d_eff= 3 L=1024 N=137  fi_tree=   0.577ms  cascade=   0.245ms  deft=    n/a ms  ragged=   0.265ms  spd_tree=  2.17×  bw=169.266GB/s  bw_util=58.773%
+  [226/720]  B=  4 b=10 d=24 d_eff= 3 L=1024 N=206  fi_tree=   0.662ms  cascade=   0.335ms  deft=    n/a ms  ragged=   0.370ms  spd_tree=  1.79×  bw=182.604GB/s  bw_util=63.404%
+  [227/720]  B=  4 b=10 d=32 d_eff= 3 L=1024 N=274  fi_tree=   0.944ms  cascade=   0.487ms  deft=    n/a ms  ragged=   0.497ms  spd_tree=  1.90×  bw=180.673GB/s  bw_util=62.734%
+  [228/720]  B=  4 b=10 d=36 d_eff= 4 L=1024 N=309  fi_tree=   0.983ms  cascade=   0.563ms  deft=    n/a ms  ragged=   0.576ms  spd_tree=  1.71×  bw=211.815GB/s  bw_util=73.547%
+  [229/720]  B=  4 b=16 d= 6 d_eff= 2 L=1024 N= 82  fi_tree=   0.358ms  cascade=   0.125ms  deft=    n/a ms  ragged=   0.130ms  spd_tree=  2.76×  bw=165.413GB/s  bw_util=57.435%
+  [230/720]  B=  4 b=16 d=10 d_eff= 2 L=1024 N=137  fi_tree=   0.574ms  cascade=   0.249ms  deft=    n/a ms  ragged=   0.266ms  spd_tree=  2.16×  bw=141.878GB/s  bw_util=49.263%
+  [231/720]  B=  4 b=16 d=16 d_eff= 3 L=1024 N=219  fi_tree=   0.699ms  cascade=   0.399ms  deft=    n/a ms  ragged=   0.442ms  spd_tree=  1.58×  bw=168.889GB/s  bw_util=58.642%
+  [232/720]  B=  4 b=16 d=24 d_eff= 3 L=1024 N=329  fi_tree=   1.031ms  cascade=   0.649ms  deft=    n/a ms  ragged=   0.647ms  spd_tree=  1.59×  bw=172.658GB/s  bw_util=59.951%
+  [233/720]  B=  4 b=16 d=32 d_eff= 3 L=1024 N=439  fi_tree=   1.521ms  cascade=   0.968ms  deft=    n/a ms  ragged=   0.854ms  spd_tree=  1.78×  bw=172.310GB/s  bw_util=59.830%
+  [234/720]  B=  4 b=16 d=36 d_eff= 3 L=1024 N=494  fi_tree=   1.630ms  cascade=   1.068ms  deft=    n/a ms  ragged=   0.973ms  spd_tree=  1.67×  bw=167.333GB/s  bw_util=58.102%
+  [235/720]  B=  4 b=24 d= 6 d_eff= 2 L=1024 N=123  fi_tree=   0.564ms  cascade=   0.245ms  deft=    n/a ms  ragged=   0.260ms  spd_tree=  2.17×  bw=135.055GB/s  bw_util=46.894%
+  [236/720]  B=  4 b=24 d=10 d_eff= 2 L=1024 N=206  fi_tree=   0.676ms  cascade=   0.339ms  deft=    n/a ms  ragged=   0.380ms  spd_tree=  1.78×  bw=146.982GB/s  bw_util=51.035%
+  [237/720]  B=  4 b=24 d=16 d_eff= 3 L=1024 N=329  fi_tree=   1.024ms  cascade=   0.640ms  deft=    n/a ms  ragged=   0.634ms  spd_tree=  1.62×  bw=175.255GB/s  bw_util=60.852%
+  [238/720]  B=  4 b=24 d=24 d_eff= 3 L=1024 N=494  fi_tree=   1.615ms  cascade=   1.068ms  deft=    n/a ms  ragged=   0.962ms  spd_tree=  1.68×  bw=170.233GB/s  bw_util=59.108%
+  [239/720]  B=  4 b=24 d=32 d_eff= 3 L=1024 N=658  fi_tree=   2.424ms  cascade=   1.668ms  deft=    n/a ms  ragged=   1.336ms  spd_tree=  1.81×  bw=163.310GB/s  bw_util=56.705%
+  [240/720]  B=  4 b=24 d=36 d_eff= 3 L=1024 N=741  fi_tree=   2.664ms  cascade=   1.980ms  deft=    n/a ms  ragged=   1.528ms  spd_tree=  1.74×  bw=161.501GB/s  bw_util=56.077%
+  [241/720]  B=  4 b=32 d= 6 d_eff= 2 L=1024 N=165  fi_tree=   0.641ms  cascade=   0.279ms  deft=    n/a ms  ragged=   0.296ms  spd_tree=  2.17×  bw=156.789GB/s  bw_util=54.441%
+  [242/720]  B=  4 b=32 d=10 d_eff= 2 L=1024 N=274  fi_tree=   0.961ms  cascade=   0.494ms  deft=    n/a ms  ragged=   0.497ms  spd_tree=  1.94×  bw=146.210GB/s  bw_util=50.767%
+  [243/720]  B=  4 b=32 d=16 d_eff= 2 L=1024 N=439  fi_tree=   1.509ms  cascade=   0.967ms  deft=    n/a ms  ragged=   0.833ms  spd_tree=  1.81×  bw=138.149GB/s  bw_util=47.968%
+  [244/720]  B=  4 b=32 d=24 d_eff= 3 L=1024 N=658  fi_tree=   2.438ms  cascade=   1.664ms  deft=    n/a ms  ragged=   1.325ms  spd_tree=  1.84×  bw=164.916GB/s  bw_util=57.263%
+  [245/720]  B=  4 b=32 d=32 d_eff= 3 L=1024 N=878  fi_tree=   3.320ms  cascade=   2.576ms  deft=    n/a ms  ragged=   1.796ms  spd_tree=  1.85×  bw=160.148GB/s  bw_util=55.607%
+  [246/720]  B=  4 b=32 d=36 d_eff= 3 L=1024 N=987  fi_tree=   3.869ms  cascade=   3.210ms  deft=    n/a ms  ragged=   2.074ms  spd_tree=  1.87×  bw=157.999GB/s  bw_util=54.861%
+  [247/720]  B=  4 b=36 d= 6 d_eff= 2 L=1024 N=185  fi_tree=   0.680ms  cascade=   0.339ms  deft=    n/a ms  ragged=   0.373ms  spd_tree=  1.82×  bw=144.176GB/s  bw_util=50.061%
+  [248/720]  B=  4 b=36 d=10 d_eff= 2 L=1024 N=309  fi_tree=   1.038ms  cascade=   0.647ms  deft=    n/a ms  ragged=   0.632ms  spd_tree=  1.64×  bw=138.165GB/s  bw_util=47.974%
+  [249/720]  B=  4 b=36 d=16 d_eff= 2 L=1024 N=494  fi_tree=   1.601ms  cascade=   1.093ms  deft=    n/a ms  ragged=   0.973ms  spd_tree=  1.65×  bw=135.821GB/s  bw_util=47.160%
+  [250/720]  B=  4 b=36 d=24 d_eff= 3 L=1024 N=741  fi_tree=   2.642ms  cascade=   1.981ms  deft=    n/a ms  ragged=   1.529ms  spd_tree=  1.73×  bw=162.907GB/s  bw_util=56.565%
+  [251/720]  B=  4 b=36 d=32 d_eff= 3 L=1024 N=987  fi_tree=   3.882ms  cascade=   3.235ms  deft=    n/a ms  ragged=   2.077ms  spd_tree=  1.87×  bw=159.057GB/s  bw_util=55.228%
+  [252/720]  B=  4 b=36 d=36 d_eff= 3 L=1024 N=1111  fi_tree=   4.729ms  cascade=   3.952ms  deft=    n/a ms  ragged=   2.319ms  spd_tree=  2.04×  bw=159.507GB/s  bw_util=55.384%
+  [253/720]  B=  8 b=6 d= 6 d_eff= 3 L=1024 N= 31  fi_tree=   0.456ms  cascade=   0.107ms  deft=    n/a ms  ragged=   0.120ms  spd_tree=  3.80×  bw=169.573GB/s  bw_util=58.879%
+  [254/720]  B=  8 b=6 d=10 d_eff= 3 L=1024 N= 51  fi_tree=   0.473ms  cascade=   0.160ms  deft=    n/a ms  ragged=   0.193ms  spd_tree=  2.46×  bw=177.021GB/s  bw_util=61.466%
+  [255/720]  B=  8 b=6 d=16 d_eff= 3 L=1024 N= 82  fi_tree=   0.560ms  cascade=   0.243ms  deft=    n/a ms  ragged=   0.288ms  spd_tree=  1.95×  bw=186.762GB/s  bw_util=64.848%
+  [256/720]  B=  8 b=6 d=24 d_eff= 4 L=1024 N=123  fi_tree=   0.658ms  cascade=   0.384ms  deft=    n/a ms  ragged=   0.463ms  spd_tree=  1.42×  bw=210.690GB/s  bw_util=73.156%
+  [257/720]  B=  8 b=6 d=32 d_eff= 4 L=1024 N=165  fi_tree=   1.141ms  cascade=   0.590ms  deft=    n/a ms  ragged=   0.641ms  spd_tree=  1.78×  bw=202.453GB/s  bw_util=70.296%
+  [258/720]  B=  8 b=6 d=36 d_eff= 4 L=1024 N=185  fi_tree=   1.188ms  cascade=   0.634ms  deft=    n/a ms  ragged=   0.691ms  spd_tree=  1.72×  bw=211.842GB/s  bw_util=73.556%
+  [259/720]  B=  8 b=10 d= 6 d_eff= 2 L=1024 N= 51  fi_tree=   0.476ms  cascade=   0.159ms  deft=    n/a ms  ragged=   0.210ms  spd_tree=  2.27×  bw=139.863GB/s  bw_util=48.564%
+  [260/720]  B=  8 b=10 d=10 d_eff= 3 L=1024 N= 86  fi_tree=   0.581ms  cascade=   0.247ms  deft=    n/a ms  ragged=   0.300ms  spd_tree=  1.94×  bw=190.247GB/s  bw_util=66.058%
+  [261/720]  B=  8 b=10 d=16 d_eff= 3 L=1024 N=137  fi_tree=   1.020ms  cascade=   0.461ms  deft=    n/a ms  ragged=   0.501ms  spd_tree=  2.04×  bw=179.179GB/s  bw_util=62.215%
+  [262/720]  B=  8 b=10 d=24 d_eff= 3 L=1024 N=206  fi_tree=   1.258ms  cascade=   0.736ms  deft=    n/a ms  ragged=   0.770ms  spd_tree=  1.63×  bw=175.319GB/s  bw_util=60.875%
+  [263/720]  B=  8 b=10 d=32 d_eff= 3 L=1024 N=274  fi_tree=   1.777ms  cascade=   1.070ms  deft=    n/a ms  ragged=   1.107ms  spd_tree=  1.60×  bw=162.220GB/s  bw_util=56.326%
+  [264/720]  B=  8 b=10 d=36 d_eff= 4 L=1024 N=309  fi_tree=   1.906ms  cascade=   1.231ms  deft=    n/a ms  ragged=   1.257ms  spd_tree=  1.52×  bw=193.916GB/s  bw_util=67.332%
+  [265/720]  B=  8 b=16 d= 6 d_eff= 2 L=1024 N= 82  fi_tree=   0.565ms  cascade=   0.245ms  deft=    n/a ms  ragged=   0.288ms  spd_tree=  1.96×  bw=149.045GB/s  bw_util=51.752%
+  [266/720]  B=  8 b=16 d=10 d_eff= 2 L=1024 N=137  fi_tree=   1.039ms  cascade=   0.470ms  deft=    n/a ms  ragged=   0.515ms  spd_tree=  2.02×  bw=146.577GB/s  bw_util=50.895%
+  [267/720]  B=  8 b=16 d=16 d_eff= 3 L=1024 N=219  fi_tree=   1.331ms  cascade=   0.810ms  deft=    n/a ms  ragged=   0.868ms  spd_tree=  1.53×  bw=172.085GB/s  bw_util=59.752%
+  [268/720]  B=  8 b=16 d=24 d_eff= 3 L=1024 N=329  fi_tree=   2.026ms  cascade=   1.278ms  deft=    n/a ms  ragged=   1.390ms  spd_tree=  1.46×  bw=160.783GB/s  bw_util=55.827%
+  [269/720]  B=  8 b=16 d=32 d_eff= 3 L=1024 N=439  fi_tree=   2.802ms  cascade=   1.942ms  deft=    n/a ms  ragged=   1.881ms  spd_tree=  1.49×  bw=156.429GB/s  bw_util=54.316%
+  [270/720]  B=  8 b=16 d=36 d_eff= 3 L=1024 N=494  fi_tree=   3.012ms  cascade=   2.142ms  deft=    n/a ms  ragged=   2.080ms  spd_tree=  1.45×  bw=156.579GB/s  bw_util=54.368%
+  [271/720]  B=  8 b=24 d= 6 d_eff= 2 L=1024 N=123  fi_tree=   1.009ms  cascade=   0.450ms  deft=    n/a ms  ragged=   0.487ms  spd_tree=  2.07×  bw=144.135GB/s  bw_util=50.047%
+  [272/720]  B=  8 b=24 d=10 d_eff= 2 L=1024 N=206  fi_tree=   1.270ms  cascade=   0.769ms  deft=    n/a ms  ragged=   0.822ms  spd_tree=  1.54×  bw=135.827GB/s  bw_util=47.162%
+  [273/720]  B=  8 b=24 d=16 d_eff= 3 L=1024 N=329  fi_tree=   2.002ms  cascade=   1.338ms  deft=    n/a ms  ragged=   1.384ms  spd_tree=  1.45×  bw=160.490GB/s  bw_util=55.726%
+  [274/720]  B=  8 b=24 d=24 d_eff= 3 L=1024 N=494  fi_tree=   3.010ms  cascade=   2.173ms  deft=    n/a ms  ragged=   2.075ms  spd_tree=  1.45×  bw=157.928GB/s  bw_util=54.836%
+  [275/720]  B=  8 b=24 d=32 d_eff= 3 L=1024 N=658  fi_tree=   4.673ms  cascade=   3.342ms  deft=    n/a ms  ragged=   2.728ms  spd_tree=  1.71×  bw=160.007GB/s  bw_util=55.558%
+  [276/720]  B=  8 b=24 d=36 d_eff= 3 L=1024 N=741  fi_tree=   5.129ms  cascade=   3.968ms  deft=    n/a ms  ragged=   3.133ms  spd_tree=  1.64×  bw=157.497GB/s  bw_util=54.686%
+  [277/720]  B=  8 b=32 d= 6 d_eff= 2 L=1024 N=165  fi_tree=   1.174ms  cascade=   0.605ms  deft=    n/a ms  ragged=   0.661ms  spd_tree=  1.77×  bw=140.285GB/s  bw_util=48.710%
+  [278/720]  B=  8 b=32 d=10 d_eff= 2 L=1024 N=274  fi_tree=   1.794ms  cascade=   1.080ms  deft=    n/a ms  ragged=   1.096ms  spd_tree=  1.64×  bw=132.546GB/s  bw_util=46.023%
+  [279/720]  B=  8 b=32 d=16 d_eff= 2 L=1024 N=439  fi_tree=   2.828ms  cascade=   1.892ms  deft=    n/a ms  ragged=   1.804ms  spd_tree=  1.57×  bw=127.564GB/s  bw_util=44.293%
+  [280/720]  B=  8 b=32 d=24 d_eff= 3 L=1024 N=658  fi_tree=   4.699ms  cascade=   3.290ms  deft=    n/a ms  ragged=   2.720ms  spd_tree=  1.73×  bw=160.723GB/s  bw_util=55.807%
+  [281/720]  B=  8 b=32 d=32 d_eff= 3 L=1024 N=878  fi_tree=   6.394ms  cascade=   5.101ms  deft=    n/a ms  ragged=   3.588ms  spd_tree=  1.78×  bw=160.345GB/s  bw_util=55.675%
+  [282/720]  B=  8 b=32 d=36 d_eff= 3 L=1024 N=987  fi_tree=   7.536ms  cascade=   6.269ms  deft=    n/a ms  ragged=   4.088ms  spd_tree=  1.84×  bw=160.322GB/s  bw_util=55.667%
+  [283/720]  B=  8 b=36 d= 6 d_eff= 2 L=1024 N=185  fi_tree=   1.246ms  cascade=   0.721ms  deft=    n/a ms  ragged=   0.769ms  spd_tree=  1.62×  bw=139.792GB/s  bw_util=48.539%
+  [284/720]  B=  8 b=36 d=10 d_eff= 2 L=1024 N=309  fi_tree=   2.029ms  cascade=   1.300ms  deft=    n/a ms  ragged=   1.335ms  spd_tree=  1.52×  bw=130.772GB/s  bw_util=45.407%
+  [285/720]  B=  8 b=36 d=16 d_eff= 2 L=1024 N=494  fi_tree=   3.009ms  cascade=   2.172ms  deft=    n/a ms  ragged=   2.079ms  spd_tree=  1.45×  bw=127.117GB/s  bw_util=44.138%
+  [286/720]  B=  8 b=36 d=24 d_eff= 3 L=1024 N=741  fi_tree=   5.073ms  cascade=   4.006ms  deft=    n/a ms  ragged=   3.118ms  spd_tree=  1.63×  bw=159.753GB/s  bw_util=55.470%
+  [287/720]  B=  8 b=36 d=32 d_eff= 3 L=1024 N=987  fi_tree=   7.597ms  cascade=   6.358ms  deft=    n/a ms  ragged=   4.095ms  spd_tree=  1.86×  bw=161.320GB/s  bw_util=56.014%
+  [288/720]  B=  8 b=36 d=36 d_eff= 3 L=1024 N=1111  fi_tree=   9.292ms  cascade=   7.771ms  deft=    n/a ms  ragged=   4.642ms  spd_tree=  2.00×  bw=159.400GB/s  bw_util=55.347%
+  [289/720]  B=  1 b=6 d= 6 d_eff= 3 L=4096 N= 31  fi_tree=   0.227ms  cascade=   0.224ms  deft=    n/a ms  ragged=   0.231ms  spd_tree=  0.98×  bw= 10.973GB/s  bw_util=3.810%
+  [290/720]  B=  1 b=6 d=10 d_eff= 3 L=4096 N= 51  fi_tree=   0.240ms  cascade=   0.230ms  deft=    n/a ms  ragged=   0.239ms  spd_tree=  1.00×  bw= 17.804GB/s  bw_util=6.182%
+  [291/720]  B=  1 b=6 d=16 d_eff= 3 L=4096 N= 82  fi_tree=   0.256ms  cascade=   0.247ms  deft=    n/a ms  ragged=   0.254ms  spd_tree=  1.01×  bw= 26.452GB/s  bw_util=9.185%
+  [292/720]  B=  1 b=6 d=24 d_eff= 4 L=4096 N=123  fi_tree=   0.275ms  cascade=   0.261ms  deft=    n/a ms  ragged=   0.270ms  spd_tree=  1.02×  bw= 45.091GB/s  bw_util=15.657%
+  [293/720]  B=  1 b=6 d=32 d_eff= 4 L=4096 N=165  fi_tree=   0.664ms  cascade=   0.365ms  deft=    n/a ms  ragged=   0.368ms  spd_tree=  1.80×  bw= 44.123GB/s  bw_util=15.320%
+  [294/720]  B=  1 b=6 d=36 d_eff= 4 L=4096 N=185  fi_tree=   0.712ms  cascade=   0.368ms  deft=    n/a ms  ragged=   0.370ms  spd_tree=  1.93×  bw= 49.463GB/s  bw_util=17.174%
+  [295/720]  B=  1 b=10 d= 6 d_eff= 2 L=4096 N= 51  fi_tree=   0.236ms  cascade=   0.231ms  deft=    n/a ms  ragged=   0.240ms  spd_tree=  0.99×  bw= 15.316GB/s  bw_util=5.318%
+  [296/720]  B=  1 b=10 d=10 d_eff= 3 L=4096 N= 86  fi_tree=   0.266ms  cascade=   0.249ms  deft=    n/a ms  ragged=   0.256ms  spd_tree=  1.04×  bw= 27.840GB/s  bw_util=9.667%
+  [297/720]  B=  1 b=10 d=16 d_eff= 3 L=4096 N=137  fi_tree=   0.668ms  cascade=   0.359ms  deft=    n/a ms  ragged=   0.362ms  spd_tree=  1.84×  bw= 30.960GB/s  bw_util=10.750%
+  [298/720]  B=  1 b=10 d=24 d_eff= 3 L=4096 N=206  fi_tree=   0.678ms  cascade=   0.369ms  deft=    n/a ms  ragged=   0.370ms  spd_tree=  1.83×  bw= 45.651GB/s  bw_util=15.851%
+  [299/720]  B=  1 b=10 d=32 d_eff= 3 L=4096 N=274  fi_tree=   0.787ms  cascade=   0.406ms  deft=    n/a ms  ragged=   0.409ms  spd_tree=  1.93×  bw= 54.937GB/s  bw_util=19.076%
+  [300/720]  B=  1 b=10 d=36 d_eff= 4 L=4096 N=309  fi_tree=   0.802ms  cascade=   0.414ms  deft=    n/a ms  ragged=   0.412ms  spd_tree=  1.94×  bw= 73.872GB/s  bw_util=25.650%
+  [301/720]  B=  1 b=16 d= 6 d_eff= 2 L=4096 N= 82  fi_tree=   0.256ms  cascade=   0.247ms  deft=    n/a ms  ragged=   0.253ms  spd_tree=  1.01×  bw= 21.255GB/s  bw_util=7.380%
+  [302/720]  B=  1 b=16 d=10 d_eff= 2 L=4096 N=137  fi_tree=   0.641ms  cascade=   0.356ms  deft=    n/a ms  ragged=   0.359ms  spd_tree=  1.78×  bw= 26.261GB/s  bw_util=9.118%
+  [303/720]  B=  1 b=16 d=16 d_eff= 3 L=4096 N=219  fi_tree=   0.658ms  cascade=   0.374ms  deft=    n/a ms  ragged=   0.374ms  spd_tree=  1.76×  bw= 49.973GB/s  bw_util=17.352%
+  [304/720]  B=  1 b=16 d=24 d_eff= 3 L=4096 N=329  fi_tree=   0.783ms  cascade=   0.421ms  deft=    n/a ms  ragged=   0.416ms  spd_tree=  1.88×  bw= 67.203GB/s  bw_util=23.334%
+  [305/720]  B=  1 b=16 d=32 d_eff= 3 L=4096 N=439  fi_tree=   1.516ms  cascade=   0.678ms  deft=    n/a ms  ragged=   0.586ms  spd_tree=  2.59×  bw= 62.797GB/s  bw_util=21.805%
+  [306/720]  B=  1 b=16 d=36 d_eff= 3 L=4096 N=494  fi_tree=   1.515ms  cascade=   0.690ms  deft=    n/a ms  ragged=   0.588ms  spd_tree=  2.58×  bw= 69.216GB/s  bw_util=24.033%
+  [307/720]  B=  1 b=24 d= 6 d_eff= 2 L=4096 N=123  fi_tree=   0.695ms  cascade=   0.355ms  deft=    n/a ms  ragged=   0.358ms  spd_tree=  1.94×  bw= 24.525GB/s  bw_util=8.515%
+  [308/720]  B=  1 b=24 d=10 d_eff= 2 L=4096 N=206  fi_tree=   0.659ms  cascade=   0.370ms  deft=    n/a ms  ragged=   0.370ms  spd_tree=  1.78×  bw= 37.762GB/s  bw_util=13.112%
+  [309/720]  B=  1 b=24 d=16 d_eff= 3 L=4096 N=329  fi_tree=   0.806ms  cascade=   0.419ms  deft=    n/a ms  ragged=   0.415ms  spd_tree=  1.94×  bw= 66.963GB/s  bw_util=23.251%
+  [310/720]  B=  1 b=24 d=24 d_eff= 3 L=4096 N=494  fi_tree=   1.528ms  cascade=   0.681ms  deft=    n/a ms  ragged=   0.589ms  spd_tree=  2.60×  bw= 69.592GB/s  bw_util=24.164%
+  [311/720]  B=  1 b=24 d=32 d_eff= 3 L=4096 N=658  fi_tree=   1.730ms  cascade=   0.928ms  deft=    n/a ms  ragged=   0.779ms  spd_tree=  2.22×  bw= 70.013GB/s  bw_util=24.310%
+  [312/720]  B=  1 b=24 d=36 d_eff= 3 L=4096 N=741  fi_tree=   1.770ms  cascade=   1.037ms  deft=    n/a ms  ragged=   0.864ms  spd_tree=  2.05×  bw= 71.433GB/s  bw_util=24.803%
+  [313/720]  B=  1 b=32 d= 6 d_eff= 2 L=4096 N=165  fi_tree=   0.669ms  cascade=   0.363ms  deft=    n/a ms  ragged=   0.363ms  spd_tree=  1.84×  bw= 31.922GB/s  bw_util=11.084%
+  [314/720]  B=  1 b=32 d=10 d_eff= 2 L=4096 N=274  fi_tree=   0.824ms  cascade=   0.408ms  deft=    n/a ms  ragged=   0.406ms  spd_tree=  2.03×  bw= 44.768GB/s  bw_util=15.544%
+  [315/720]  B=  1 b=32 d=16 d_eff= 2 L=4096 N=439  fi_tree=   1.490ms  cascade=   0.668ms  deft=    n/a ms  ragged=   0.584ms  spd_tree=  2.55×  bw= 49.291GB/s  bw_util=17.115%
+  [316/720]  B=  1 b=32 d=24 d_eff= 3 L=4096 N=658  fi_tree=   1.742ms  cascade=   0.973ms  deft=    n/a ms  ragged=   0.779ms  spd_tree=  2.24×  bw= 70.127GB/s  bw_util=24.350%
+  [317/720]  B=  1 b=32 d=32 d_eff= 3 L=4096 N=878  fi_tree=   2.688ms  cascade=   1.384ms  deft=    n/a ms  ragged=   1.069ms  spd_tree=  2.51×  bw= 67.280GB/s  bw_util=23.361%
+  [318/720]  B=  1 b=32 d=36 d_eff= 3 L=4096 N=987  fi_tree=   2.777ms  cascade=   1.636ms  deft=    n/a ms  ragged=   1.218ms  spd_tree=  2.28×  bw= 67.237GB/s  bw_util=23.346%
+  [319/720]  B=  1 b=36 d= 6 d_eff= 2 L=4096 N=185  fi_tree=   0.691ms  cascade=   0.374ms  deft=    n/a ms  ragged=   0.374ms  spd_tree=  1.85×  bw= 35.945GB/s  bw_util=12.481%
+  [320/720]  B=  1 b=36 d=10 d_eff= 2 L=4096 N=309  fi_tree=   0.849ms  cascade=   0.424ms  deft=    n/a ms  ragged=   0.417ms  spd_tree=  2.03×  bw= 52.322GB/s  bw_util=18.167%
+  [321/720]  B=  1 b=36 d=16 d_eff= 2 L=4096 N=494  fi_tree=   1.519ms  cascade=   0.694ms  deft=    n/a ms  ragged=   0.595ms  spd_tree=  2.55×  bw= 55.518GB/s  bw_util=19.277%
+  [322/720]  B=  1 b=36 d=24 d_eff= 3 L=4096 N=741  fi_tree=   1.765ms  cascade=   1.039ms  deft=    n/a ms  ragged=   0.811ms  spd_tree=  2.18×  bw= 76.768GB/s  bw_util=26.655%
+  [323/720]  B=  1 b=36 d=32 d_eff= 3 L=4096 N=987  fi_tree=   2.800ms  cascade=   1.645ms  deft=    n/a ms  ragged=   1.248ms  spd_tree=  2.24×  bw= 66.153GB/s  bw_util=22.970%
+  [324/720]  B=  1 b=36 d=36 d_eff= 3 L=4096 N=1111  fi_tree=   2.918ms  cascade=   1.782ms  deft=    n/a ms  ragged=   1.306ms  spd_tree=  2.23×  bw= 70.791GB/s  bw_util=24.580%
+  [325/720]  B=  2 b=6 d= 6 d_eff= 3 L=4096 N= 31  fi_tree=   0.565ms  cascade=   0.234ms  deft=    n/a ms  ragged=   0.244ms  spd_tree=  2.31×  bw= 20.775GB/s  bw_util=7.213%
+  [326/720]  B=  2 b=6 d=10 d_eff= 3 L=4096 N= 51  fi_tree=   0.583ms  cascade=   0.249ms  deft=    n/a ms  ragged=   0.264ms  spd_tree=  2.21×  bw= 32.266GB/s  bw_util=11.203%
+  [327/720]  B=  2 b=6 d=16 d_eff= 3 L=4096 N= 82  fi_tree=   0.804ms  cascade=   0.361ms  deft=    n/a ms  ragged=   0.370ms  spd_tree=  2.17×  bw= 36.343GB/s  bw_util=12.619%
+  [328/720]  B=  2 b=6 d=24 d_eff= 4 L=4096 N=123  fi_tree=   0.762ms  cascade=   0.370ms  deft=    n/a ms  ragged=   0.385ms  spd_tree=  1.98×  bw= 63.319GB/s  bw_util=21.986%
+  [329/720]  B=  2 b=6 d=32 d_eff= 4 L=4096 N=165  fi_tree=   1.428ms  cascade=   0.434ms  deft=    n/a ms  ragged=   0.424ms  spd_tree=  3.37×  bw= 76.533GB/s  bw_util=26.574%
+  [330/720]  B=  2 b=6 d=36 d_eff= 4 L=4096 N=185  fi_tree=   1.457ms  cascade=   0.434ms  deft=    n/a ms  ragged=   0.431ms  spd_tree=  3.38×  bw= 84.864GB/s  bw_util=29.467%
+  [331/720]  B=  2 b=10 d= 6 d_eff= 2 L=4096 N= 51  fi_tree=   0.579ms  cascade=   0.251ms  deft=    n/a ms  ragged=   0.266ms  spd_tree=  2.17×  bw= 27.586GB/s  bw_util=9.578%
+  [332/720]  B=  2 b=10 d=10 d_eff= 3 L=4096 N= 86  fi_tree=   0.818ms  cascade=   0.360ms  deft=    n/a ms  ragged=   0.372ms  spd_tree=  2.20×  bw= 38.354GB/s  bw_util=13.317%
+  [333/720]  B=  2 b=10 d=16 d_eff= 3 L=4096 N=137  fi_tree=   1.275ms  cascade=   0.418ms  deft=    n/a ms  ragged=   0.410ms  spd_tree=  3.11×  bw= 54.751GB/s  bw_util=19.011%
+  [334/720]  B=  2 b=10 d=24 d_eff= 3 L=4096 N=206  fi_tree=   1.465ms  cascade=   0.595ms  deft=    n/a ms  ragged=   0.590ms  spd_tree=  2.48×  bw= 57.245GB/s  bw_util=19.877%
+  [335/720]  B=  2 b=10 d=32 d_eff= 3 L=4096 N=274  fi_tree=   1.599ms  cascade=   0.771ms  deft=    n/a ms  ragged=   0.788ms  spd_tree=  2.03×  bw= 56.935GB/s  bw_util=19.769%
+  [336/720]  B=  2 b=10 d=36 d_eff= 4 L=4096 N=309  fi_tree=   1.631ms  cascade=   0.786ms  deft=    n/a ms  ragged=   0.806ms  spd_tree=  2.02×  bw= 75.632GB/s  bw_util=26.261%
+  [337/720]  B=  2 b=16 d= 6 d_eff= 2 L=4096 N= 82  fi_tree=   0.803ms  cascade=   0.358ms  deft=    n/a ms  ragged=   0.365ms  spd_tree=  2.20×  bw= 29.420GB/s  bw_util=10.215%
+  [338/720]  B=  2 b=16 d=10 d_eff= 2 L=4096 N=137  fi_tree=   1.280ms  cascade=   0.421ms  deft=    n/a ms  ragged=   0.414ms  spd_tree=  3.10×  bw= 45.624GB/s  bw_util=15.842%
+  [339/720]  B=  2 b=16 d=16 d_eff= 3 L=4096 N=219  fi_tree=   1.508ms  cascade=   0.606ms  deft=    n/a ms  ragged=   0.600ms  spd_tree=  2.51×  bw= 62.253GB/s  bw_util=21.616%
+  [340/720]  B=  2 b=16 d=24 d_eff= 3 L=4096 N=329  fi_tree=   1.647ms  cascade=   0.833ms  deft=    n/a ms  ragged=   0.792ms  spd_tree=  2.08×  bw= 70.537GB/s  bw_util=24.492%
+  [341/720]  B=  2 b=16 d=32 d_eff= 3 L=4096 N=439  fi_tree=   2.427ms  cascade=   1.303ms  deft=    n/a ms  ragged=   1.218ms  spd_tree=  1.99×  bw= 60.379GB/s  bw_util=20.965%
+  [342/720]  B=  2 b=16 d=36 d_eff= 3 L=4096 N=494  fi_tree=   2.455ms  cascade=   1.336ms  deft=    n/a ms  ragged=   1.255ms  spd_tree=  1.96×  bw= 64.868GB/s  bw_util=22.524%
+  [343/720]  B=  2 b=24 d= 6 d_eff= 2 L=4096 N=123  fi_tree=   1.258ms  cascade=   0.414ms  deft=    n/a ms  ragged=   0.406ms  spd_tree=  3.10×  bw= 43.313GB/s  bw_util=15.039%
+  [344/720]  B=  2 b=24 d=10 d_eff= 2 L=4096 N=206  fi_tree=   1.470ms  cascade=   0.600ms  deft=    n/a ms  ragged=   0.592ms  spd_tree=  2.48×  bw= 47.173GB/s  bw_util=16.380%
+  [345/720]  B=  2 b=24 d=16 d_eff= 3 L=4096 N=329  fi_tree=   1.671ms  cascade=   0.821ms  deft=    n/a ms  ragged=   0.789ms  spd_tree=  2.12×  bw= 70.350GB/s  bw_util=24.427%
+  [346/720]  B=  2 b=24 d=24 d_eff= 3 L=4096 N=494  fi_tree=   2.479ms  cascade=   1.335ms  deft=    n/a ms  ragged=   1.241ms  spd_tree=  2.00×  bw= 66.009GB/s  bw_util=22.920%
+  [347/720]  B=  2 b=24 d=32 d_eff= 3 L=4096 N=658  fi_tree=   3.405ms  cascade=   1.903ms  deft=    n/a ms  ragged=   1.698ms  spd_tree=  2.01×  bw= 64.251GB/s  bw_util=22.309%
+  [348/720]  B=  2 b=24 d=36 d_eff= 3 L=4096 N=741  fi_tree=   3.540ms  cascade=   2.033ms  deft=    n/a ms  ragged=   1.709ms  spd_tree=  2.07×  bw= 72.190GB/s  bw_util=25.066%
+  [349/720]  B=  2 b=32 d= 6 d_eff= 2 L=4096 N=165  fi_tree=   1.429ms  cascade=   0.432ms  deft=    n/a ms  ragged=   0.421ms  spd_tree=  3.40×  bw= 55.124GB/s  bw_util=19.140%
+  [350/720]  B=  2 b=32 d=10 d_eff= 2 L=4096 N=274  fi_tree=   1.637ms  cascade=   0.773ms  deft=    n/a ms  ragged=   0.797ms  spd_tree=  2.05×  bw= 45.548GB/s  bw_util=15.815%
+  [351/720]  B=  2 b=32 d=16 d_eff= 2 L=4096 N=439  fi_tree=   2.382ms  cascade=   1.089ms  deft=    n/a ms  ragged=   1.064ms  spd_tree=  2.24×  bw= 54.057GB/s  bw_util=18.770%
+  [352/720]  B=  2 b=32 d=24 d_eff= 3 L=4096 N=658  fi_tree=   3.400ms  cascade=   1.886ms  deft=    n/a ms  ragged=   1.666ms  spd_tree=  2.04×  bw= 65.593GB/s  bw_util=22.775%
+  [353/720]  B=  2 b=32 d=32 d_eff= 3 L=4096 N=878  fi_tree=   4.551ms  cascade=   2.631ms  deft=    n/a ms  ragged=   2.162ms  spd_tree=  2.10×  bw= 66.534GB/s  bw_util=23.102%
+  [354/720]  B=  2 b=32 d=36 d_eff= 3 L=4096 N=987  fi_tree=   5.444ms  cascade=   3.106ms  deft=    n/a ms  ragged=   2.401ms  spd_tree=  2.27×  bw= 68.235GB/s  bw_util=23.693%
+  [355/720]  B=  2 b=36 d= 6 d_eff= 2 L=4096 N=185  fi_tree=   1.443ms  cascade=   0.592ms  deft=    n/a ms  ragged=   0.583ms  spd_tree=  2.48×  bw= 46.116GB/s  bw_util=16.012%
+  [356/720]  B=  2 b=36 d=10 d_eff= 2 L=4096 N=309  fi_tree=   1.686ms  cascade=   0.808ms  deft=    n/a ms  ragged=   0.832ms  spd_tree=  2.03×  bw= 52.460GB/s  bw_util=18.215%
+  [357/720]  B=  2 b=36 d=16 d_eff= 2 L=4096 N=494  fi_tree=   2.441ms  cascade=   1.344ms  deft=    n/a ms  ragged=   1.255ms  spd_tree=  1.95×  bw= 52.633GB/s  bw_util=18.275%
+  [358/720]  B=  2 b=36 d=24 d_eff= 3 L=4096 N=741  fi_tree=   3.494ms  cascade=   2.042ms  deft=    n/a ms  ragged=   1.745ms  spd_tree=  2.00×  bw= 71.341GB/s  bw_util=24.771%
+  [359/720]  B=  2 b=36 d=32 d_eff= 3 L=4096 N=987  fi_tree=   5.464ms  cascade=   3.100ms  deft=    n/a ms  ragged=   2.414ms  spd_tree=  2.26×  bw= 68.412GB/s  bw_util=23.754%
+  [360/720]  B=  2 b=36 d=36 d_eff= 3 L=4096 N=1111  fi_tree=   5.781ms  cascade=   3.562ms  deft=    n/a ms  ragged=   2.637ms  spd_tree=  2.19×  bw= 70.151GB/s  bw_util=24.358%
+  [361/720]  B=  4 b=6 d= 6 d_eff= 3 L=4096 N= 31  fi_tree=   1.064ms  cascade=   0.257ms  deft=    n/a ms  ragged=   0.272ms  spd_tree=  3.91×  bw= 37.331GB/s  bw_util=12.962%
+  [362/720]  B=  4 b=6 d=10 d_eff= 3 L=4096 N= 51  fi_tree=   1.071ms  cascade=   0.364ms  deft=    n/a ms  ragged=   0.378ms  spd_tree=  2.84×  bw= 45.108GB/s  bw_util=15.663%
+  [363/720]  B=  4 b=6 d=16 d_eff= 3 L=4096 N= 82  fi_tree=   1.579ms  cascade=   0.408ms  deft=    n/a ms  ragged=   0.418ms  spd_tree=  3.78×  bw= 64.338GB/s  bw_util=22.340%
+  [364/720]  B=  4 b=6 d=24 d_eff= 4 L=4096 N=123  fi_tree=   1.650ms  cascade=   0.586ms  deft=    n/a ms  ragged=   0.601ms  spd_tree=  2.75×  bw= 81.135GB/s  bw_util=28.172%
+  [365/720]  B=  4 b=6 d=32 d_eff= 4 L=4096 N=165  fi_tree=   2.203ms  cascade=   0.797ms  deft=    n/a ms  ragged=   0.811ms  spd_tree=  2.72×  bw= 80.000GB/s  bw_util=27.778%
+  [366/720]  B=  4 b=6 d=36 d_eff= 4 L=4096 N=185  fi_tree=   2.264ms  cascade=   0.828ms  deft=    n/a ms  ragged=   0.817ms  spd_tree=  2.77×  bw= 89.528GB/s  bw_util=31.086%
+  [367/720]  B=  4 b=10 d= 6 d_eff= 2 L=4096 N= 51  fi_tree=   1.117ms  cascade=   0.366ms  deft=    n/a ms  ragged=   0.374ms  spd_tree=  2.99×  bw= 39.277GB/s  bw_util=13.638%
+  [368/720]  B=  4 b=10 d=10 d_eff= 3 L=4096 N= 86  fi_tree=   1.658ms  cascade=   0.409ms  deft=    n/a ms  ragged=   0.428ms  spd_tree=  3.88×  bw= 66.660GB/s  bw_util=23.146%
+  [369/720]  B=  4 b=10 d=16 d_eff= 3 L=4096 N=137  fi_tree=   2.050ms  cascade=   0.802ms  deft=    n/a ms  ragged=   0.755ms  spd_tree=  2.72×  bw= 59.489GB/s  bw_util=20.656%
+  [370/720]  B=  4 b=10 d=24 d_eff= 3 L=4096 N=206  fi_tree=   2.322ms  cascade=   1.003ms  deft=    n/a ms  ragged=   1.058ms  spd_tree=  2.19×  bw= 63.795GB/s  bw_util=22.151%
+  [371/720]  B=  4 b=10 d=32 d_eff= 3 L=4096 N=274  fi_tree=   3.056ms  cascade=   1.320ms  deft=    n/a ms  ragged=   1.271ms  spd_tree=  2.40×  bw= 70.624GB/s  bw_util=24.522%
+  [372/720]  B=  4 b=10 d=36 d_eff= 4 L=4096 N=309  fi_tree=   3.146ms  cascade=   1.526ms  deft=    n/a ms  ragged=   1.447ms  spd_tree=  2.17×  bw= 84.246GB/s  bw_util=29.252%
+  [373/720]  B=  4 b=16 d= 6 d_eff= 2 L=4096 N= 82  fi_tree=   1.581ms  cascade=   0.409ms  deft=    n/a ms  ragged=   0.420ms  spd_tree=  3.77×  bw= 51.212GB/s  bw_util=17.782%
+  [374/720]  B=  4 b=16 d=10 d_eff= 2 L=4096 N=137  fi_tree=   2.062ms  cascade=   0.754ms  deft=    n/a ms  ragged=   0.753ms  spd_tree=  2.74×  bw= 50.155GB/s  bw_util=17.415%
+  [375/720]  B=  4 b=16 d=16 d_eff= 3 L=4096 N=219  fi_tree=   2.342ms  cascade=   1.224ms  deft=    n/a ms  ragged=   1.230ms  spd_tree=  1.90×  bw= 60.734GB/s  bw_util=21.088%
+  [376/720]  B=  4 b=16 d=24 d_eff= 3 L=4096 N=329  fi_tree=   3.210ms  cascade=   1.702ms  deft=    n/a ms  ragged=   1.685ms  spd_tree=  1.91×  bw= 66.334GB/s  bw_util=23.033%
+  [377/720]  B=  4 b=16 d=32 d_eff= 3 L=4096 N=439  fi_tree=   4.654ms  cascade=   2.341ms  deft=    n/a ms  ragged=   2.204ms  spd_tree=  2.11×  bw= 66.770GB/s  bw_util=23.184%
+  [378/720]  B=  4 b=16 d=36 d_eff= 3 L=4096 N=494  fi_tree=   4.897ms  cascade=   2.515ms  deft=    n/a ms  ragged=   2.420ms  spd_tree=  2.02×  bw= 67.291GB/s  bw_util=23.365%
+  [379/720]  B=  4 b=24 d= 6 d_eff= 2 L=4096 N=123  fi_tree=   2.080ms  cascade=   0.766ms  deft=    n/a ms  ragged=   0.754ms  spd_tree=  2.76×  bw= 46.609GB/s  bw_util=16.184%
+  [380/720]  B=  4 b=24 d=10 d_eff= 2 L=4096 N=206  fi_tree=   2.324ms  cascade=   1.035ms  deft=    n/a ms  ragged=   1.040ms  spd_tree=  2.23×  bw= 53.669GB/s  bw_util=18.635%
+  [381/720]  B=  4 b=24 d=16 d_eff= 3 L=4096 N=329  fi_tree=   3.220ms  cascade=   1.711ms  deft=    n/a ms  ragged=   1.694ms  spd_tree=  1.90×  bw= 65.573GB/s  bw_util=22.769%
+  [382/720]  B=  4 b=24 d=24 d_eff= 3 L=4096 N=494  fi_tree=   4.923ms  cascade=   2.551ms  deft=    n/a ms  ragged=   2.416ms  spd_tree=  2.04×  bw= 67.825GB/s  bw_util=23.550%
+  [383/720]  B=  4 b=24 d=32 d_eff= 3 L=4096 N=658  fi_tree=   6.666ms  cascade=   3.506ms  deft=    n/a ms  ragged=   3.166ms  spd_tree=  2.11×  bw= 68.926GB/s  bw_util=23.933%
+  [384/720]  B=  4 b=24 d=36 d_eff= 3 L=4096 N=741  fi_tree=   7.078ms  cascade=   4.055ms  deft=    n/a ms  ragged=   3.602ms  spd_tree=  1.97×  bw= 68.506GB/s  bw_util=23.787%
+  [385/720]  B=  4 b=32 d= 6 d_eff= 2 L=4096 N=165  fi_tree=   2.228ms  cascade=   0.803ms  deft=    n/a ms  ragged=   0.814ms  spd_tree=  2.74×  bw= 56.996GB/s  bw_util=19.790%
+  [386/720]  B=  4 b=32 d=10 d_eff= 2 L=4096 N=274  fi_tree=   3.075ms  cascade=   1.236ms  deft=    n/a ms  ragged=   1.306ms  spd_tree=  2.36×  bw= 55.617GB/s  bw_util=19.311%
+  [387/720]  B=  4 b=32 d=16 d_eff= 2 L=4096 N=439  fi_tree=   4.607ms  cascade=   2.257ms  deft=    n/a ms  ragged=   2.151ms  spd_tree=  2.14×  bw= 53.491GB/s  bw_util=18.573%
+  [388/720]  B=  4 b=32 d=24 d_eff= 3 L=4096 N=658  fi_tree=   6.633ms  cascade=   3.499ms  deft=    n/a ms  ragged=   3.150ms  spd_tree=  2.11×  bw= 69.389GB/s  bw_util=24.093%
+  [389/720]  B=  4 b=32 d=32 d_eff= 3 L=4096 N=878  fi_tree=   8.946ms  cascade=   5.042ms  deft=    n/a ms  ragged=   4.256ms  spd_tree=  2.10×  bw= 67.595GB/s  bw_util=23.471%
+  [390/720]  B=  4 b=32 d=36 d_eff= 3 L=4096 N=987  fi_tree=  10.132ms  cascade=   5.994ms  deft=    n/a ms  ragged=   4.853ms  spd_tree=  2.09×  bw= 67.525GB/s  bw_util=23.446%
+  [391/720]  B=  4 b=36 d= 6 d_eff= 2 L=4096 N=185  fi_tree=   2.306ms  cascade=   1.051ms  deft=    n/a ms  ragged=   1.056ms  spd_tree=  2.18×  bw= 50.877GB/s  bw_util=17.666%
+  [392/720]  B=  4 b=36 d=10 d_eff= 2 L=4096 N=309  fi_tree=   3.250ms  cascade=   1.724ms  deft=    n/a ms  ragged=   1.700ms  spd_tree=  1.91×  bw= 51.359GB/s  bw_util=17.833%
+  [393/720]  B=  4 b=36 d=16 d_eff= 2 L=4096 N=494  fi_tree=   4.851ms  cascade=   2.561ms  deft=    n/a ms  ragged=   2.415ms  spd_tree=  2.01×  bw= 54.710GB/s  bw_util=18.996%
+  [394/720]  B=  4 b=36 d=24 d_eff= 3 L=4096 N=741  fi_tree=   6.924ms  cascade=   4.116ms  deft=    n/a ms  ragged=   3.514ms  spd_tree=  1.97×  bw= 70.868GB/s  bw_util=24.607%
+  [395/720]  B=  4 b=36 d=32 d_eff= 3 L=4096 N=987  fi_tree=  10.104ms  cascade=   6.017ms  deft=    n/a ms  ragged=   4.854ms  spd_tree=  2.08×  bw= 68.046GB/s  bw_util=23.627%
+  [396/720]  B=  4 b=36 d=36 d_eff= 3 L=4096 N=1111  fi_tree=  11.492ms  cascade=   6.988ms  deft=    n/a ms  ragged=   5.406ms  spd_tree=  2.13×  bw= 68.431GB/s  bw_util=23.761%
+  [397/720]  B=  8 b=6 d= 6 d_eff= 3 L=4096 N= 31  fi_tree=   1.840ms  cascade=   0.363ms  deft=    n/a ms  ragged=   0.378ms  spd_tree=  4.87×  bw= 53.767GB/s  bw_util=18.669%
+  [398/720]  B=  8 b=6 d=10 d_eff= 3 L=4096 N= 51  fi_tree=   1.860ms  cascade=   0.561ms  deft=    n/a ms  ragged=   0.622ms  spd_tree=  2.99×  bw= 54.833GB/s  bw_util=19.039%
+  [399/720]  B=  8 b=6 d=16 d_eff= 3 L=4096 N= 82  fi_tree=   2.505ms  cascade=   0.767ms  deft=    n/a ms  ragged=   0.846ms  spd_tree=  2.96×  bw= 63.550GB/s  bw_util=22.066%
+  [400/720]  B=  8 b=6 d=24 d_eff= 4 L=4096 N=123  fi_tree=   2.537ms  cascade=   1.198ms  deft=    n/a ms  ragged=   1.265ms  spd_tree=  2.01×  bw= 77.115GB/s  bw_util=26.776%
+  [401/720]  B=  8 b=6 d=32 d_eff= 4 L=4096 N=165  fi_tree=   4.134ms  cascade=   1.651ms  deft=    n/a ms  ragged=   1.692ms  spd_tree=  2.44×  bw= 76.707GB/s  bw_util=26.634%
+  [402/720]  B=  8 b=6 d=36 d_eff= 4 L=4096 N=185  fi_tree=   4.287ms  cascade=   1.700ms  deft=    n/a ms  ragged=   1.769ms  spd_tree=  2.42×  bw= 82.673GB/s  bw_util=28.706%
+  [403/720]  B=  8 b=10 d= 6 d_eff= 2 L=4096 N= 51  fi_tree=   1.902ms  cascade=   0.567ms  deft=    n/a ms  ragged=   0.591ms  spd_tree=  3.22×  bw= 49.691GB/s  bw_util=17.254%
+  [404/720]  B=  8 b=10 d=10 d_eff= 3 L=4096 N= 86  fi_tree=   2.723ms  cascade=   0.767ms  deft=    n/a ms  ragged=   0.800ms  spd_tree=  3.40×  bw= 71.265GB/s  bw_util=24.745%
+  [405/720]  B=  8 b=10 d=16 d_eff= 3 L=4096 N=137  fi_tree=   3.693ms  cascade=   1.287ms  deft=    n/a ms  ragged=   1.314ms  spd_tree=  2.81×  bw= 68.341GB/s  bw_util=23.730%
+  [406/720]  B=  8 b=10 d=24 d_eff= 3 L=4096 N=206  fi_tree=   4.457ms  cascade=   1.896ms  deft=    n/a ms  ragged=   1.932ms  spd_tree=  2.31×  bw= 69.868GB/s  bw_util=24.260%
+  [407/720]  B=  8 b=10 d=32 d_eff= 3 L=4096 N=274  fi_tree=   5.832ms  cascade=   2.674ms  deft=    n/a ms  ragged=   2.638ms  spd_tree=  2.21×  bw= 68.065GB/s  bw_util=23.634%
+  [408/720]  B=  8 b=10 d=36 d_eff= 4 L=4096 N=309  fi_tree=   6.167ms  cascade=   3.023ms  deft=    n/a ms  ragged=   3.044ms  spd_tree=  2.03×  bw= 80.101GB/s  bw_util=27.813%
+  [409/720]  B=  8 b=16 d= 6 d_eff= 2 L=4096 N= 82  fi_tree=   2.505ms  cascade=   0.789ms  deft=    n/a ms  ragged=   0.799ms  spd_tree=  3.14×  bw= 53.826GB/s  bw_util=18.689%
+  [410/720]  B=  8 b=16 d=10 d_eff= 2 L=4096 N=137  fi_tree=   3.701ms  cascade=   1.226ms  deft=    n/a ms  ragged=   1.323ms  spd_tree=  2.80×  bw= 57.077GB/s  bw_util=19.818%
+  [411/720]  B=  8 b=16 d=16 d_eff= 3 L=4096 N=219  fi_tree=   4.598ms  cascade=   2.163ms  deft=    n/a ms  ragged=   2.228ms  spd_tree=  2.06×  bw= 67.079GB/s  bw_util=23.291%
+  [412/720]  B=  8 b=16 d=24 d_eff= 3 L=4096 N=329  fi_tree=   6.343ms  cascade=   3.309ms  deft=    n/a ms  ragged=   3.353ms  spd_tree=  1.89×  bw= 66.641GB/s  bw_util=23.139%
+  [413/720]  B=  8 b=16 d=32 d_eff= 3 L=4096 N=439  fi_tree=   8.785ms  cascade=   4.499ms  deft=    n/a ms  ragged=   4.405ms  spd_tree=  1.99×  bw= 66.797GB/s  bw_util=23.193%
+  [414/720]  B=  8 b=16 d=36 d_eff= 3 L=4096 N=494  fi_tree=   9.379ms  cascade=   5.029ms  deft=    n/a ms  ragged=   4.879ms  spd_tree=  1.92×  bw= 66.760GB/s  bw_util=23.181%
+  [415/720]  B=  8 b=24 d= 6 d_eff= 2 L=4096 N=123  fi_tree=   3.702ms  cascade=   1.316ms  deft=    n/a ms  ragged=   1.281ms  spd_tree=  2.89×  bw= 54.843GB/s  bw_util=19.043%
+  [416/720]  B=  8 b=24 d=10 d_eff= 2 L=4096 N=206  fi_tree=   4.488ms  cascade=   2.101ms  deft=    n/a ms  ragged=   2.148ms  spd_tree=  2.09×  bw= 51.984GB/s  bw_util=18.050%
+  [417/720]  B=  8 b=24 d=16 d_eff= 3 L=4096 N=329  fi_tree=   6.408ms  cascade=   3.302ms  deft=    n/a ms  ragged=   3.333ms  spd_tree=  1.92×  bw= 66.647GB/s  bw_util=23.141%
+  [418/720]  B=  8 b=24 d=24 d_eff= 3 L=4096 N=494  fi_tree=   9.377ms  cascade=   4.985ms  deft=    n/a ms  ragged=   4.904ms  spd_tree=  1.91×  bw= 66.813GB/s  bw_util=23.199%
+  [419/720]  B=  8 b=24 d=32 d_eff= 3 L=4096 N=658  fi_tree=  13.062ms  cascade=   6.972ms  deft=    n/a ms  ragged=   6.383ms  spd_tree=  2.05×  bw= 68.385GB/s  bw_util=23.745%
+  [420/720]  B=  8 b=24 d=36 d_eff= 3 L=4096 N=741  fi_tree=  14.174ms  cascade=   8.163ms  deft=    n/a ms  ragged=   7.285ms  spd_tree=  1.95×  bw= 67.743GB/s  bw_util=23.522%
+  [421/720]  B=  8 b=32 d= 6 d_eff= 2 L=4096 N=165  fi_tree=   4.218ms  cascade=   1.740ms  deft=    n/a ms  ragged=   1.759ms  spd_tree=  2.40×  bw= 52.765GB/s  bw_util=18.321%
+  [422/720]  B=  8 b=32 d=10 d_eff= 2 L=4096 N=274  fi_tree=   5.911ms  cascade=   2.601ms  deft=    n/a ms  ragged=   2.582ms  spd_tree=  2.29×  bw= 56.257GB/s  bw_util=19.534%
+  [423/720]  B=  8 b=32 d=16 d_eff= 2 L=4096 N=439  fi_tree=   8.576ms  cascade=   4.387ms  deft=    n/a ms  ragged=   4.255ms  spd_tree=  2.02×  bw= 54.090GB/s  bw_util=18.781%
+  [424/720]  B=  8 b=32 d=24 d_eff= 3 L=4096 N=658  fi_tree=  13.257ms  cascade=   6.863ms  deft=    n/a ms  ragged=   6.213ms  spd_tree=  2.13×  bw= 70.361GB/s  bw_util=24.431%
+  [425/720]  B=  8 b=32 d=32 d_eff= 3 L=4096 N=878  fi_tree=  17.491ms  cascade=  10.031ms  deft=    n/a ms  ragged=   8.393ms  spd_tree=  2.08×  bw= 68.556GB/s  bw_util=23.804%
+  [426/720]  B=  8 b=32 d=36 d_eff= 3 L=4096 N=987  fi_tree=  20.036ms  cascade=  11.743ms  deft=    n/a ms  ragged=   9.542ms  spd_tree=  2.10×  bw= 68.681GB/s  bw_util=23.847%
+  [427/720]  B=  8 b=36 d= 6 d_eff= 2 L=4096 N=185  fi_tree=   4.409ms  cascade=   1.810ms  deft=    n/a ms  ragged=   1.986ms  spd_tree=  2.22×  bw= 54.103GB/s  bw_util=18.786%
+  [428/720]  B=  8 b=36 d=10 d_eff= 2 L=4096 N=309  fi_tree=   6.428ms  cascade=   3.159ms  deft=    n/a ms  ragged=   3.176ms  spd_tree=  2.02×  bw= 54.963GB/s  bw_util=19.084%
+  [429/720]  B=  8 b=36 d=16 d_eff= 2 L=4096 N=494  fi_tree=   9.114ms  cascade=   5.057ms  deft=    n/a ms  ragged=   4.951ms  spd_tree=  1.84×  bw= 53.368GB/s  bw_util=18.530%
+  [430/720]  B=  8 b=36 d=24 d_eff= 3 L=4096 N=741  fi_tree=  14.071ms  cascade=   8.209ms  deft=    n/a ms  ragged=   7.281ms  spd_tree=  1.93×  bw= 68.411GB/s  bw_util=23.754%
+  [431/720]  B=  8 b=36 d=32 d_eff= 3 L=4096 N=987  fi_tree=  20.221ms  cascade=  11.764ms  deft=    n/a ms  ragged=   9.832ms  spd_tree=  2.06×  bw= 67.189GB/s  bw_util=23.330%
+  [432/720]  B=  8 b=36 d=36 d_eff= 3 L=4096 N=1111  fi_tree=  23.194ms  cascade=  14.110ms  deft=    n/a ms  ragged=  10.852ms  spd_tree=  2.14×  bw= 68.180GB/s  bw_util=23.674%
+  [433/720]  B=  1 b=6 d= 6 d_eff= 3 L=8192 N= 31  fi_tree=   0.581ms  cascade=   0.424ms  deft=    n/a ms  ragged=   0.432ms  spd_tree=  1.35×  bw=  5.881GB/s  bw_util=2.042%
+  [434/720]  B=  1 b=6 d=10 d_eff= 3 L=8192 N= 51  fi_tree=   0.497ms  cascade=   0.430ms  deft=    n/a ms  ragged=   0.439ms  spd_tree=  1.13×  bw=  9.697GB/s  bw_util=3.367%
+  [435/720]  B=  1 b=6 d=16 d_eff= 3 L=8192 N= 82  fi_tree=   0.682ms  cascade=   0.449ms  deft=    n/a ms  ragged=   0.456ms  spd_tree=  1.49×  bw= 14.718GB/s  bw_util=5.110%
+  [436/720]  B=  1 b=6 d=24 d_eff= 4 L=8192 N=123  fi_tree=   0.659ms  cascade=   0.463ms  deft=    n/a ms  ragged=   0.473ms  spd_tree=  1.39×  bw= 25.766GB/s  bw_util=8.947%
+  [437/720]  B=  1 b=6 d=32 d_eff= 4 L=8192 N=165  fi_tree=   1.284ms  cascade=   0.685ms  deft=    n/a ms  ragged=   0.685ms  spd_tree=  1.87×  bw= 23.677GB/s  bw_util=8.221%
+  [438/720]  B=  1 b=6 d=36 d_eff= 4 L=8192 N=185  fi_tree=   1.372ms  cascade=   0.708ms  deft=    n/a ms  ragged=   0.719ms  spd_tree=  1.91×  bw= 25.438GB/s  bw_util=8.833%
+  [439/720]  B=  1 b=10 d= 6 d_eff= 2 L=8192 N= 51  fi_tree=   0.533ms  cascade=   0.431ms  deft=    n/a ms  ragged=   0.440ms  spd_tree=  1.21×  bw=  8.341GB/s  bw_util=2.896%
+  [440/720]  B=  1 b=10 d=10 d_eff= 3 L=8192 N= 86  fi_tree=   0.694ms  cascade=   0.451ms  deft=    n/a ms  ragged=   0.459ms  spd_tree=  1.51×  bw= 15.539GB/s  bw_util=5.396%
+  [441/720]  B=  1 b=10 d=16 d_eff= 3 L=8192 N=137  fi_tree=   1.353ms  cascade=   0.673ms  deft=    n/a ms  ragged=   0.683ms  spd_tree=  1.98×  bw= 16.432GB/s  bw_util=5.705%
+  [442/720]  B=  1 b=10 d=24 d_eff= 3 L=8192 N=206  fi_tree=   1.291ms  cascade=   0.689ms  deft=    n/a ms  ragged=   0.692ms  spd_tree=  1.87×  bw= 24.389GB/s  bw_util=8.468%
+  [443/720]  B=  1 b=10 d=32 d_eff= 3 L=8192 N=274  fi_tree=   1.550ms  cascade=   0.764ms  deft=    n/a ms  ragged=   0.770ms  spd_tree=  2.01×  bw= 29.155GB/s  bw_util=10.123%
+  [444/720]  B=  1 b=10 d=36 d_eff= 4 L=8192 N=309  fi_tree=   1.530ms  cascade=   0.811ms  deft=    n/a ms  ragged=   0.768ms  spd_tree=  1.99×  bw= 39.664GB/s  bw_util=13.772%
+  [445/720]  B=  1 b=16 d= 6 d_eff= 2 L=8192 N= 82  fi_tree=   0.687ms  cascade=   0.449ms  deft=    n/a ms  ragged=   0.455ms  spd_tree=  1.51×  bw= 11.820GB/s  bw_util=4.104%
+  [446/720]  B=  1 b=16 d=10 d_eff= 2 L=8192 N=137  fi_tree=   1.292ms  cascade=   0.674ms  deft=    n/a ms  ragged=   0.683ms  spd_tree=  1.89×  bw= 13.821GB/s  bw_util=4.799%
+  [447/720]  B=  1 b=16 d=16 d_eff= 3 L=8192 N=219  fi_tree=   1.251ms  cascade=   0.697ms  deft=    n/a ms  ragged=   0.697ms  spd_tree=  1.79×  bw= 26.784GB/s  bw_util=9.300%
+  [448/720]  B=  1 b=16 d=24 d_eff= 3 L=8192 N=329  fi_tree=   1.494ms  cascade=   0.775ms  deft=    n/a ms  ragged=   0.827ms  spd_tree=  1.81×  bw= 33.792GB/s  bw_util=11.733%
+  [449/720]  B=  1 b=16 d=32 d_eff= 3 L=8192 N=439  fi_tree=   3.037ms  cascade=   1.275ms  deft=    n/a ms  ragged=   1.155ms  spd_tree=  2.63×  bw= 31.832GB/s  bw_util=11.053%
+  [450/720]  B=  1 b=16 d=36 d_eff= 3 L=8192 N=494  fi_tree=   2.996ms  cascade=   1.289ms  deft=    n/a ms  ragged=   1.152ms  spd_tree=  2.60×  bw= 35.342GB/s  bw_util=12.272%
+  [451/720]  B=  1 b=24 d= 6 d_eff= 2 L=8192 N=123  fi_tree=   1.448ms  cascade=   0.676ms  deft=    n/a ms  ragged=   0.687ms  spd_tree=  2.11×  bw= 12.781GB/s  bw_util=4.438%
+  [452/720]  B=  1 b=24 d=10 d_eff= 2 L=8192 N=206  fi_tree=   1.245ms  cascade=   0.697ms  deft=    n/a ms  ragged=   0.710ms  spd_tree=  1.75×  bw= 19.674GB/s  bw_util=6.831%
+  [453/720]  B=  1 b=24 d=16 d_eff= 3 L=8192 N=329  fi_tree=   1.542ms  cascade=   0.774ms  deft=    n/a ms  ragged=   0.782ms  spd_tree=  1.97×  bw= 35.507GB/s  bw_util=12.329%
+  [454/720]  B=  1 b=24 d=24 d_eff= 3 L=8192 N=494  fi_tree=   3.064ms  cascade=   1.209ms  deft=    n/a ms  ragged=   1.188ms  spd_tree=  2.58×  bw= 34.463GB/s  bw_util=11.966%
+  [455/720]  B=  1 b=24 d=32 d_eff= 3 L=8192 N=658  fi_tree=   3.303ms  cascade=   1.606ms  deft=    n/a ms  ragged=   1.588ms  spd_tree=  2.08×  bw= 34.363GB/s  bw_util=11.932%
+  [456/720]  B=  1 b=24 d=36 d_eff= 3 L=8192 N=741  fi_tree=   3.297ms  cascade=   1.758ms  deft=    n/a ms  ragged=   1.609ms  spd_tree=  2.05×  bw= 38.345GB/s  bw_util=13.314%
+  [457/720]  B=  1 b=32 d= 6 d_eff= 2 L=8192 N=165  fi_tree=   1.303ms  cascade=   0.683ms  deft=    n/a ms  ragged=   0.688ms  spd_tree=  1.89×  bw= 16.857GB/s  bw_util=5.853%
+  [458/720]  B=  1 b=32 d=10 d_eff= 2 L=8192 N=274  fi_tree=   1.625ms  cascade=   0.763ms  deft=    n/a ms  ragged=   0.825ms  spd_tree=  1.97×  bw= 21.998GB/s  bw_util=7.638%
+  [459/720]  B=  1 b=32 d=16 d_eff= 2 L=8192 N=439  fi_tree=   2.970ms  cascade=   1.184ms  deft=    n/a ms  ragged=   1.097ms  spd_tree=  2.71×  bw= 26.239GB/s  bw_util=9.111%
+  [460/720]  B=  1 b=32 d=24 d_eff= 3 L=8192 N=658  fi_tree=   3.319ms  cascade=   1.687ms  deft=    n/a ms  ragged=   1.574ms  spd_tree=  2.11×  bw= 34.721GB/s  bw_util=12.056%
+  [461/720]  B=  1 b=32 d=32 d_eff= 3 L=8192 N=878  fi_tree=   4.823ms  cascade=   2.274ms  deft=    n/a ms  ragged=   1.946ms  spd_tree=  2.48×  bw= 36.962GB/s  bw_util=12.834%
+  [462/720]  B=  1 b=32 d=36 d_eff= 3 L=8192 N=987  fi_tree=   4.938ms  cascade=   2.688ms  deft=    n/a ms  ragged=   2.319ms  spd_tree=  2.13×  bw= 35.320GB/s  bw_util=12.264%
+  [463/720]  B=  1 b=36 d= 6 d_eff= 2 L=8192 N=185  fi_tree=   1.335ms  cascade=   0.693ms  deft=    n/a ms  ragged=   0.694ms  spd_tree=  1.92×  bw= 19.351GB/s  bw_util=6.719%
+  [464/720]  B=  1 b=36 d=10 d_eff= 2 L=8192 N=309  fi_tree=   1.606ms  cascade=   0.845ms  deft=    n/a ms  ragged=   0.769ms  spd_tree=  2.09×  bw= 28.379GB/s  bw_util=9.854%
+  [465/720]  B=  1 b=36 d=16 d_eff= 2 L=8192 N=494  fi_tree=   2.990ms  cascade=   1.211ms  deft=    n/a ms  ragged=   1.104ms  spd_tree=  2.71×  bw= 29.922GB/s  bw_util=10.390%
+  [466/720]  B=  1 b=36 d=24 d_eff= 3 L=8192 N=741  fi_tree=   3.223ms  cascade=   1.750ms  deft=    n/a ms  ragged=   1.599ms  spd_tree=  2.02×  bw= 38.925GB/s  bw_util=13.515%
+  [467/720]  B=  1 b=36 d=32 d_eff= 3 L=8192 N=987  fi_tree=   4.906ms  cascade=   2.657ms  deft=    n/a ms  ragged=   2.261ms  spd_tree=  2.17×  bw= 36.514GB/s  bw_util=12.678%
+  [468/720]  B=  1 b=36 d=36 d_eff= 3 L=8192 N=1111  fi_tree=   5.079ms  cascade=   2.887ms  deft=    n/a ms  ragged=   2.423ms  spd_tree=  2.10×  bw= 38.167GB/s  bw_util=13.252%
+  [469/720]  B=  2 b=6 d= 6 d_eff= 3 L=8192 N= 31  fi_tree=   1.112ms  cascade=   0.434ms  deft=    n/a ms  ragged=   0.443ms  spd_tree=  2.51×  bw= 11.455GB/s  bw_util=3.977%
+  [470/720]  B=  2 b=6 d=10 d_eff= 3 L=8192 N= 51  fi_tree=   1.167ms  cascade=   0.449ms  deft=    n/a ms  ragged=   0.465ms  spd_tree=  2.51×  bw= 18.326GB/s  bw_util=6.363%
+  [471/720]  B=  2 b=6 d=16 d_eff= 3 L=8192 N= 82  fi_tree=   1.567ms  cascade=   0.681ms  deft=    n/a ms  ragged=   0.689ms  spd_tree=  2.27×  bw= 19.495GB/s  bw_util=6.769%
+  [472/720]  B=  2 b=6 d=24 d_eff= 4 L=8192 N=123  fi_tree=   1.479ms  cascade=   0.689ms  deft=    n/a ms  ragged=   0.706ms  spd_tree=  2.09×  bw= 34.529GB/s  bw_util=11.989%
+  [473/720]  B=  2 b=6 d=32 d_eff= 4 L=8192 N=165  fi_tree=   2.850ms  cascade=   0.843ms  deft=    n/a ms  ragged=   0.780ms  spd_tree=  3.65×  bw= 41.602GB/s  bw_util=14.445%
+  [474/720]  B=  2 b=6 d=36 d_eff= 4 L=8192 N=185  fi_tree=   2.878ms  cascade=   0.782ms  deft=    n/a ms  ragged=   0.780ms  spd_tree=  3.69×  bw= 46.871GB/s  bw_util=16.275%
+  [475/720]  B=  2 b=10 d= 6 d_eff= 2 L=8192 N= 51  fi_tree=   1.143ms  cascade=   0.452ms  deft=    n/a ms  ragged=   0.467ms  spd_tree=  2.45×  bw= 15.719GB/s  bw_util=5.458%
+  [476/720]  B=  2 b=10 d=10 d_eff= 3 L=8192 N= 86  fi_tree=   1.597ms  cascade=   0.682ms  deft=    n/a ms  ragged=   0.697ms  spd_tree=  2.29×  bw= 20.443GB/s  bw_util=7.098%
+  [477/720]  B=  2 b=10 d=16 d_eff= 3 L=8192 N=137  fi_tree=   2.590ms  cascade=   0.772ms  deft=    n/a ms  ragged=   0.809ms  spd_tree=  3.20×  bw= 27.754GB/s  bw_util=9.637%
+  [478/720]  B=  2 b=10 d=24 d_eff= 3 L=8192 N=206  fi_tree=   2.901ms  cascade=   1.149ms  deft=    n/a ms  ragged=   1.188ms  spd_tree=  2.44×  bw= 28.414GB/s  bw_util=9.866%
+  [479/720]  B=  2 b=10 d=32 d_eff= 3 L=8192 N=274  fi_tree=   3.112ms  cascade=   1.500ms  deft=    n/a ms  ragged=   1.490ms  spd_tree=  2.09×  bw= 30.123GB/s  bw_util=10.460%
+  [480/720]  B=  2 b=10 d=36 d_eff= 4 L=8192 N=309  fi_tree=   3.103ms  cascade=   1.547ms  deft=    n/a ms  ragged=   1.514ms  spd_tree=  2.05×  bw= 40.261GB/s  bw_util=13.980%
+  [481/720]  B=  2 b=16 d= 6 d_eff= 2 L=8192 N= 82  fi_tree=   1.568ms  cascade=   0.683ms  deft=    n/a ms  ragged=   0.690ms  spd_tree=  2.27×  bw= 15.573GB/s  bw_util=5.407%
+  [482/720]  B=  2 b=16 d=10 d_eff= 2 L=8192 N=137  fi_tree=   2.744ms  cascade=   0.769ms  deft=    n/a ms  ragged=   0.769ms  spd_tree=  3.57×  bw= 24.547GB/s  bw_util=8.523%
+  [483/720]  B=  2 b=16 d=16 d_eff= 3 L=8192 N=219  fi_tree=   2.888ms  cascade=   1.128ms  deft=    n/a ms  ragged=   1.204ms  spd_tree=  2.40×  bw= 31.027GB/s  bw_util=10.773%
+  [484/720]  B=  2 b=16 d=24 d_eff= 3 L=8192 N=329  fi_tree=   3.179ms  cascade=   1.609ms  deft=    n/a ms  ragged=   1.591ms  spd_tree=  2.00×  bw= 35.110GB/s  bw_util=12.191%
+  [485/720]  B=  2 b=16 d=32 d_eff= 3 L=8192 N=439  fi_tree=   4.713ms  cascade=   2.361ms  deft=    n/a ms  ragged=   2.286ms  spd_tree=  2.06×  bw= 32.181GB/s  bw_util=11.174%
+  [486/720]  B=  2 b=16 d=36 d_eff= 3 L=8192 N=494  fi_tree=   4.726ms  cascade=   2.389ms  deft=    n/a ms  ragged=   2.314ms  spd_tree=  2.04×  bw= 35.186GB/s  bw_util=12.217%
+  [487/720]  B=  2 b=24 d= 6 d_eff= 2 L=8192 N=123  fi_tree=   2.537ms  cascade=   0.777ms  deft=    n/a ms  ragged=   0.766ms  spd_tree=  3.31×  bw= 22.930GB/s  bw_util=7.962%
+  [488/720]  B=  2 b=24 d=10 d_eff= 2 L=8192 N=206  fi_tree=   2.853ms  cascade=   1.160ms  deft=    n/a ms  ragged=   1.129ms  spd_tree=  2.53×  bw= 24.729GB/s  bw_util=8.586%
+  [489/720]  B=  2 b=24 d=16 d_eff= 3 L=8192 N=329  fi_tree=   3.194ms  cascade=   1.633ms  deft=    n/a ms  ragged=   1.617ms  spd_tree=  1.98×  bw= 34.351GB/s  bw_util=11.927%
+  [490/720]  B=  2 b=24 d=24 d_eff= 3 L=8192 N=494  fi_tree=   4.779ms  cascade=   2.401ms  deft=    n/a ms  ragged=   2.318ms  spd_tree=  2.06×  bw= 35.347GB/s  bw_util=12.273%
+  [491/720]  B=  2 b=24 d=32 d_eff= 3 L=8192 N=658  fi_tree=   6.470ms  cascade=   3.282ms  deft=    n/a ms  ragged=   3.081ms  spd_tree=  2.10×  bw= 35.414GB/s  bw_util=12.296%
+  [492/720]  B=  2 b=24 d=36 d_eff= 3 L=8192 N=741  fi_tree=   6.549ms  cascade=   3.485ms  deft=    n/a ms  ragged=   3.223ms  spd_tree=  2.03×  bw= 38.278GB/s  bw_util=13.291%
+  [493/720]  B=  2 b=32 d= 6 d_eff= 2 L=8192 N=165  fi_tree=   2.805ms  cascade=   0.816ms  deft=    n/a ms  ragged=   0.774ms  spd_tree=  3.62×  bw= 29.969GB/s  bw_util=10.406%
+  [494/720]  B=  2 b=32 d=10 d_eff= 2 L=8192 N=274  fi_tree=   3.134ms  cascade=   1.536ms  deft=    n/a ms  ragged=   1.515ms  spd_tree=  2.07×  bw= 23.958GB/s  bw_util=8.319%
+  [495/720]  B=  2 b=32 d=16 d_eff= 2 L=8192 N=439  fi_tree=   4.608ms  cascade=   2.052ms  deft=    n/a ms  ragged=   1.981ms  spd_tree=  2.33×  bw= 29.040GB/s  bw_util=10.083%
+  [496/720]  B=  2 b=32 d=24 d_eff= 3 L=8192 N=658  fi_tree=   6.497ms  cascade=   3.284ms  deft=    n/a ms  ragged=   3.018ms  spd_tree=  2.15×  bw= 36.213GB/s  bw_util=12.574%
+  [497/720]  B=  2 b=32 d=32 d_eff= 3 L=8192 N=878  fi_tree=   8.252ms  cascade=   4.314ms  deft=    n/a ms  ragged=   3.880ms  spd_tree=  2.13×  bw= 37.076GB/s  bw_util=12.873%
+  [498/720]  B=  2 b=32 d=36 d_eff= 3 L=8192 N=987  fi_tree=   9.787ms  cascade=   4.909ms  deft=    n/a ms  ragged=   4.245ms  spd_tree=  2.31×  bw= 38.594GB/s  bw_util=13.401%
+  [499/720]  B=  2 b=36 d= 6 d_eff= 2 L=8192 N=185  fi_tree=   2.839ms  cascade=   1.177ms  deft=    n/a ms  ragged=   1.172ms  spd_tree=  2.42×  bw= 22.928GB/s  bw_util=7.961%
+  [500/720]  B=  2 b=36 d=10 d_eff= 2 L=8192 N=309  fi_tree=   3.176ms  cascade=   1.605ms  deft=    n/a ms  ragged=   1.571ms  spd_tree=  2.02×  bw= 27.786GB/s  bw_util=9.648%
+  [501/720]  B=  2 b=36 d=16 d_eff= 2 L=8192 N=494  fi_tree=   4.700ms  cascade=   2.356ms  deft=    n/a ms  ragged=   2.259ms  spd_tree=  2.08×  bw= 29.239GB/s  bw_util=10.152%
+  [502/720]  B=  2 b=36 d=24 d_eff= 3 L=8192 N=741  fi_tree=   6.367ms  cascade=   3.484ms  deft=    n/a ms  ragged=   3.211ms  spd_tree=  1.98×  bw= 38.776GB/s  bw_util=13.464%
+  [503/720]  B=  2 b=36 d=32 d_eff= 3 L=8192 N=987  fi_tree=   9.741ms  cascade=   4.952ms  deft=    n/a ms  ragged=   4.261ms  spd_tree=  2.29×  bw= 38.760GB/s  bw_util=13.458%
+  [504/720]  B=  2 b=36 d=36 d_eff= 3 L=8192 N=1111  fi_tree=  10.211ms  cascade=   5.604ms  deft=    n/a ms  ragged=   4.775ms  spd_tree=  2.14×  bw= 38.739GB/s  bw_util=13.451%
+  [505/720]  B=  4 b=6 d= 6 d_eff= 3 L=8192 N= 31  fi_tree=   2.178ms  cascade=   0.459ms  deft=    n/a ms  ragged=   0.473ms  spd_tree=  4.61×  bw= 21.482GB/s  bw_util=7.459%
+  [506/720]  B=  4 b=6 d=10 d_eff= 3 L=8192 N= 51  fi_tree=   2.124ms  cascade=   0.688ms  deft=    n/a ms  ragged=   0.700ms  spd_tree=  3.03×  bw= 24.338GB/s  bw_util=8.451%
+  [507/720]  B=  4 b=6 d=16 d_eff= 3 L=8192 N= 82  fi_tree=   3.131ms  cascade=   0.764ms  deft=    n/a ms  ragged=   0.841ms  spd_tree=  3.72×  bw= 31.943GB/s  bw_util=11.091%
+  [508/720]  B=  4 b=6 d=24 d_eff= 4 L=8192 N=123  fi_tree=   3.219ms  cascade=   1.169ms  deft=    n/a ms  ragged=   1.193ms  spd_tree=  2.70×  bw= 40.880GB/s  bw_util=14.194%
+  [509/720]  B=  4 b=6 d=32 d_eff= 4 L=8192 N=165  fi_tree=   4.299ms  cascade=   1.583ms  deft=    n/a ms  ragged=   1.587ms  spd_tree=  2.71×  bw= 40.880GB/s  bw_util=14.194%
+  [510/720]  B=  4 b=6 d=36 d_eff= 4 L=8192 N=185  fi_tree=   4.394ms  cascade=   1.486ms  deft=    n/a ms  ragged=   1.595ms  spd_tree=  2.76×  bw= 45.863GB/s  bw_util=15.925%
+  [511/720]  B=  4 b=10 d= 6 d_eff= 2 L=8192 N= 51  fi_tree=   2.208ms  cascade=   0.690ms  deft=    n/a ms  ragged=   0.698ms  spd_tree=  3.16×  bw= 21.024GB/s  bw_util=7.300%
+  [512/720]  B=  4 b=10 d=10 d_eff= 3 L=8192 N= 86  fi_tree=   3.257ms  cascade=   0.763ms  deft=    n/a ms  ragged=   0.857ms  spd_tree=  3.80×  bw= 33.262GB/s  bw_util=11.549%
+  [513/720]  B=  4 b=10 d=16 d_eff= 3 L=8192 N=137  fi_tree=   4.215ms  cascade=   1.515ms  deft=    n/a ms  ragged=   1.509ms  spd_tree=  2.79×  bw= 29.756GB/s  bw_util=10.332%
+  [514/720]  B=  4 b=10 d=24 d_eff= 3 L=8192 N=206  fi_tree=   4.470ms  cascade=   1.956ms  deft=    n/a ms  ragged=   1.974ms  spd_tree=  2.26×  bw= 34.200GB/s  bw_util=11.875%
+  [515/720]  B=  4 b=10 d=32 d_eff= 3 L=8192 N=274  fi_tree=   5.919ms  cascade=   2.429ms  deft=    n/a ms  ragged=   2.387ms  spd_tree=  2.48×  bw= 37.615GB/s  bw_util=13.061%
+  [516/720]  B=  4 b=10 d=36 d_eff= 4 L=8192 N=309  fi_tree=   6.010ms  cascade=   2.781ms  deft=    n/a ms  ragged=   2.773ms  spd_tree=  2.17×  bw= 43.955GB/s  bw_util=15.262%
+  [517/720]  B=  4 b=16 d= 6 d_eff= 2 L=8192 N= 82  fi_tree=   3.126ms  cascade=   0.752ms  deft=    n/a ms  ragged=   0.789ms  spd_tree=  3.96×  bw= 27.227GB/s  bw_util=9.454%
+  [518/720]  B=  4 b=16 d=10 d_eff= 2 L=8192 N=137  fi_tree=   4.364ms  cascade=   1.489ms  deft=    n/a ms  ragged=   1.498ms  spd_tree=  2.91×  bw= 25.198GB/s  bw_util=8.749%
+  [519/720]  B=  4 b=16 d=16 d_eff= 3 L=8192 N=219  fi_tree=   4.524ms  cascade=   2.240ms  deft=    n/a ms  ragged=   2.240ms  spd_tree=  2.02×  bw= 33.353GB/s  bw_util=11.581%
+  [520/720]  B=  4 b=16 d=24 d_eff= 3 L=8192 N=329  fi_tree=   6.211ms  cascade=   3.117ms  deft=    n/a ms  ragged=   3.029ms  spd_tree=  2.05×  bw= 36.890GB/s  bw_util=12.809%
+  [521/720]  B=  4 b=16 d=32 d_eff= 3 L=8192 N=439  fi_tree=   9.069ms  cascade=   4.100ms  deft=    n/a ms  ragged=   3.897ms  spd_tree=  2.33×  bw= 37.756GB/s  bw_util=13.110%
+  [522/720]  B=  4 b=16 d=36 d_eff= 3 L=8192 N=494  fi_tree=   9.190ms  cascade=   4.326ms  deft=    n/a ms  ragged=   4.214ms  spd_tree=  2.18×  bw= 38.647GB/s  bw_util=13.419%
+  [523/720]  B=  4 b=24 d= 6 d_eff= 2 L=8192 N=123  fi_tree=   4.232ms  cascade=   1.513ms  deft=    n/a ms  ragged=   1.512ms  spd_tree=  2.80×  bw= 23.226GB/s  bw_util=8.064%
+  [524/720]  B=  4 b=24 d=10 d_eff= 2 L=8192 N=206  fi_tree=   4.464ms  cascade=   1.966ms  deft=    n/a ms  ragged=   2.013ms  spd_tree=  2.22×  bw= 27.735GB/s  bw_util=9.630%
+  [525/720]  B=  4 b=24 d=16 d_eff= 3 L=8192 N=329  fi_tree=   6.227ms  cascade=   3.118ms  deft=    n/a ms  ragged=   3.105ms  spd_tree=  2.01×  bw= 35.780GB/s  bw_util=12.424%
+  [526/720]  B=  4 b=24 d=24 d_eff= 3 L=8192 N=494  fi_tree=   9.580ms  cascade=   4.449ms  deft=    n/a ms  ragged=   4.342ms  spd_tree=  2.21×  bw= 37.736GB/s  bw_util=13.103%
+  [527/720]  B=  4 b=24 d=32 d_eff= 3 L=8192 N=658  fi_tree=  12.570ms  cascade=   6.089ms  deft=    n/a ms  ragged=   5.482ms  spd_tree=  2.29×  bw= 39.807GB/s  bw_util=13.822%
+  [528/720]  B=  4 b=24 d=36 d_eff= 3 L=8192 N=741  fi_tree=  13.207ms  cascade=   6.771ms  deft=    n/a ms  ragged=   6.217ms  spd_tree=  2.12×  bw= 39.687GB/s  bw_util=13.780%
+  [529/720]  B=  4 b=32 d= 6 d_eff= 2 L=8192 N=165  fi_tree=   4.322ms  cascade=   1.585ms  deft=    n/a ms  ragged=   1.585ms  spd_tree=  2.73×  bw= 29.271GB/s  bw_util=10.164%
+  [530/720]  B=  4 b=32 d=10 d_eff= 2 L=8192 N=274  fi_tree=   5.980ms  cascade=   2.466ms  deft=    n/a ms  ragged=   2.439ms  spd_tree=  2.45×  bw= 29.767GB/s  bw_util=10.336%
+  [531/720]  B=  4 b=32 d=16 d_eff= 2 L=8192 N=439  fi_tree=   8.994ms  cascade=   4.024ms  deft=    n/a ms  ragged=   3.884ms  spd_tree=  2.32×  bw= 29.633GB/s  bw_util=10.289%
+  [532/720]  B=  4 b=32 d=24 d_eff= 3 L=8192 N=658  fi_tree=  12.580ms  cascade=   5.948ms  deft=    n/a ms  ragged=   5.602ms  spd_tree=  2.25×  bw= 39.014GB/s  bw_util=13.547%
+  [533/720]  B=  4 b=32 d=32 d_eff= 3 L=8192 N=878  fi_tree=  16.575ms  cascade=   8.376ms  deft=    n/a ms  ragged=   7.526ms  spd_tree=  2.20×  bw= 38.226GB/s  bw_util=13.273%
+  [534/720]  B=  4 b=32 d=36 d_eff= 3 L=8192 N=987  fi_tree=  18.512ms  cascade=   9.734ms  deft=    n/a ms  ragged=   8.932ms  spd_tree=  2.07×  bw= 36.685GB/s  bw_util=12.738%
+  [535/720]  B=  4 b=36 d= 6 d_eff= 2 L=8192 N=185  fi_tree=   4.440ms  cascade=   1.935ms  deft=    n/a ms  ragged=   1.936ms  spd_tree=  2.29×  bw= 27.753GB/s  bw_util=9.636%
+  [536/720]  B=  4 b=36 d=10 d_eff= 2 L=8192 N=309  fi_tree=   6.178ms  cascade=   3.034ms  deft=    n/a ms  ragged=   3.026ms  spd_tree=  2.04×  bw= 28.845GB/s  bw_util=10.016%
+  [537/720]  B=  4 b=36 d=16 d_eff= 2 L=8192 N=494  fi_tree=   9.228ms  cascade=   4.459ms  deft=    n/a ms  ragged=   4.348ms  spd_tree=  2.12×  bw= 30.387GB/s  bw_util=10.551%
+  [538/720]  B=  4 b=36 d=24 d_eff= 3 L=8192 N=741  fi_tree=  13.039ms  cascade=   6.900ms  deft=    n/a ms  ragged=   6.227ms  spd_tree=  2.09×  bw= 39.990GB/s  bw_util=13.886%
+  [539/720]  B=  4 b=36 d=32 d_eff= 3 L=8192 N=987  fi_tree=  18.479ms  cascade=   9.871ms  deft=    n/a ms  ragged=   8.672ms  spd_tree=  2.13×  bw= 38.090GB/s  bw_util=13.226%
+  [540/720]  B=  4 b=36 d=36 d_eff= 3 L=8192 N=1111  fi_tree=  20.991ms  cascade=  11.380ms  deft=    n/a ms  ragged=   9.693ms  spd_tree=  2.17×  bw= 38.168GB/s  bw_util=13.253%
+  [541/720]  B=  8 b=6 d= 6 d_eff= 3 L=8192 N= 31  fi_tree=   3.655ms  cascade=   0.669ms  deft=    n/a ms  ragged=   0.683ms  spd_tree=  5.35×  bw= 29.731GB/s  bw_util=10.323%
+  [542/720]  B=  8 b=6 d=10 d_eff= 3 L=8192 N= 51  fi_tree=   3.672ms  cascade=   1.159ms  deft=    n/a ms  ragged=   1.155ms  spd_tree=  3.18×  bw= 29.517GB/s  bw_util=10.249%
+  [543/720]  B=  8 b=6 d=16 d_eff= 3 L=8192 N= 82  fi_tree=   4.868ms  cascade=   1.584ms  deft=    n/a ms  ragged=   1.623ms  spd_tree=  3.00×  bw= 33.121GB/s  bw_util=11.500%
+  [544/720]  B=  8 b=6 d=24 d_eff= 4 L=8192 N=123  fi_tree=   4.957ms  cascade=   2.271ms  deft=    n/a ms  ragged=   2.334ms  spd_tree=  2.12×  bw= 41.788GB/s  bw_util=14.510%
+  [545/720]  B=  8 b=6 d=32 d_eff= 4 L=8192 N=165  fi_tree=   8.258ms  cascade=   3.088ms  deft=    n/a ms  ragged=   3.104ms  spd_tree=  2.66×  bw= 41.803GB/s  bw_util=14.515%
+  [546/720]  B=  8 b=6 d=36 d_eff= 4 L=8192 N=185  fi_tree=   8.383ms  cascade=   3.200ms  deft=    n/a ms  ragged=   3.197ms  spd_tree=  2.62×  bw= 45.755GB/s  bw_util=15.887%
+  [547/720]  B=  8 b=10 d= 6 d_eff= 2 L=8192 N= 51  fi_tree=   3.789ms  cascade=   1.132ms  deft=    n/a ms  ragged=   1.194ms  spd_tree=  3.17×  bw= 24.590GB/s  bw_util=8.538%
+  [548/720]  B=  8 b=10 d=10 d_eff= 3 L=8192 N= 86  fi_tree=   5.351ms  cascade=   1.439ms  deft=    n/a ms  ragged=   1.627ms  spd_tree=  3.29×  bw= 35.052GB/s  bw_util=12.171%
+  [549/720]  B=  8 b=10 d=16 d_eff= 3 L=8192 N=137  fi_tree=   7.879ms  cascade=   2.418ms  deft=    n/a ms  ragged=   2.449ms  spd_tree=  3.22×  bw= 36.656GB/s  bw_util=12.728%
+  [550/720]  B=  8 b=10 d=24 d_eff= 3 L=8192 N=206  fi_tree=   8.660ms  cascade=   3.523ms  deft=    n/a ms  ragged=   3.563ms  spd_tree=  2.43×  bw= 37.892GB/s  bw_util=13.157%
+  [551/720]  B=  8 b=10 d=32 d_eff= 3 L=8192 N=274  fi_tree=  11.979ms  cascade=   4.739ms  deft=    n/a ms  ragged=   4.771ms  spd_tree=  2.51×  bw= 37.640GB/s  bw_util=13.069%
+  [552/720]  B=  8 b=10 d=36 d_eff= 4 L=8192 N=309  fi_tree=  12.034ms  cascade=   5.501ms  deft=    n/a ms  ragged=   5.475ms  spd_tree=  2.20×  bw= 44.527GB/s  bw_util=15.461%
+  [553/720]  B=  8 b=16 d= 6 d_eff= 2 L=8192 N= 82  fi_tree=   4.864ms  cascade=   1.572ms  deft=    n/a ms  ragged=   1.587ms  spd_tree=  3.07×  bw= 27.095GB/s  bw_util=9.408%
+  [554/720]  B=  8 b=16 d=10 d_eff= 2 L=8192 N=137  fi_tree=   7.876ms  cascade=   2.422ms  deft=    n/a ms  ragged=   2.455ms  spd_tree=  3.21×  bw= 30.746GB/s  bw_util=10.676%
+  [555/720]  B=  8 b=16 d=16 d_eff= 3 L=8192 N=219  fi_tree=   8.875ms  cascade=   3.956ms  deft=    n/a ms  ragged=   4.025ms  spd_tree=  2.21×  bw= 37.123GB/s  bw_util=12.890%
+  [556/720]  B=  8 b=16 d=24 d_eff= 3 L=8192 N=329  fi_tree=  12.444ms  cascade=   5.994ms  deft=    n/a ms  ragged=   5.851ms  spd_tree=  2.13×  bw= 38.198GB/s  bw_util=13.263%
+  [557/720]  B=  8 b=16 d=32 d_eff= 3 L=8192 N=439  fi_tree=  17.195ms  cascade=   7.965ms  deft=    n/a ms  ragged=   7.736ms  spd_tree=  2.22×  bw= 38.038GB/s  bw_util=13.208%
+  [558/720]  B=  8 b=16 d=36 d_eff= 3 L=8192 N=494  fi_tree=  17.962ms  cascade=   8.681ms  deft=    n/a ms  ragged=   8.565ms  spd_tree=  2.10×  bw= 38.030GB/s  bw_util=13.205%
+  [559/720]  B=  8 b=24 d= 6 d_eff= 2 L=8192 N=123  fi_tree=   7.760ms  cascade=   2.410ms  deft=    n/a ms  ragged=   2.421ms  spd_tree=  3.20×  bw= 29.013GB/s  bw_util=10.074%
+  [560/720]  B=  8 b=24 d=10 d_eff= 2 L=8192 N=206  fi_tree=   8.857ms  cascade=   3.829ms  deft=    n/a ms  ragged=   3.904ms  spd_tree=  2.27×  bw= 28.609GB/s  bw_util=9.934%
+  [561/720]  B=  8 b=24 d=16 d_eff= 3 L=8192 N=329  fi_tree=  12.642ms  cascade=   6.057ms  deft=    n/a ms  ragged=   5.830ms  spd_tree=  2.17×  bw= 38.104GB/s  bw_util=13.231%
+  [562/720]  B=  8 b=24 d=24 d_eff= 3 L=8192 N=494  fi_tree=  18.049ms  cascade=   8.874ms  deft=    n/a ms  ragged=   8.482ms  spd_tree=  2.13×  bw= 38.631GB/s  bw_util=13.414%
+  [563/720]  B=  8 b=24 d=32 d_eff= 3 L=8192 N=658  fi_tree=  26.067ms  cascade=  11.972ms  deft=    n/a ms  ragged=  11.134ms  spd_tree=  2.34×  bw= 39.200GB/s  bw_util=13.611%
+  [564/720]  B=  8 b=24 d=36 d_eff= 3 L=8192 N=741  fi_tree=  27.015ms  cascade=  13.708ms  deft=    n/a ms  ragged=  12.807ms  spd_tree=  2.11×  bw= 38.532GB/s  bw_util=13.379%
+  [565/720]  B=  8 b=32 d= 6 d_eff= 2 L=8192 N=165  fi_tree=   8.274ms  cascade=   3.172ms  deft=    n/a ms  ragged=   3.238ms  spd_tree=  2.56×  bw= 28.660GB/s  bw_util=9.951%
+  [566/720]  B=  8 b=32 d=10 d_eff= 2 L=8192 N=274  fi_tree=  12.221ms  cascade=   4.807ms  deft=    n/a ms  ragged=   4.771ms  spd_tree=  2.56×  bw= 30.442GB/s  bw_util=10.570%
+  [567/720]  B=  8 b=32 d=16 d_eff= 2 L=8192 N=439  fi_tree=  17.096ms  cascade=   7.601ms  deft=    n/a ms  ragged=   7.495ms  spd_tree=  2.28×  bw= 30.707GB/s  bw_util=10.662%
+  [568/720]  B=  8 b=32 d=24 d_eff= 3 L=8192 N=658  fi_tree=  26.143ms  cascade=  11.714ms  deft=    n/a ms  ragged=  11.398ms  spd_tree=  2.29×  bw= 38.350GB/s  bw_util=13.316%
+  [569/720]  B=  8 b=32 d=32 d_eff= 3 L=8192 N=878  fi_tree=  33.117ms  cascade=  16.591ms  deft=    n/a ms  ragged=  14.721ms  spd_tree=  2.25×  bw= 39.088GB/s  bw_util=13.572%
+  [570/720]  B=  8 b=32 d=36 d_eff= 3 L=8192 N=987  fi_tree=  38.273ms  cascade=  19.116ms  deft=    n/a ms  ragged=  16.742ms  spd_tree=  2.29×  bw= 39.145GB/s  bw_util=13.592%
+  [571/720]  B=  8 b=36 d= 6 d_eff= 2 L=8192 N=185  fi_tree=   8.676ms  cascade=   3.559ms  deft=    n/a ms  ragged=   3.595ms  spd_tree=  2.41×  bw= 29.899GB/s  bw_util=10.382%
+  [572/720]  B=  8 b=36 d=10 d_eff= 2 L=8192 N=309  fi_tree=  12.591ms  cascade=   5.771ms  deft=    n/a ms  ragged=   5.609ms  spd_tree=  2.24×  bw= 31.125GB/s  bw_util=10.807%
+  [573/720]  B=  8 b=36 d=16 d_eff= 2 L=8192 N=494  fi_tree=  18.014ms  cascade=   8.886ms  deft=    n/a ms  ragged=   8.701ms  spd_tree=  2.07×  bw= 30.368GB/s  bw_util=10.544%
+  [574/720]  B=  8 b=36 d=24 d_eff= 3 L=8192 N=741  fi_tree=  26.912ms  cascade=  13.800ms  deft=    n/a ms  ragged=  12.746ms  spd_tree=  2.11×  bw= 39.078GB/s  bw_util=13.569%
+  [575/720]  B=  8 b=36 d=32 d_eff= 3 L=8192 N=987  fi_tree=  38.202ms  cascade=  19.296ms  deft=    n/a ms  ragged=  16.863ms  spd_tree=  2.27×  bw= 39.176GB/s  bw_util=13.603%
+  [576/720]  B=  8 b=36 d=36 d_eff= 3 L=8192 N=1111  fi_tree=  43.317ms  cascade=  22.457ms  deft=    n/a ms  ragged=  19.104ms  spd_tree=  2.27×  bw= 38.731GB/s  bw_util=13.448%
+  [577/720]  B=  1 b=6 d= 6 d_eff= 3 L=16384 N= 31  fi_tree=   1.167ms  cascade=   0.825ms  deft=    n/a ms  ragged=   0.833ms  spd_tree=  1.40×  bw=  3.047GB/s  bw_util=1.058%
+  [578/720]  B=  1 b=6 d=10 d_eff= 3 L=16384 N= 51  fi_tree=   1.058ms  cascade=   0.832ms  deft=    n/a ms  ragged=   0.841ms  spd_tree=  1.26×  bw=  5.067GB/s  bw_util=1.759%
+  [579/720]  B=  1 b=6 d=16 d_eff= 3 L=16384 N= 82  fi_tree=   1.322ms  cascade=   0.852ms  deft=    n/a ms  ragged=   0.859ms  spd_tree=  1.54×  bw=  7.819GB/s  bw_util=2.715%
+  [580/720]  B=  1 b=6 d=24 d_eff= 4 L=16384 N=123  fi_tree=   1.298ms  cascade=   0.866ms  deft=    n/a ms  ragged=   0.874ms  spd_tree=  1.49×  bw= 13.942GB/s  bw_util=4.841%
+  [581/720]  B=  1 b=6 d=32 d_eff= 4 L=16384 N=165  fi_tree=   2.546ms  cascade=   1.390ms  deft=    n/a ms  ragged=   1.416ms  spd_tree=  1.80×  bw= 11.453GB/s  bw_util=3.977%
+  [582/720]  B=  1 b=6 d=36 d_eff= 4 L=16384 N=185  fi_tree=   2.849ms  cascade=   1.426ms  deft=    n/a ms  ragged=   1.425ms  spd_tree=  2.00×  bw= 12.828GB/s  bw_util=4.454%
+  [583/720]  B=  1 b=10 d= 6 d_eff= 2 L=16384 N= 51  fi_tree=   1.004ms  cascade=   0.833ms  deft=    n/a ms  ragged=   0.842ms  spd_tree=  1.19×  bw=  4.360GB/s  bw_util=1.514%
+  [584/720]  B=  1 b=10 d=10 d_eff= 3 L=16384 N= 86  fi_tree=   1.311ms  cascade=   0.853ms  deft=    n/a ms  ragged=   0.861ms  spd_tree=  1.52×  bw=  8.276GB/s  bw_util=2.874%
+  [585/720]  B=  1 b=10 d=16 d_eff= 3 L=16384 N=137  fi_tree=   2.737ms  cascade=   1.374ms  deft=    n/a ms  ragged=   1.400ms  spd_tree=  1.95×  bw=  8.015GB/s  bw_util=2.783%
+  [586/720]  B=  1 b=10 d=24 d_eff= 3 L=16384 N=206  fi_tree=   2.554ms  cascade=   1.416ms  deft=    n/a ms  ragged=   1.425ms  spd_tree=  1.79×  bw= 11.839GB/s  bw_util=4.111%
+  [587/720]  B=  1 b=10 d=32 d_eff= 3 L=16384 N=274  fi_tree=   3.108ms  cascade=   1.605ms  deft=    n/a ms  ragged=   1.585ms  spd_tree=  1.96×  bw= 14.166GB/s  bw_util=4.919%
+  [588/720]  B=  1 b=10 d=36 d_eff= 4 L=16384 N=309  fi_tree=   3.077ms  cascade=   1.597ms  deft=    n/a ms  ragged=   1.596ms  spd_tree=  1.93×  bw= 19.096GB/s  bw_util=6.631%
+  [589/720]  B=  1 b=16 d= 6 d_eff= 2 L=16384 N= 82  fi_tree=   1.320ms  cascade=   0.852ms  deft=    n/a ms  ragged=   0.858ms  spd_tree=  1.54×  bw=  6.263GB/s  bw_util=2.175%
+  [590/720]  B=  1 b=16 d=10 d_eff= 2 L=16384 N=137  fi_tree=   2.708ms  cascade=   1.375ms  deft=    n/a ms  ragged=   1.407ms  spd_tree=  1.93×  bw=  6.707GB/s  bw_util=2.329%
+  [591/720]  B=  1 b=16 d=16 d_eff= 3 L=16384 N=219  fi_tree=   2.440ms  cascade=   1.430ms  deft=    n/a ms  ragged=   1.437ms  spd_tree=  1.70×  bw= 13.001GB/s  bw_util=4.514%
+  [592/720]  B=  1 b=16 d=24 d_eff= 3 L=16384 N=329  fi_tree=   2.999ms  cascade=   1.613ms  deft=    n/a ms  ragged=   1.604ms  spd_tree=  1.87×  bw= 17.420GB/s  bw_util=6.049%
+  [593/720]  B=  1 b=16 d=32 d_eff= 3 L=16384 N=439  fi_tree=   5.876ms  cascade=   2.415ms  deft=    n/a ms  ragged=   2.318ms  spd_tree=  2.53×  bw= 15.866GB/s  bw_util=5.509%
+  [594/720]  B=  1 b=16 d=36 d_eff= 3 L=16384 N=494  fi_tree=   5.814ms  cascade=   2.424ms  deft=    n/a ms  ragged=   2.346ms  spd_tree=  2.48×  bw= 17.351GB/s  bw_util=6.025%
+  [595/720]  B=  1 b=24 d= 6 d_eff= 2 L=16384 N=123  fi_tree=   2.916ms  cascade=   1.360ms  deft=    n/a ms  ragged=   1.399ms  spd_tree=  2.08×  bw=  6.276GB/s  bw_util=2.179%
+  [596/720]  B=  1 b=24 d=10 d_eff= 2 L=16384 N=206  fi_tree=   2.451ms  cascade=   1.425ms  deft=    n/a ms  ragged=   1.428ms  spd_tree=  1.72×  bw=  9.776GB/s  bw_util=3.394%
+  [597/720]  B=  1 b=24 d=16 d_eff= 3 L=16384 N=329  fi_tree=   2.998ms  cascade=   1.607ms  deft=    n/a ms  ragged=   1.599ms  spd_tree=  1.88×  bw= 17.368GB/s  bw_util=6.030%
+  [598/720]  B=  1 b=24 d=24 d_eff= 3 L=16384 N=494  fi_tree=   5.890ms  cascade=   2.418ms  deft=    n/a ms  ragged=   2.328ms  spd_tree=  2.53×  bw= 17.598GB/s  bw_util=6.110%
+  [599/720]  B=  1 b=24 d=32 d_eff= 3 L=16384 N=658  fi_tree=   6.188ms  cascade=   3.233ms  deft=    n/a ms  ragged=   3.084ms  spd_tree=  2.01×  bw= 17.692GB/s  bw_util=6.143%
+  [600/720]  B=  1 b=24 d=36 d_eff= 3 L=16384 N=741  fi_tree=   6.286ms  cascade=   3.304ms  deft=    n/a ms  ragged=   3.109ms  spd_tree=  2.02×  bw= 19.839GB/s  bw_util=6.888%
+  [601/720]  B=  1 b=32 d= 6 d_eff= 2 L=16384 N=165  fi_tree=   2.640ms  cascade=   1.397ms  deft=    n/a ms  ragged=   1.427ms  spd_tree=  1.85×  bw=  8.126GB/s  bw_util=2.822%
+  [602/720]  B=  1 b=32 d=10 d_eff= 2 L=16384 N=274  fi_tree=   3.277ms  cascade=   1.582ms  deft=    n/a ms  ragged=   1.581ms  spd_tree=  2.07×  bw= 11.482GB/s  bw_util=3.987%
+  [603/720]  B=  1 b=32 d=16 d_eff= 2 L=16384 N=439  fi_tree=   5.803ms  cascade=   2.410ms  deft=    n/a ms  ragged=   2.336ms  spd_tree=  2.48×  bw= 12.318GB/s  bw_util=4.277%
+  [604/720]  B=  1 b=32 d=24 d_eff= 3 L=16384 N=658  fi_tree=   6.194ms  cascade=   3.229ms  deft=    n/a ms  ragged=   3.079ms  spd_tree=  2.01×  bw= 17.745GB/s  bw_util=6.162%
+  [605/720]  B=  1 b=32 d=32 d_eff= 3 L=16384 N=878  fi_tree=   9.241ms  cascade=   4.124ms  deft=    n/a ms  ragged=   3.793ms  spd_tree=  2.44×  bw= 18.963GB/s  bw_util=6.585%
+  [606/720]  B=  1 b=32 d=36 d_eff= 3 L=16384 N=987  fi_tree=   9.377ms  cascade=   4.774ms  deft=    n/a ms  ragged=   4.402ms  spd_tree=  2.13×  bw= 18.611GB/s  bw_util=6.462%
+  [607/720]  B=  1 b=36 d= 6 d_eff= 2 L=16384 N=185  fi_tree=   2.752ms  cascade=   1.416ms  deft=    n/a ms  ragged=   1.424ms  spd_tree=  1.93×  bw=  9.432GB/s  bw_util=3.275%
+  [608/720]  B=  1 b=36 d=10 d_eff= 2 L=16384 N=309  fi_tree=   3.213ms  cascade=   1.610ms  deft=    n/a ms  ragged=   1.607ms  spd_tree=  2.00×  bw= 13.581GB/s  bw_util=4.716%
+  [609/720]  B=  1 b=36 d=16 d_eff= 2 L=16384 N=494  fi_tree=   5.700ms  cascade=   2.423ms  deft=    n/a ms  ragged=   2.347ms  spd_tree=  2.43×  bw= 14.073GB/s  bw_util=4.887%
+  [610/720]  B=  1 b=36 d=24 d_eff= 3 L=16384 N=741  fi_tree=   6.177ms  cascade=   3.301ms  deft=    n/a ms  ragged=   3.097ms  spd_tree=  1.99×  bw= 20.102GB/s  bw_util=6.980%
+  [611/720]  B=  1 b=36 d=32 d_eff= 3 L=16384 N=987  fi_tree=   9.157ms  cascade=   4.772ms  deft=    n/a ms  ragged=   4.415ms  spd_tree=  2.07×  bw= 18.702GB/s  bw_util=6.494%
+  [612/720]  B=  1 b=36 d=36 d_eff= 3 L=16384 N=1111  fi_tree=   9.676ms  cascade=   5.085ms  deft=    n/a ms  ragged=   4.601ms  spd_tree=  2.10×  bw= 20.102GB/s  bw_util=6.980%
+  [613/720]  B=  2 b=6 d= 6 d_eff= 3 L=16384 N= 31  fi_tree=   2.194ms  cascade=   0.835ms  deft=    n/a ms  ragged=   0.845ms  spd_tree=  2.60×  bw=  6.012GB/s  bw_util=2.087%
+  [614/720]  B=  2 b=6 d=10 d_eff= 3 L=16384 N= 51  fi_tree=   2.333ms  cascade=   0.852ms  deft=    n/a ms  ragged=   0.867ms  spd_tree=  2.69×  bw=  9.823GB/s  bw_util=3.411%
+  [615/720]  B=  2 b=6 d=16 d_eff= 3 L=16384 N= 82  fi_tree=   3.108ms  cascade=   1.400ms  deft=    n/a ms  ragged=   1.338ms  spd_tree=  2.32×  bw= 10.040GB/s  bw_util=3.486%
+  [616/720]  B=  2 b=6 d=24 d_eff= 4 L=16384 N=123  fi_tree=   2.920ms  cascade=   1.431ms  deft=    n/a ms  ragged=   1.449ms  spd_tree=  2.01×  bw= 16.820GB/s  bw_util=5.840%
+  [617/720]  B=  2 b=6 d=32 d_eff= 4 L=16384 N=165  fi_tree=   5.589ms  cascade=   1.641ms  deft=    n/a ms  ragged=   1.630ms  spd_tree=  3.43×  bw= 19.899GB/s  bw_util=6.910%
+  [618/720]  B=  2 b=6 d=36 d_eff= 4 L=16384 N=185  fi_tree=   5.539ms  cascade=   1.653ms  deft=    n/a ms  ragged=   1.638ms  spd_tree=  3.38×  bw= 22.327GB/s  bw_util=7.752%
+  [619/720]  B=  2 b=10 d= 6 d_eff= 2 L=16384 N= 51  fi_tree=   2.261ms  cascade=   0.855ms  deft=    n/a ms  ragged=   0.870ms  spd_tree=  2.60×  bw=  8.435GB/s  bw_util=2.929%
+  [620/720]  B=  2 b=10 d=10 d_eff= 3 L=16384 N= 86  fi_tree=   3.158ms  cascade=   1.391ms  deft=    n/a ms  ragged=   1.412ms  spd_tree=  2.24×  bw= 10.094GB/s  bw_util=3.505%
+  [621/720]  B=  2 b=10 d=16 d_eff= 3 L=16384 N=137  fi_tree=   5.224ms  cascade=   1.623ms  deft=    n/a ms  ragged=   1.623ms  spd_tree=  3.22×  bw= 13.826GB/s  bw_util=4.801%
+  [622/720]  B=  2 b=10 d=24 d_eff= 3 L=16384 N=206  fi_tree=   5.635ms  cascade=   2.315ms  deft=    n/a ms  ragged=   2.313ms  spd_tree=  2.44×  bw= 14.592GB/s  bw_util=5.067%
+  [623/720]  B=  2 b=10 d=32 d_eff= 3 L=16384 N=274  fi_tree=   6.156ms  cascade=   2.965ms  deft=    n/a ms  ragged=   2.948ms  spd_tree=  2.09×  bw= 15.228GB/s  bw_util=5.288%
+  [624/720]  B=  2 b=10 d=36 d_eff= 4 L=16384 N=309  fi_tree=   6.078ms  cascade=   2.979ms  deft=    n/a ms  ragged=   2.950ms  spd_tree=  2.06×  bw= 20.663GB/s  bw_util=7.175%
+  [625/720]  B=  2 b=16 d= 6 d_eff= 2 L=16384 N= 82  fi_tree=   3.109ms  cascade=   1.406ms  deft=    n/a ms  ragged=   1.411ms  spd_tree=  2.20×  bw=  7.617GB/s  bw_util=2.645%
+  [626/720]  B=  2 b=16 d=10 d_eff= 2 L=16384 N=137  fi_tree=   5.499ms  cascade=   1.599ms  deft=    n/a ms  ragged=   1.596ms  spd_tree=  3.44×  bw= 11.824GB/s  bw_util=4.105%
+  [627/720]  B=  2 b=16 d=16 d_eff= 3 L=16384 N=219  fi_tree=   5.657ms  cascade=   2.336ms  deft=    n/a ms  ragged=   2.325ms  spd_tree=  2.43×  bw= 16.063GB/s  bw_util=5.578%
+  [628/720]  B=  2 b=16 d=24 d_eff= 3 L=16384 N=329  fi_tree=   6.034ms  cascade=   3.128ms  deft=    n/a ms  ragged=   3.059ms  spd_tree=  1.97×  bw= 18.266GB/s  bw_util=6.342%
+  [629/720]  B=  2 b=16 d=32 d_eff= 3 L=16384 N=439  fi_tree=   9.057ms  cascade=   4.444ms  deft=    n/a ms  ragged=   4.377ms  spd_tree=  2.07×  bw= 16.809GB/s  bw_util=5.836%
+  [630/720]  B=  2 b=16 d=36 d_eff= 3 L=16384 N=494  fi_tree=   8.993ms  cascade=   4.473ms  deft=    n/a ms  ragged=   4.418ms  spd_tree=  2.04×  bw= 18.430GB/s  bw_util=6.399%
+  [631/720]  B=  2 b=24 d= 6 d_eff= 2 L=16384 N=123  fi_tree=   5.125ms  cascade=   1.606ms  deft=    n/a ms  ragged=   1.595ms  spd_tree=  3.21×  bw= 11.012GB/s  bw_util=3.824%
+  [632/720]  B=  2 b=24 d=10 d_eff= 2 L=16384 N=206  fi_tree=   5.626ms  cascade=   2.318ms  deft=    n/a ms  ragged=   2.311ms  spd_tree=  2.43×  bw= 12.080GB/s  bw_util=4.194%
+  [633/720]  B=  2 b=24 d=16 d_eff= 3 L=16384 N=329  fi_tree=   6.077ms  cascade=   3.130ms  deft=    n/a ms  ragged=   3.086ms  spd_tree=  1.97×  bw= 17.996GB/s  bw_util=6.249%
+  [634/720]  B=  2 b=24 d=24 d_eff= 3 L=16384 N=494  fi_tree=   8.793ms  cascade=   4.473ms  deft=    n/a ms  ragged=   4.413ms  spd_tree=  1.99×  bw= 18.565GB/s  bw_util=6.446%
+  [635/720]  B=  2 b=24 d=32 d_eff= 3 L=16384 N=658  fi_tree=  12.371ms  cascade=   6.082ms  deft=    n/a ms  ragged=   5.716ms  spd_tree=  2.16×  bw= 19.090GB/s  bw_util=6.628%
+  [636/720]  B=  2 b=24 d=36 d_eff= 3 L=16384 N=741  fi_tree=  12.401ms  cascade=   6.237ms  deft=    n/a ms  ragged=   6.014ms  spd_tree=  2.06×  bw= 20.514GB/s  bw_util=7.123%
+  [637/720]  B=  2 b=32 d= 6 d_eff= 2 L=16384 N=165  fi_tree=   5.653ms  cascade=   1.643ms  deft=    n/a ms  ragged=   1.651ms  spd_tree=  3.43×  bw= 14.056GB/s  bw_util=4.880%
+  [638/720]  B=  2 b=32 d=10 d_eff= 2 L=16384 N=274  fi_tree=   6.240ms  cascade=   2.962ms  deft=    n/a ms  ragged=   2.936ms  spd_tree=  2.13×  bw= 12.366GB/s  bw_util=4.294%
+  [639/720]  B=  2 b=32 d=16 d_eff= 2 L=16384 N=439  fi_tree=   8.869ms  cascade=   3.890ms  deft=    n/a ms  ragged=   3.808ms  spd_tree=  2.33×  bw= 15.110GB/s  bw_util=5.247%
+  [640/720]  B=  2 b=32 d=24 d_eff= 3 L=16384 N=658  fi_tree=  12.347ms  cascade=   6.073ms  deft=    n/a ms  ragged=   5.730ms  spd_tree=  2.15×  bw= 19.073GB/s  bw_util=6.622%
+  [641/720]  B=  2 b=32 d=32 d_eff= 3 L=16384 N=878  fi_tree=  15.559ms  cascade=   7.808ms  deft=    n/a ms  ragged=   7.437ms  spd_tree=  2.09×  bw= 19.343GB/s  bw_util=6.716%
+  [642/720]  B=  2 b=32 d=36 d_eff= 3 L=16384 N=987  fi_tree=  18.584ms  cascade=   9.029ms  deft=    n/a ms  ragged=   8.010ms  spd_tree=  2.32×  bw= 20.454GB/s  bw_util=7.102%
+  [643/720]  B=  2 b=36 d= 6 d_eff= 2 L=16384 N=185  fi_tree=   5.601ms  cascade=   2.319ms  deft=    n/a ms  ragged=   2.310ms  spd_tree=  2.42×  bw= 11.631GB/s  bw_util=4.039%
+  [644/720]  B=  2 b=36 d=10 d_eff= 2 L=16384 N=309  fi_tree=   6.126ms  cascade=   3.149ms  deft=    n/a ms  ragged=   3.104ms  spd_tree=  1.97×  bw= 14.060GB/s  bw_util=4.882%
+  [645/720]  B=  2 b=36 d=16 d_eff= 2 L=16384 N=494  fi_tree=   8.910ms  cascade=   4.480ms  deft=    n/a ms  ragged=   4.426ms  spd_tree=  2.01×  bw= 14.927GB/s  bw_util=5.183%
+  [646/720]  B=  2 b=36 d=24 d_eff= 3 L=16384 N=741  fi_tree=  12.503ms  cascade=   6.338ms  deft=    n/a ms  ragged=   6.014ms  spd_tree=  2.08×  bw= 20.705GB/s  bw_util=7.189%
+  [647/720]  B=  2 b=36 d=32 d_eff= 3 L=16384 N=987  fi_tree=  18.585ms  cascade=   9.062ms  deft=    n/a ms  ragged=   8.067ms  spd_tree=  2.30×  bw= 20.471GB/s  bw_util=7.108%
+  [648/720]  B=  2 b=36 d=36 d_eff= 3 L=16384 N=1111  fi_tree=  19.543ms  cascade=   9.857ms  deft=    n/a ms  ragged=   9.209ms  spd_tree=  2.12×  bw= 20.086GB/s  bw_util=6.974%
+  [649/720]  B=  4 b=6 d= 6 d_eff= 3 L=16384 N= 31  fi_tree=   4.317ms  cascade=   0.861ms  deft=    n/a ms  ragged=   0.874ms  spd_tree=  4.94×  bw= 11.617GB/s  bw_util=4.034%
+  [650/720]  B=  4 b=6 d=10 d_eff= 3 L=16384 N= 51  fi_tree=   4.264ms  cascade=   1.409ms  deft=    n/a ms  ragged=   1.419ms  spd_tree=  3.00×  bw= 12.006GB/s  bw_util=4.169%
+  [651/720]  B=  4 b=6 d=16 d_eff= 3 L=16384 N= 82  fi_tree=   6.202ms  cascade=   1.614ms  deft=    n/a ms  ragged=   1.636ms  spd_tree=  3.79×  bw= 16.421GB/s  bw_util=5.702%
+  [652/720]  B=  4 b=6 d=24 d_eff= 4 L=16384 N=123  fi_tree=   6.297ms  cascade=   2.302ms  deft=    n/a ms  ragged=   2.359ms  spd_tree=  2.67×  bw= 20.672GB/s  bw_util=7.178%
+  [653/720]  B=  4 b=6 d=32 d_eff= 4 L=16384 N=165  fi_tree=   8.452ms  cascade=   3.140ms  deft=    n/a ms  ragged=   3.106ms  spd_tree=  2.72×  bw= 20.890GB/s  bw_util=7.253%
+  [654/720]  B=  4 b=6 d=36 d_eff= 4 L=16384 N=185  fi_tree=   8.615ms  cascade=   3.136ms  deft=    n/a ms  ragged=   3.084ms  spd_tree=  2.79×  bw= 23.714GB/s  bw_util=8.234%
+  [655/720]  B=  4 b=10 d= 6 d_eff= 2 L=16384 N= 51  fi_tree=   4.360ms  cascade=   1.381ms  deft=    n/a ms  ragged=   1.439ms  spd_tree=  3.03×  bw= 10.204GB/s  bw_util=3.543%
+  [656/720]  B=  4 b=10 d=10 d_eff= 3 L=16384 N= 86  fi_tree=   6.473ms  cascade=   1.617ms  deft=    n/a ms  ragged=   1.623ms  spd_tree=  3.99×  bw= 17.565GB/s  bw_util=6.099%
+  [657/720]  B=  4 b=10 d=16 d_eff= 3 L=16384 N=137  fi_tree=   8.576ms  cascade=   2.939ms  deft=    n/a ms  ragged=   2.949ms  spd_tree=  2.91×  bw= 15.223GB/s  bw_util=5.286%
+  [658/720]  B=  4 b=10 d=24 d_eff= 3 L=16384 N=206  fi_tree=   8.836ms  cascade=   3.786ms  deft=    n/a ms  ragged=   3.790ms  spd_tree=  2.33×  bw= 17.809GB/s  bw_util=6.184%
+  [659/720]  B=  4 b=10 d=32 d_eff= 3 L=16384 N=274  fi_tree=  12.261ms  cascade=   4.623ms  deft=    n/a ms  ragged=   4.553ms  spd_tree=  2.69×  bw= 19.719GB/s  bw_util=6.847%
+  [660/720]  B=  4 b=10 d=36 d_eff= 4 L=16384 N=309  fi_tree=  12.106ms  cascade=   5.315ms  deft=    n/a ms  ragged=   5.215ms  spd_tree=  2.32×  bw= 23.376GB/s  bw_util=8.117%
+  [661/720]  B=  4 b=16 d= 6 d_eff= 2 L=16384 N= 82  fi_tree=   6.157ms  cascade=   1.619ms  deft=    n/a ms  ragged=   1.631ms  spd_tree=  3.77×  bw= 13.175GB/s  bw_util=4.575%
+  [662/720]  B=  4 b=16 d=10 d_eff= 2 L=16384 N=137  fi_tree=   8.961ms  cascade=   2.960ms  deft=    n/a ms  ragged=   2.951ms  spd_tree=  3.04×  bw= 12.791GB/s  bw_util=4.441%
+  [663/720]  B=  4 b=16 d=16 d_eff= 3 L=16384 N=219  fi_tree=   8.760ms  cascade=   4.354ms  deft=    n/a ms  ragged=   4.380ms  spd_tree=  2.00×  bw= 17.057GB/s  bw_util=5.923%
+  [664/720]  B=  4 b=16 d=24 d_eff= 3 L=16384 N=329  fi_tree=  11.951ms  cascade=   5.905ms  deft=    n/a ms  ragged=   5.770ms  spd_tree=  2.07×  bw= 19.365GB/s  bw_util=6.724%
+  [665/720]  B=  4 b=16 d=32 d_eff= 3 L=16384 N=439  fi_tree=  17.511ms  cascade=   7.606ms  deft=    n/a ms  ragged=   7.437ms  spd_tree=  2.35×  bw= 19.784GB/s  bw_util=6.869%
+  [666/720]  B=  4 b=16 d=36 d_eff= 3 L=16384 N=494  fi_tree=  18.034ms  cascade=   8.222ms  deft=    n/a ms  ragged=   8.290ms  spd_tree=  2.18×  bw= 19.644GB/s  bw_util=6.821%
+  [667/720]  B=  4 b=24 d= 6 d_eff= 2 L=16384 N=123  fi_tree=   8.783ms  cascade=   2.929ms  deft=    n/a ms  ragged=   2.947ms  spd_tree=  2.98×  bw= 11.921GB/s  bw_util=4.139%
+  [668/720]  B=  4 b=24 d=10 d_eff= 2 L=16384 N=206  fi_tree=   8.770ms  cascade=   3.800ms  deft=    n/a ms  ragged=   3.794ms  spd_tree=  2.31×  bw= 14.716GB/s  bw_util=5.110%
+  [669/720]  B=  4 b=24 d=16 d_eff= 3 L=16384 N=329  fi_tree=  11.983ms  cascade=   6.128ms  deft=    n/a ms  ragged=   5.787ms  spd_tree=  2.07×  bw= 19.197GB/s  bw_util=6.666%
+  [670/720]  B=  4 b=24 d=24 d_eff= 3 L=16384 N=494  fi_tree=  18.118ms  cascade=   8.287ms  deft=    n/a ms  ragged=   8.127ms  spd_tree=  2.23×  bw= 20.161GB/s  bw_util=7.000%
+  [671/720]  B=  4 b=24 d=32 d_eff= 3 L=16384 N=658  fi_tree=  24.638ms  cascade=  11.034ms  deft=    n/a ms  ragged=  10.903ms  spd_tree=  2.26×  bw= 20.015GB/s  bw_util=6.950%
+  [672/720]  B=  4 b=24 d=36 d_eff= 3 L=16384 N=741  fi_tree=  25.288ms  cascade=  12.707ms  deft=    n/a ms  ragged=  12.072ms  spd_tree=  2.09×  bw= 20.439GB/s  bw_util=7.097%
+  [673/720]  B=  4 b=32 d= 6 d_eff= 2 L=16384 N=165  fi_tree=   8.549ms  cascade=   3.166ms  deft=    n/a ms  ragged=   3.157ms  spd_tree=  2.71×  bw= 14.698GB/s  bw_util=5.104%
+  [674/720]  B=  4 b=32 d=10 d_eff= 2 L=16384 N=274  fi_tree=  12.320ms  cascade=   4.596ms  deft=    n/a ms  ragged=   4.579ms  spd_tree=  2.69×  bw= 15.857GB/s  bw_util=5.506%
+  [675/720]  B=  4 b=32 d=16 d_eff= 2 L=16384 N=439  fi_tree=  17.425ms  cascade=   7.511ms  deft=    n/a ms  ragged=   7.264ms  spd_tree=  2.40×  bw= 15.843GB/s  bw_util=5.501%
+  [676/720]  B=  4 b=32 d=24 d_eff= 3 L=16384 N=658  fi_tree=  24.550ms  cascade=  11.063ms  deft=    n/a ms  ragged=  10.789ms  spd_tree=  2.28×  bw= 20.257GB/s  bw_util=7.034%
+  [677/720]  B=  4 b=32 d=32 d_eff= 3 L=16384 N=878  fi_tree=  32.145ms  cascade=  14.985ms  deft=    n/a ms  ragged=  14.266ms  spd_tree=  2.25×  bw= 20.166GB/s  bw_util=7.002%
+  [678/720]  B=  4 b=32 d=36 d_eff= 3 L=16384 N=987  fi_tree=  35.850ms  cascade=  17.463ms  deft=    n/a ms  ragged=  16.195ms  spd_tree=  2.21×  bw= 20.233GB/s  bw_util=7.026%
+  [679/720]  B=  4 b=36 d= 6 d_eff= 2 L=16384 N=185  fi_tree=   8.973ms  cascade=   3.798ms  deft=    n/a ms  ragged=   3.771ms  spd_tree=  2.38×  bw= 14.249GB/s  bw_util=4.948%
+  [680/720]  B=  4 b=36 d=10 d_eff= 2 L=16384 N=309  fi_tree=  12.196ms  cascade=   6.027ms  deft=    n/a ms  ragged=   5.789ms  spd_tree=  2.11×  bw= 15.080GB/s  bw_util=5.236%
+  [681/720]  B=  4 b=36 d=16 d_eff= 2 L=16384 N=494  fi_tree=  18.019ms  cascade=   8.403ms  deft=    n/a ms  ragged=   8.137ms  spd_tree=  2.21×  bw= 16.238GB/s  bw_util=5.638%
+  [682/720]  B=  4 b=36 d=24 d_eff= 3 L=16384 N=741  fi_tree=  25.469ms  cascade=  12.568ms  deft=    n/a ms  ragged=  12.263ms  spd_tree=  2.08×  bw= 20.307GB/s  bw_util=7.051%
+  [683/720]  B=  4 b=36 d=32 d_eff= 3 L=16384 N=987  fi_tree=  35.910ms  cascade=  17.604ms  deft=    n/a ms  ragged=  16.303ms  spd_tree=  2.20×  bw= 20.261GB/s  bw_util=7.035%
+  [684/720]  B=  4 b=36 d=36 d_eff= 3 L=16384 N=1111  fi_tree=  40.092ms  cascade=  19.818ms  deft=    n/a ms  ragged=  18.072ms  spd_tree=  2.22×  bw= 20.471GB/s  bw_util=7.108%
+  [685/720]  B=  8 b=6 d= 6 d_eff= 3 L=16384 N= 31  fi_tree=   7.307ms  cascade=   1.437ms  deft=    n/a ms  ragged=   1.453ms  spd_tree=  5.03×  bw= 13.984GB/s  bw_util=4.855%
+  [686/720]  B=  8 b=6 d=10 d_eff= 3 L=16384 N= 51  fi_tree=   7.292ms  cascade=   2.304ms  deft=    n/a ms  ragged=   2.340ms  spd_tree=  3.12×  bw= 14.566GB/s  bw_util=5.058%
+  [687/720]  B=  8 b=6 d=16 d_eff= 3 L=16384 N= 82  fi_tree=   9.611ms  cascade=   3.120ms  deft=    n/a ms  ragged=   3.137ms  spd_tree=  3.06×  bw= 17.128GB/s  bw_util=5.947%
+  [688/720]  B=  8 b=6 d=24 d_eff= 4 L=16384 N=123  fi_tree=   9.779ms  cascade=   4.345ms  deft=    n/a ms  ragged=   4.441ms  spd_tree=  2.20×  bw= 21.959GB/s  bw_util=7.625%
+  [689/720]  B=  8 b=6 d=32 d_eff= 4 L=16384 N=165  fi_tree=  16.658ms  cascade=   5.854ms  deft=    n/a ms  ragged=   5.846ms  spd_tree=  2.85×  bw= 22.198GB/s  bw_util=7.708%
+  [690/720]  B=  8 b=6 d=36 d_eff= 4 L=16384 N=185  fi_tree=  17.045ms  cascade=   6.057ms  deft=    n/a ms  ragged=   6.063ms  spd_tree=  2.81×  bw= 24.128GB/s  bw_util=8.378%
+  [691/720]  B=  8 b=10 d= 6 d_eff= 2 L=16384 N= 51  fi_tree=   7.530ms  cascade=   2.305ms  deft=    n/a ms  ragged=   2.355ms  spd_tree=  3.20×  bw= 12.467GB/s  bw_util=4.329%
+  [692/720]  B=  8 b=10 d=10 d_eff= 3 L=16384 N= 86  fi_tree=  10.764ms  cascade=   3.116ms  deft=    n/a ms  ragged=   3.103ms  spd_tree=  3.47×  bw= 18.373GB/s  bw_util=6.380%
+  [693/720]  B=  8 b=10 d=16 d_eff= 3 L=16384 N=137  fi_tree=  16.295ms  cascade=   4.582ms  deft=    n/a ms  ragged=   4.578ms  spd_tree=  3.56×  bw= 19.611GB/s  bw_util=6.809%
+  [694/720]  B=  8 b=10 d=24 d_eff= 3 L=16384 N=206  fi_tree=  17.533ms  cascade=   6.725ms  deft=    n/a ms  ragged=   6.709ms  spd_tree=  2.61×  bw= 20.122GB/s  bw_util=6.987%
+  [695/720]  B=  8 b=10 d=32 d_eff= 3 L=16384 N=274  fi_tree=  25.367ms  cascade=   8.930ms  deft=    n/a ms  ragged=   9.313ms  spd_tree=  2.72×  bw= 19.281GB/s  bw_util=6.695%
+  [696/720]  B=  8 b=10 d=36 d_eff= 4 L=16384 N=309  fi_tree=  25.481ms  cascade=  10.184ms  deft=    n/a ms  ragged=  10.445ms  spd_tree=  2.44×  bw= 23.340GB/s  bw_util=8.104%
+  [697/720]  B=  8 b=16 d= 6 d_eff= 2 L=16384 N= 82  fi_tree=   9.910ms  cascade=   3.115ms  deft=    n/a ms  ragged=   3.139ms  spd_tree=  3.16×  bw= 13.698GB/s  bw_util=4.756%
+  [698/720]  B=  8 b=16 d=10 d_eff= 2 L=16384 N=137  fi_tree=  16.840ms  cascade=   4.563ms  deft=    n/a ms  ragged=   4.592ms  spd_tree=  3.67×  bw= 16.442GB/s  bw_util=5.709%
+  [699/720]  B=  8 b=16 d=16 d_eff= 3 L=16384 N=219  fi_tree=  17.770ms  cascade=   7.512ms  deft=    n/a ms  ragged=   7.534ms  spd_tree=  2.36×  bw= 19.833GB/s  bw_util=6.887%
+  [700/720]  B=  8 b=16 d=24 d_eff= 3 L=16384 N=329  fi_tree=  24.804ms  cascade=  11.184ms  deft=    n/a ms  ragged=  11.297ms  spd_tree=  2.20×  bw= 19.782GB/s  bw_util=6.869%
+  [701/720]  B=  8 b=16 d=32 d_eff= 3 L=16384 N=439  fi_tree=  33.930ms  cascade=  14.822ms  deft=    n/a ms  ragged=  14.847ms  spd_tree=  2.29×  bw= 19.819GB/s  bw_util=6.881%
+  [702/720]  B=  8 b=16 d=36 d_eff= 3 L=16384 N=494  fi_tree=  34.769ms  cascade=  16.344ms  deft=    n/a ms  ragged=  16.444ms  spd_tree=  2.11×  bw= 19.807GB/s  bw_util=6.878%
+  [703/720]  B=  8 b=24 d= 6 d_eff= 2 L=16384 N=123  fi_tree=  15.975ms  cascade=   4.597ms  deft=    n/a ms  ragged=   4.570ms  spd_tree=  3.50×  bw= 15.373GB/s  bw_util=5.338%
+  [704/720]  B=  8 b=24 d=10 d_eff= 2 L=16384 N=206  fi_tree=  17.564ms  cascade=   7.288ms  deft=    n/a ms  ragged=   7.248ms  spd_tree=  2.42×  bw= 15.407GB/s  bw_util=5.349%
+  [705/720]  B=  8 b=24 d=16 d_eff= 3 L=16384 N=329  fi_tree=  24.889ms  cascade=  10.982ms  deft=    n/a ms  ragged=  11.457ms  spd_tree=  2.17×  bw= 19.391GB/s  bw_util=6.733%
+  [706/720]  B=  8 b=24 d=24 d_eff= 3 L=16384 N=494  fi_tree=  35.045ms  cascade=  16.424ms  deft=    n/a ms  ragged=  16.227ms  spd_tree=  2.16×  bw= 20.193GB/s  bw_util=7.012%
+  [707/720]  B=  8 b=24 d=32 d_eff= 3 L=16384 N=658  fi_tree=  51.890ms  cascade=  21.792ms  deft=    n/a ms  ragged=  21.519ms  spd_tree=  2.41×  bw= 20.283GB/s  bw_util=7.043%
+  [708/720]  B=  8 b=24 d=36 d_eff= 3 L=16384 N=741  fi_tree=  52.839ms  cascade=  24.996ms  deft=    n/a ms  ragged=  24.184ms  spd_tree=  2.18×  bw= 20.405GB/s  bw_util=7.085%
+  [709/720]  B=  8 b=32 d= 6 d_eff= 2 L=16384 N=165  fi_tree=  16.997ms  cascade=   5.957ms  deft=    n/a ms  ragged=   5.986ms  spd_tree=  2.84×  bw= 15.502GB/s  bw_util=5.383%
+  [710/720]  B=  8 b=32 d=10 d_eff= 2 L=16384 N=274  fi_tree=  25.752ms  cascade=   8.935ms  deft=    n/a ms  ragged=   9.275ms  spd_tree=  2.78×  bw= 15.658GB/s  bw_util=5.437%
+  [711/720]  B=  8 b=32 d=16 d_eff= 2 L=16384 N=439  fi_tree=  33.629ms  cascade=  14.350ms  deft=    n/a ms  ragged=  14.402ms  spd_tree=  2.33×  bw= 15.981GB/s  bw_util=5.549%
+  [712/720]  B=  8 b=32 d=24 d_eff= 3 L=16384 N=658  fi_tree=  51.405ms  cascade=  21.993ms  deft=    n/a ms  ragged=  21.376ms  spd_tree=  2.40×  bw= 20.449GB/s  bw_util=7.101%
+  [713/720]  B=  8 b=32 d=32 d_eff= 3 L=16384 N=878  fi_tree=  63.754ms  cascade=  29.606ms  deft=    n/a ms  ragged=  27.764ms  spd_tree=  2.30×  bw= 20.725GB/s  bw_util=7.196%
+  [714/720]  B=  8 b=32 d=36 d_eff= 3 L=16384 N=987  fi_tree=  74.268ms  cascade=  34.085ms  deft=    n/a ms  ragged=  32.049ms  spd_tree=  2.32×  bw= 20.449GB/s  bw_util=7.100%
+  [715/720]  B=  8 b=36 d= 6 d_eff= 2 L=16384 N=185  fi_tree=  17.385ms  cascade=   6.726ms  deft=    n/a ms  ragged=   6.741ms  spd_tree=  2.58×  bw= 15.943GB/s  bw_util=5.536%
+  [716/720]  B=  8 b=36 d=10 d_eff= 2 L=16384 N=309  fi_tree=  24.855ms  cascade=  10.825ms  deft=    n/a ms  ragged=  10.719ms  spd_tree=  2.32×  bw= 16.287GB/s  bw_util=5.655%
+  [717/720]  B=  8 b=36 d=16 d_eff= 2 L=16384 N=494  fi_tree=  34.796ms  cascade=  16.419ms  deft=    n/a ms  ragged=  16.263ms  spd_tree=  2.14×  bw= 16.248GB/s  bw_util=5.642%
+  [718/720]  B=  8 b=36 d=24 d_eff= 3 L=16384 N=741  fi_tree=  52.279ms  cascade=  25.289ms  deft=    n/a ms  ragged=  24.333ms  spd_tree=  2.15×  bw= 20.469GB/s  bw_util=7.107%
+  [719/720]  B=  8 b=36 d=32 d_eff= 3 L=16384 N=987  fi_tree=  74.451ms  cascade=  34.389ms  deft=    n/a ms  ragged=  31.625ms  spd_tree=  2.35×  bw= 20.889GB/s  bw_util=7.253%
+  [720/720]  B=  8 b=36 d=36 d_eff= 3 L=16384 N=1111  fi_tree=  83.344ms  cascade=  39.529ms  deft=    n/a ms  ragged=  36.285ms  spd_tree=  2.30×  bw= 20.391GB/s  bw_util=7.080%
+
+  Saved: logs/micro_run5_20260430_045336_pruned_20260430_050321.csv
+  Saved: logs/micro_run5_20260430_045336_pruned.csv (latest)
+
+  Speedup table [tree-only]  (fi_tree / ragged — >1 means ragged wins)
+  ────────────────────────────────────────────────────────────────────────
+  B=  1 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.00   1.00   1.60   2.10   2.51   2.57
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 248.00  416.00  656.00  1190.40  1332.14  1488.00
+  B=  1 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.14   1.54   2.60   2.42   2.39   2.78
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 462.45  696.00  1096.00  1177.14  1217.78  1653.33
+  B=  1 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.97   2.70   2.24   3.07   6.23   6.41
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 648.40  921.60  1077.89  1581.45  1646.76  1807.27
+  B=  1 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.88   2.62   3.26   6.48   7.21   8.36
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 952.89  1048.62  1701.65  1844.38  1958.60  2067.22
+  B=  1 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.05   3.09   6.78   6.93  13.39  13.27
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1150.78  1274.82  1478.74  1976.30  2128.48  2105.26
+  B=  1 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.54   3.28   7.00   9.03  13.95  16.17
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 956.36  1345.14  1536.00  2171.43  2235.15  2314.04
+  B=  2 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.12   1.11   1.73   1.45   2.91   2.73
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 620.00  924.44  1192.73  1400.47  1678.41  1785.60
+  B=  2 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.17   1.28   2.99   2.90   2.62   3.17
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 831.07  928.00  1422.80  1569.52  1370.00  2052.41
+  B=  2 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.95   3.15   2.60   3.59   5.41   5.37
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1069.66  1260.31  1417.56  1901.87  1941.62  1988.00
+  B=  2 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.14   3.17   3.80   5.56   4.78   3.47
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1225.14  1412.87  2008.89  2051.28  1283.86  814.05
+  B=  2 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.45   3.87   5.95   4.57   4.30   5.11
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1424.35  1632.51  1760.30  1228.65  795.22  797.20
+  B=  2 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.21   3.88   5.97   3.41   5.07   5.46
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1381.05  1639.38  1786.57  805.30  798.42  778.62
+  B=  4 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.44   1.00   1.73   1.69   2.48   2.46
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1102.22  1110.49  1457.78  1920.24  1920.00  2040.69
+  B=  4 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.15   1.34   2.75   2.77   2.93   3.56
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1053.39  1167.60  1673.08  1883.43  1566.59  2289.23
+  B=  4 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.11   2.93   2.40   2.07   2.32   2.32
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1399.47  1480.11  1621.33  1015.07  797.39  798.69
+  B=  4 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.99   3.05   2.08   2.34   2.94   3.22
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1429.33  1715.73  1022.04  800.00  795.36  779.81
+  B=  4 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.08   4.22   2.30   2.95   4.04   4.57
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1680.17  1824.10  638.66  797.21  780.44  781.44
+  B=  4 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.10   2.39   2.32   3.31   4.70   5.37
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1692.90  959.19  639.03  797.38  798.72  785.23
+  B=  8 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.27   1.05   1.58   1.47   2.03   1.47
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1322.67  1512.73  1701.48  2164.36  1525.89  1028.15
+  B=  8 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.20   1.17   2.92   1.43   1.51   1.52
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1433.60  1325.71  1946.42  813.83  755.86  898.42
+  B=  8 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.85   3.23   1.36   1.63   1.99   1.95
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1614.77  1782.62  772.51  790.72  758.33  746.67
+  B=  8 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.12   1.37   1.64   2.04   2.88   3.08
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 1673.37  637.75  793.95  784.70  779.41  756.45
+  B=  8 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.50   1.59   2.07   2.84   3.88   4.48
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 720.22  638.62  640.36  773.84  779.38  785.28
+  B=  8 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.37   1.68   2.09   3.22   4.59   5.17
+   vs_casc       │   n/a    n/a    n/a    n/a    n/a    n/a
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 635.52  638.56  638.73  792.18  792.20  778.70
+
+  Speedup table [context_len=1024]  (fi_tree / ragged — >1 means ragged wins)
+  ────────────────────────────────────────────────────────────────────────
+  B=  1 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.20   1.18   1.46   1.49   1.63   1.65
+   vs_casc       │  0.83   0.82   0.96   1.00   1.06   1.06
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 70.86  109.47  121.73  201.76  148.04  164.22
+  B=  1 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.19   1.45   1.65   1.63   1.56   1.59
+   vs_casc       │  0.82   0.93   1.05   1.06   1.06   1.09
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 94.67  124.60  105.42  147.14  174.42  234.94
+  B=  1 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.50   1.62   1.58   1.56   2.42   2.36
+   vs_casc       │  0.98   1.06   1.05   1.13   1.35   1.33
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 100.92  89.48  157.24  214.80  179.63  191.30
+  B=  1 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.69   1.60   1.65   2.39   2.21   2.13
+   vs_casc       │  1.05   1.07   1.13   1.35   1.37   1.45
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 83.50  122.86  213.54  193.24  193.27  200.13
+  B=  1 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.64   1.63   2.37   2.24   2.59   2.34
+   vs_casc       │  1.07   1.10   1.31   1.37   1.80   1.84
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 106.87  145.31  141.90  192.74  184.84  180.31
+  B=  1 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.65   1.67   2.37   2.11   2.38   2.43
+   vs_casc       │  1.07   1.13   1.34   1.44   1.84   1.93
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 118.50  169.54  154.33  199.34  180.86  185.53
+  B=  2 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.03   1.39   1.43   1.43   2.95   2.85
+   vs_casc       │  0.82   0.82   0.95   0.91   1.13   1.07
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 127.18  146.09  121.48  198.74  241.83  260.67
+  B=  2 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.37   1.45   2.85   2.19   1.93   1.88
+   vs_casc       │  0.83   0.91   1.12   1.06   0.98   0.99
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 126.00  123.19  178.21  179.13  170.58  219.86
+  B=  2 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.46   2.81   2.02   1.81   1.87   1.84
+   vs_casc       │  0.97   1.11   0.97   0.99   1.14   1.15
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 99.34  149.91  176.23  192.11  170.76  178.30
+  B=  2 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.79   2.09   1.84   1.84   1.97   1.96
+   vs_casc       │  1.11   0.99   1.00   1.15   1.32   1.40
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 140.59  140.55  190.99  178.57  173.28  181.05
+  B=  2 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.98   1.99   2.04   1.98   2.02   2.18
+   vs_casc       │  1.14   1.00   1.12   1.31   1.55   1.72
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 171.64  140.52  147.20  174.13  170.28  172.18
+  B=  2 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.20   1.86   1.80   1.92   2.20   2.19
+   vs_casc       │  1.05   1.00   1.15   1.39   1.73   1.78
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 143.61  151.69  142.10  180.96  173.42  168.85
+  B=  4 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  4.07   2.17   2.70   1.86   2.15   2.08
+   vs_casc       │  0.86   0.88   0.95   0.83   0.95   0.90
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 168.14  145.96  202.43  223.86  224.77  236.01
+  B=  4 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.20   2.61   2.17   1.79   1.90   1.71
+   vs_casc       │  0.88   0.89   0.92   0.91   0.98   0.98
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 126.87  202.31  169.27  182.60  180.67  211.81
+  B=  4 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.76   2.16   1.58   1.59   1.78   1.67
+   vs_casc       │  0.96   0.93   0.90   1.00   1.13   1.10
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 165.41  141.88  168.89  172.66  172.31  167.33
+  B=  4 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.17   1.78   1.62   1.68   1.81   1.74
+   vs_casc       │  0.94   0.89   1.01   1.11   1.25   1.30
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 135.06  146.98  175.25  170.23  163.31  161.50
+  B=  4 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.17   1.94   1.81   1.84   1.85   1.87
+   vs_casc       │  0.94   1.00   1.16   1.26   1.43   1.55
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 156.79  146.21  138.15  164.92  160.15  158.00
+  B=  4 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.82   1.64   1.65   1.73   1.87   2.04
+   vs_casc       │  0.91   1.02   1.12   1.30   1.56   1.70
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 144.18  138.17  135.82  162.91  159.06  159.51
+  B=  8 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.80   2.46   1.95   1.42   1.78   1.72
+   vs_casc       │  0.90   0.83   0.84   0.83   0.92   0.92
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 169.57  177.02  186.76  210.69  202.45  211.84
+  B=  8 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.27   1.94   2.04   1.63   1.60   1.52
+   vs_casc       │  0.76   0.82   0.92   0.96   0.97   0.98
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 139.86  190.25  179.18  175.32  162.22  193.92
+  B=  8 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.96   2.02   1.53   1.46   1.49   1.45
+   vs_casc       │  0.85   0.91   0.93   0.92   1.03   1.03
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 149.04  146.58  172.09  160.78  156.43  156.58
+  B=  8 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.07   1.54   1.45   1.45   1.71   1.64
+   vs_casc       │  0.92   0.94   0.97   1.05   1.23   1.27
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 144.13  135.83  160.49  157.93  160.01  157.50
+  B=  8 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.77   1.64   1.57   1.73   1.78   1.84
+   vs_casc       │  0.91   0.99   1.05   1.21   1.42   1.53
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 140.28  132.55  127.56  160.72  160.35  160.32
+  B=  8 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.62   1.52   1.45   1.63   1.86   2.00
+   vs_casc       │  0.94   0.97   1.05   1.28   1.55   1.67
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 139.79  130.77  127.12  159.75  161.32  159.40
+
+  Speedup table [context_len=4096]  (fi_tree / ragged — >1 means ragged wins)
+  ────────────────────────────────────────────────────────────────────────
+  B=  1 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  0.98   1.00   1.01   1.02   1.80   1.93
+   vs_casc       │  0.97   0.96   0.97   0.97   0.99   1.00
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 10.97  17.80  26.45  45.09  44.12  49.46
+  B=  1 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  0.99   1.04   1.84   1.83   1.93   1.94
+   vs_casc       │  0.97   0.97   0.99   1.00   0.99   1.00
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 15.32  27.84  30.96  45.65  54.94  73.87
+  B=  1 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.01   1.78   1.76   1.88   2.59   2.58
+   vs_casc       │  0.98   0.99   1.00   1.01   1.16   1.17
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 21.25  26.26  49.97  67.20  62.80  69.22
+  B=  1 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.94   1.78   1.94   2.60   2.22   2.05
+   vs_casc       │  0.99   1.00   1.01   1.16   1.19   1.20
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 24.52  37.76  66.96  69.59  70.01  71.43
+  B=  1 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.84   2.03   2.55   2.24   2.51   2.28
+   vs_casc       │  1.00   1.01   1.15   1.25   1.29   1.34
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 31.92  44.77  49.29  70.13  67.28  67.24
+  B=  1 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.85   2.03   2.55   2.18   2.24   2.23
+   vs_casc       │  1.00   1.02   1.17   1.28   1.32   1.36
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 35.95  52.32  55.52  76.77  66.15  70.79
+  B=  2 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.31   2.21   2.17   1.98   3.37   3.38
+   vs_casc       │  0.96   0.94   0.98   0.96   1.02   1.01
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 20.77  32.27  36.34  63.32  76.53  84.86
+  B=  2 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.17   2.20   3.11   2.48   2.03   2.02
+   vs_casc       │  0.94   0.97   1.02   1.01   0.98   0.98
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 27.59  38.35  54.75  57.25  56.94  75.63
+  B=  2 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.20   3.10   2.51   2.08   1.99   1.96
+   vs_casc       │  0.98   1.02   1.01   1.05   1.07   1.06
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 29.42  45.62  62.25  70.54  60.38  64.87
+  B=  2 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.10   2.48   2.12   2.00   2.01   2.07
+   vs_casc       │  1.02   1.01   1.04   1.08   1.12   1.19
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 43.31  47.17  70.35  66.01  64.25  72.19
+  B=  2 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.40   2.05   2.24   2.04   2.10   2.27
+   vs_casc       │  1.03   0.97   1.02   1.13   1.22   1.29
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 55.12  45.55  54.06  65.59  66.53  68.24
+  B=  2 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.48   2.03   1.95   2.00   2.26   2.19
+   vs_casc       │  1.02   0.97   1.07   1.17   1.28   1.35
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 46.12  52.46  52.63  71.34  68.41  70.15
+  B=  4 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.91   2.84   3.78   2.75   2.72   2.77
+   vs_casc       │  0.94   0.97   0.98   0.98   0.98   1.01
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 37.33  45.11  64.34  81.13  80.00  89.53
+  B=  4 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.99   3.88   2.72   2.19   2.40   2.17
+   vs_casc       │  0.98   0.96   1.06   0.95   1.04   1.05
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 39.28  66.66  59.49  63.79  70.62  84.25
+  B=  4 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.77   2.74   1.90   1.91   2.11   2.02
+   vs_casc       │  0.97   1.00   0.99   1.01   1.06   1.04
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 51.21  50.16  60.73  66.33  66.77  67.29
+  B=  4 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.76   2.23   1.90   2.04   2.11   1.97
+   vs_casc       │  1.02   0.99   1.01   1.06   1.11   1.13
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 46.61  53.67  65.57  67.83  68.93  68.51
+  B=  4 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.74   2.36   2.14   2.11   2.10   2.09
+   vs_casc       │  0.99   0.95   1.05   1.11   1.18   1.24
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 57.00  55.62  53.49  69.39  67.60  67.53
+  B=  4 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.18   1.91   2.01   1.97   2.08   2.13
+   vs_casc       │  0.99   1.01   1.06   1.17   1.24   1.29
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 50.88  51.36  54.71  70.87  68.05  68.43
+  B=  8 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  4.87   2.99   2.96   2.01   2.44   2.42
+   vs_casc       │  0.96   0.90   0.91   0.95   0.98   0.96
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 53.77  54.83  63.55  77.11  76.71  82.67
+  B=  8 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.22   3.40   2.81   2.31   2.21   2.03
+   vs_casc       │  0.96   0.96   0.98   0.98   1.01   0.99
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 49.69  71.26  68.34  69.87  68.06  80.10
+  B=  8 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.14   2.80   2.06   1.89   1.99   1.92
+   vs_casc       │  0.99   0.93   0.97   0.99   1.02   1.03
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 53.83  57.08  67.08  66.64  66.80  66.76
+  B=  8 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.89   2.09   1.92   1.91   2.05   1.95
+   vs_casc       │  1.03   0.98   0.99   1.02   1.09   1.12
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 54.84  51.98  66.65  66.81  68.38  67.74
+  B=  8 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.40   2.29   2.02   2.13   2.08   2.10
+   vs_casc       │  0.99   1.01   1.03   1.10   1.20   1.23
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 52.77  56.26  54.09  70.36  68.56  68.68
+  B=  8 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.22   2.02   1.84   1.93   2.06   2.14
+   vs_casc       │  0.91   0.99   1.02   1.13   1.20   1.30
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 54.10  54.96  53.37  68.41  67.19  68.18
+
+  Speedup table [context_len=8192]  (fi_tree / ragged — >1 means ragged wins)
+  ────────────────────────────────────────────────────────────────────────
+  B=  1 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.35   1.13   1.49   1.39   1.87   1.91
+   vs_casc       │  0.98   0.98   0.98   0.98   1.00   0.98
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  5.88   9.70  14.72  25.77  23.68  25.44
+  B=  1 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.21   1.51   1.98   1.87   2.01   1.99
+   vs_casc       │  0.98   0.98   0.98   1.00   0.99   1.06
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  8.34  15.54  16.43  24.39  29.16  39.66
+  B=  1 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.51   1.89   1.79   1.81   2.63   2.60
+   vs_casc       │  0.99   0.99   1.00   0.94   1.10   1.12
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 11.82  13.82  26.78  33.79  31.83  35.34
+  B=  1 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.11   1.75   1.97   2.58   2.08   2.05
+   vs_casc       │  0.98   0.98   0.99   1.02   1.01   1.09
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 12.78  19.67  35.51  34.46  34.36  38.34
+  B=  1 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.89   1.97   2.71   2.11   2.48   2.13
+   vs_casc       │  0.99   0.92   1.08   1.07   1.17   1.16
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 16.86  22.00  26.24  34.72  36.96  35.32
+  B=  1 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.92   2.09   2.71   2.02   2.17   2.10
+   vs_casc       │  1.00   1.10   1.10   1.09   1.17   1.19
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 19.35  28.38  29.92  38.92  36.51  38.17
+  B=  2 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.51   2.51   2.27   2.09   3.65   3.69
+   vs_casc       │  0.98   0.97   0.99   0.98   1.08   1.00
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 11.46  18.33  19.49  34.53  41.60  46.87
+  B=  2 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.45   2.29   3.20   2.44   2.09   2.05
+   vs_casc       │  0.97   0.98   0.95   0.97   1.01   1.02
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 15.72  20.44  27.75  28.41  30.12  40.26
+  B=  2 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.27   3.57   2.40   2.00   2.06   2.04
+   vs_casc       │  0.99   1.00   0.94   1.01   1.03   1.03
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 15.57  24.55  31.03  35.11  32.18  35.19
+  B=  2 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.31   2.53   1.98   2.06   2.10   2.03
+   vs_casc       │  1.01   1.03   1.01   1.04   1.07   1.08
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 22.93  24.73  34.35  35.35  35.41  38.28
+  B=  2 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.62   2.07   2.33   2.15   2.13   2.31
+   vs_casc       │  1.05   1.01   1.04   1.09   1.11   1.16
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 29.97  23.96  29.04  36.21  37.08  38.59
+  B=  2 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.42   2.02   2.08   1.98   2.29   2.14
+   vs_casc       │  1.00   1.02   1.04   1.08   1.16   1.17
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 22.93  27.79  29.24  38.78  38.76  38.74
+  B=  4 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  4.61   3.03   3.72   2.70   2.71   2.76
+   vs_casc       │  0.97   0.98   0.91   0.98   1.00   0.93
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 21.48  24.34  31.94  40.88  40.88  45.86
+  B=  4 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.16   3.80   2.79   2.26   2.48   2.17
+   vs_casc       │  0.99   0.89   1.00   0.99   1.02   1.00
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 21.02  33.26  29.76  34.20  37.61  43.96
+  B=  4 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.96   2.91   2.02   2.05   2.33   2.18
+   vs_casc       │  0.95   0.99   1.00   1.03   1.05   1.03
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 27.23  25.20  33.35  36.89  37.76  38.65
+  B=  4 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.80   2.22   2.01   2.21   2.29   2.12
+   vs_casc       │  1.00   0.98   1.00   1.02   1.11   1.09
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 23.23  27.74  35.78  37.74  39.81  39.69
+  B=  4 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.73   2.45   2.32   2.25   2.20   2.07
+   vs_casc       │  1.00   1.01   1.04   1.06   1.11   1.09
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 29.27  29.77  29.63  39.01  38.23  36.68
+  B=  4 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.29   2.04   2.12   2.09   2.13   2.17
+   vs_casc       │  1.00   1.00   1.03   1.11   1.14   1.17
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 27.75  28.85  30.39  39.99  38.09  38.17
+  B=  8 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  5.35   3.18   3.00   2.12   2.66   2.62
+   vs_casc       │  0.98   1.00   0.98   0.97   0.99   1.00
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 29.73  29.52  33.12  41.79  41.80  45.76
+  B=  8 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.17   3.29   3.22   2.43   2.51   2.20
+   vs_casc       │  0.95   0.88   0.99   0.99   0.99   1.00
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 24.59  35.05  36.66  37.89  37.64  44.53
+  B=  8 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.07   3.21   2.21   2.13   2.22   2.10
+   vs_casc       │  0.99   0.99   0.98   1.02   1.03   1.01
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 27.10  30.75  37.12  38.20  38.04  38.03
+  B=  8 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.20   2.27   2.17   2.13   2.34   2.11
+   vs_casc       │  1.00   0.98   1.04   1.05   1.08   1.07
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 29.01  28.61  38.10  38.63  39.20  38.53
+  B=  8 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.56   2.56   2.28   2.29   2.25   2.29
+   vs_casc       │  0.98   1.01   1.01   1.03   1.13   1.14
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 28.66  30.44  30.71  38.35  39.09  39.15
+  B=  8 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.41   2.24   2.07   2.11   2.27   2.27
+   vs_casc       │  0.99   1.03   1.02   1.08   1.14   1.18
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 29.90  31.13  30.37  39.08  39.18  38.73
+
+  Speedup table [context_len=16384]  (fi_tree / ragged — >1 means ragged wins)
+  ────────────────────────────────────────────────────────────────────────
+  B=  1 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.40   1.26   1.54   1.49   1.80   2.00
+   vs_casc       │  0.99   0.99   0.99   0.99   0.98   1.00
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  3.05   5.07   7.82  13.94  11.45  12.83
+  B=  1 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.19   1.52   1.95   1.79   1.96   1.93
+   vs_casc       │  0.99   0.99   0.98   0.99   1.01   1.00
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  4.36   8.28   8.01  11.84  14.17  19.10
+  B=  1 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.54   1.93   1.70   1.87   2.53   2.48
+   vs_casc       │  0.99   0.98   1.00   1.01   1.04   1.03
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  6.26   6.71  13.00  17.42  15.87  17.35
+  B=  1 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.08   1.72   1.88   2.53   2.01   2.02
+   vs_casc       │  0.97   1.00   1.00   1.04   1.05   1.06
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  6.28   9.78  17.37  17.60  17.69  19.84
+  B=  1 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.85   2.07   2.48   2.01   2.44   2.13
+   vs_casc       │  0.98   1.00   1.03   1.05   1.09   1.08
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  8.13  11.48  12.32  17.75  18.96  18.61
+  B=  1 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  1.93   2.00   2.43   1.99   2.07   2.10
+   vs_casc       │  0.99   1.00   1.03   1.07   1.08   1.11
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  9.43  13.58  14.07  20.10  18.70  20.10
+  B=  2 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.60   2.69   2.32   2.01   3.43   3.38
+   vs_casc       │  0.99   0.98   1.05   0.99   1.01   1.01
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  6.01   9.82  10.04  16.82  19.90  22.33
+  B=  2 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.60   2.24   3.22   2.44   2.09   2.06
+   vs_casc       │  0.98   0.98   1.00   1.00   1.01   1.01
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  8.44  10.09  13.83  14.59  15.23  20.66
+  B=  2 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.20   3.44   2.43   1.97   2.07   2.04
+   vs_casc       │  1.00   1.00   1.00   1.02   1.02   1.01
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │  7.62  11.82  16.06  18.27  16.81  18.43
+  B=  2 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.21   2.43   1.97   1.99   2.16   2.06
+   vs_casc       │  1.01   1.00   1.01   1.01   1.06   1.04
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 11.01  12.08  18.00  18.56  19.09  20.51
+  B=  2 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.43   2.13   2.33   2.15   2.09   2.32
+   vs_casc       │  1.00   1.01   1.02   1.06   1.05   1.13
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 14.06  12.37  15.11  19.07  19.34  20.45
+  B=  2 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.42   1.97   2.01   2.08   2.30   2.12
+   vs_casc       │  1.00   1.01   1.01   1.05   1.12   1.07
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 11.63  14.06  14.93  20.70  20.47  20.09
+  B=  4 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  4.94   3.00   3.79   2.67   2.72   2.79
+   vs_casc       │  0.98   0.99   0.99   0.98   1.01   1.02
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 11.62  12.01  16.42  20.67  20.89  23.71
+  B=  4 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.03   3.99   2.91   2.33   2.69   2.32
+   vs_casc       │  0.96   1.00   1.00   1.00   1.02   1.02
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 10.20  17.56  15.22  17.81  19.72  23.38
+  B=  4 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.77   3.04   2.00   2.07   2.35   2.18
+   vs_casc       │  0.99   1.00   0.99   1.02   1.02   0.99
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 13.18  12.79  17.06  19.36  19.78  19.64
+  B=  4 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.98   2.31   2.07   2.23   2.26   2.09
+   vs_casc       │  0.99   1.00   1.06   1.02   1.01   1.05
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 11.92  14.72  19.20  20.16  20.02  20.44
+  B=  4 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.71   2.69   2.40   2.28   2.25   2.21
+   vs_casc       │  1.00   1.00   1.03   1.03   1.05   1.08
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 14.70  15.86  15.84  20.26  20.17  20.23
+  B=  4 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.38   2.11   2.21   2.08   2.20   2.22
+   vs_casc       │  1.01   1.04   1.03   1.02   1.08   1.10
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 14.25  15.08  16.24  20.31  20.26  20.47
+  B=  8 b= 6 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  5.03   3.12   3.06   2.20   2.85   2.81
+   vs_casc       │  0.99   0.98   0.99   0.98   1.00   1.00
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 13.98  14.57  17.13  21.96  22.20  24.13
+  B=  8 b=10 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.20   3.47   3.56   2.61   2.72   2.44
+   vs_casc       │  0.98   1.00   1.00   1.00   0.96   0.97
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 12.47  18.37  19.61  20.12  19.28  23.34
+  B=  8 b=16 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.16   3.67   2.36   2.20   2.29   2.11
+   vs_casc       │  0.99   0.99   1.00   0.99   1.00   0.99
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 13.70  16.44  19.83  19.78  19.82  19.81
+  B=  8 b=24 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  3.50   2.42   2.17   2.16   2.41   2.18
+   vs_casc       │  1.01   1.01   0.96   1.01   1.01   1.03
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 15.37  15.41  19.39  20.19  20.28  20.41
+  B=  8 b=32 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.84   2.78   2.33   2.40   2.30   2.32
+   vs_casc       │  0.99   0.96   1.00   1.03   1.07   1.06
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 15.50  15.66  15.98  20.45  20.72  20.45
+  B=  8 b=36 │ d= 6  d=10  d=16  d=24  d=32  d=36
+   vs_tree       │  2.58   2.32   2.14   2.15   2.35   2.30
+   vs_casc       │  1.00   1.01   1.01   1.04   1.09   1.09
+   vs_deft       │   n/a    n/a    n/a    n/a    n/a    n/a
+   bw GB/s       │ 15.94  16.29  16.25  20.47  20.89  20.39
+
+========================================================================
+  MICRO BENCHMARK SUMMARY
+========================================================================
+  Configs tested:   720
+  Valid results:    720
+  Ragged wins (vs fi_tree):  716 / 720  (99%)
+  Median speedup (vs fi_tree): 2.17×
+  Best speedup:     16.17×  (B=1, b=36, d=36, L=0)
+  Worst speedup:    0.98×  (B=1, b=6, d=6, L=4096)
+  Median BW:        63.4 GB/s  (22.0% of peak 288 GB/s)
+
+  [tree-only]  wins 142/144  median 2.81×  best 16.17× (B=1, b=36, d=36)
+
+  [L=1024]  wins 144/144  median 1.84×  best 4.07× (B=4, b=6, d=6)
+
+  [L=4096]  wins 142/144  median 2.11×  best 4.87× (B=8, b=6, d=6)
+
+  [L=8192]  wins 144/144  median 2.22×  best 5.35× (B=8, b=6, d=6)
+
+  [L=16384]  wins 144/144  median 2.28×  best 5.03× (B=8, b=6, d=6)
+
+  N_branches scaling  (speedup vs fi_tree, per context_len):
+    b=6 d=6:
+      L=   0: B=1:1.00×  B=2:1.12×  B=4:1.44×  B=8:1.27×
+      L=1024: B=1:1.20×  B=2:2.03×  B=4:4.07×  B=8:3.80×
+      L=4096: B=1:0.98×  B=2:2.31×  B=4:3.91×  B=8:4.87×
+      L=8192: B=1:1.35×  B=2:2.51×  B=4:4.61×  B=8:5.35×
+      L=16384: B=1:1.40×  B=2:2.60×  B=4:4.94×  B=8:5.03×
+    b=6 d=10:
+      L=   0: B=1:1.00×  B=2:1.11×  B=4:1.00×  B=8:1.05×
+      L=1024: B=1:1.18×  B=2:1.39×  B=4:2.17×  B=8:2.46×
+      L=4096: B=1:1.00×  B=2:2.21×  B=4:2.84×  B=8:2.99×
+      L=8192: B=1:1.13×  B=2:2.51×  B=4:3.03×  B=8:3.18×
+      L=16384: B=1:1.26×  B=2:2.69×  B=4:3.00×  B=8:3.12×
+    b=6 d=16:
+      L=   0: B=1:1.60×  B=2:1.73×  B=4:1.73×  B=8:1.58×
+      L=1024: B=1:1.46×  B=2:1.43×  B=4:2.70×  B=8:1.95×
+      L=4096: B=1:1.01×  B=2:2.17×  B=4:3.78×  B=8:2.96×
+      L=8192: B=1:1.49×  B=2:2.27×  B=4:3.72×  B=8:3.00×
+      L=16384: B=1:1.54×  B=2:2.32×  B=4:3.79×  B=8:3.06×
+    b=6 d=24:
+      L=   0: B=1:2.10×  B=2:1.45×  B=4:1.69×  B=8:1.47×
+      L=1024: B=1:1.49×  B=2:1.43×  B=4:1.86×  B=8:1.42×
+      L=4096: B=1:1.02×  B=2:1.98×  B=4:2.75×  B=8:2.01×
+      L=8192: B=1:1.39×  B=2:2.09×  B=4:2.70×  B=8:2.12×
+      L=16384: B=1:1.49×  B=2:2.01×  B=4:2.67×  B=8:2.20×
+    b=6 d=32:
+      L=   0: B=1:2.51×  B=2:2.91×  B=4:2.48×  B=8:2.03×
+      L=1024: B=1:1.63×  B=2:2.95×  B=4:2.15×  B=8:1.78×
+      L=4096: B=1:1.80×  B=2:3.37×  B=4:2.72×  B=8:2.44×
+      L=8192: B=1:1.87×  B=2:3.65×  B=4:2.71×  B=8:2.66×
+      L=16384: B=1:1.80×  B=2:3.43×  B=4:2.72×  B=8:2.85×
+    b=6 d=36:
+      L=   0: B=1:2.57×  B=2:2.73×  B=4:2.46×  B=8:1.47×
+      L=1024: B=1:1.65×  B=2:2.85×  B=4:2.08×  B=8:1.72×
+      L=4096: B=1:1.93×  B=2:3.38×  B=4:2.77×  B=8:2.42×
+      L=8192: B=1:1.91×  B=2:3.69×  B=4:2.76×  B=8:2.62×
+      L=16384: B=1:2.00×  B=2:3.38×  B=4:2.79×  B=8:2.81×
+    b=10 d=6:
+      L=   0: B=1:1.14×  B=2:1.17×  B=4:1.15×  B=8:1.20×
+      L=1024: B=1:1.19×  B=2:1.37×  B=4:2.20×  B=8:2.27×
+      L=4096: B=1:0.99×  B=2:2.17×  B=4:2.99×  B=8:3.22×
+      L=8192: B=1:1.21×  B=2:2.45×  B=4:3.16×  B=8:3.17×
+      L=16384: B=1:1.19×  B=2:2.60×  B=4:3.03×  B=8:3.20×
+    b=10 d=10:
+      L=   0: B=1:1.54×  B=2:1.28×  B=4:1.34×  B=8:1.17×
+      L=1024: B=1:1.45×  B=2:1.45×  B=4:2.61×  B=8:1.94×
+      L=4096: B=1:1.04×  B=2:2.20×  B=4:3.88×  B=8:3.40×
+      L=8192: B=1:1.51×  B=2:2.29×  B=4:3.80×  B=8:3.29×
+      L=16384: B=1:1.52×  B=2:2.24×  B=4:3.99×  B=8:3.47×
+    b=10 d=16:
+      L=   0: B=1:2.60×  B=2:2.99×  B=4:2.75×  B=8:2.92×
+      L=1024: B=1:1.65×  B=2:2.85×  B=4:2.17×  B=8:2.04×
+      L=4096: B=1:1.84×  B=2:3.11×  B=4:2.72×  B=8:2.81×
+      L=8192: B=1:1.98×  B=2:3.20×  B=4:2.79×  B=8:3.22×
+      L=16384: B=1:1.95×  B=2:3.22×  B=4:2.91×  B=8:3.56×
+    b=10 d=24:
+      L=   0: B=1:2.42×  B=2:2.90×  B=4:2.77×  B=8:1.43×
+      L=1024: B=1:1.63×  B=2:2.19×  B=4:1.79×  B=8:1.63×
+      L=4096: B=1:1.83×  B=2:2.48×  B=4:2.19×  B=8:2.31×
+      L=8192: B=1:1.87×  B=2:2.44×  B=4:2.26×  B=8:2.43×
+      L=16384: B=1:1.79×  B=2:2.44×  B=4:2.33×  B=8:2.61×
+    b=10 d=32:
+      L=   0: B=1:2.39×  B=2:2.62×  B=4:2.93×  B=8:1.51×
+      L=1024: B=1:1.56×  B=2:1.93×  B=4:1.90×  B=8:1.60×
+      L=4096: B=1:1.93×  B=2:2.03×  B=4:2.40×  B=8:2.21×
+      L=8192: B=1:2.01×  B=2:2.09×  B=4:2.48×  B=8:2.51×
+      L=16384: B=1:1.96×  B=2:2.09×  B=4:2.69×  B=8:2.72×
+    b=10 d=36:
+      L=   0: B=1:2.78×  B=2:3.17×  B=4:3.56×  B=8:1.52×
+      L=1024: B=1:1.59×  B=2:1.88×  B=4:1.71×  B=8:1.52×
+      L=4096: B=1:1.94×  B=2:2.02×  B=4:2.17×  B=8:2.03×
+      L=8192: B=1:1.99×  B=2:2.05×  B=4:2.17×  B=8:2.20×
+      L=16384: B=1:1.93×  B=2:2.06×  B=4:2.32×  B=8:2.44×
+    b=16 d=6:
+      L=   0: B=1:1.97×  B=2:1.95×  B=4:2.11×  B=8:1.85×
+      L=1024: B=1:1.50×  B=2:1.46×  B=4:2.76×  B=8:1.96×
+      L=4096: B=1:1.01×  B=2:2.20×  B=4:3.77×  B=8:3.14×
+      L=8192: B=1:1.51×  B=2:2.27×  B=4:3.96×  B=8:3.07×
+      L=16384: B=1:1.54×  B=2:2.20×  B=4:3.77×  B=8:3.16×
+    b=16 d=10:
+      L=   0: B=1:2.70×  B=2:3.15×  B=4:2.93×  B=8:3.23×
+      L=1024: B=1:1.62×  B=2:2.81×  B=4:2.16×  B=8:2.02×
+      L=4096: B=1:1.78×  B=2:3.10×  B=4:2.74×  B=8:2.80×
+      L=8192: B=1:1.89×  B=2:3.57×  B=4:2.91×  B=8:3.21×
+      L=16384: B=1:1.93×  B=2:3.44×  B=4:3.04×  B=8:3.67×
+    b=16 d=16:
+      L=   0: B=1:2.24×  B=2:2.60×  B=4:2.40×  B=8:1.36×
+      L=1024: B=1:1.58×  B=2:2.02×  B=4:1.58×  B=8:1.53×
+      L=4096: B=1:1.76×  B=2:2.51×  B=4:1.90×  B=8:2.06×
+      L=8192: B=1:1.79×  B=2:2.40×  B=4:2.02×  B=8:2.21×
+      L=16384: B=1:1.70×  B=2:2.43×  B=4:2.00×  B=8:2.36×
+    b=16 d=24:
+      L=   0: B=1:3.07×  B=2:3.59×  B=4:2.07×  B=8:1.63×
+      L=1024: B=1:1.56×  B=2:1.81×  B=4:1.59×  B=8:1.46×
+      L=4096: B=1:1.88×  B=2:2.08×  B=4:1.91×  B=8:1.89×
+      L=8192: B=1:1.81×  B=2:2.00×  B=4:2.05×  B=8:2.13×
+      L=16384: B=1:1.87×  B=2:1.97×  B=4:2.07×  B=8:2.20×
+    b=16 d=32:
+      L=   0: B=1:6.23×  B=2:5.41×  B=4:2.32×  B=8:1.99×
+      L=1024: B=1:2.42×  B=2:1.87×  B=4:1.78×  B=8:1.49×
+      L=4096: B=1:2.59×  B=2:1.99×  B=4:2.11×  B=8:1.99×
+      L=8192: B=1:2.63×  B=2:2.06×  B=4:2.33×  B=8:2.22×
+      L=16384: B=1:2.53×  B=2:2.07×  B=4:2.35×  B=8:2.29×
+    b=16 d=36:
+      L=   0: B=1:6.41×  B=2:5.37×  B=4:2.32×  B=8:1.95×
+      L=1024: B=1:2.36×  B=2:1.84×  B=4:1.67×  B=8:1.45×
+      L=4096: B=1:2.58×  B=2:1.96×  B=4:2.02×  B=8:1.92×
+      L=8192: B=1:2.60×  B=2:2.04×  B=4:2.18×  B=8:2.10×
+      L=16384: B=1:2.48×  B=2:2.04×  B=4:2.18×  B=8:2.11×
+    b=24 d=6:
+      L=   0: B=1:2.88×  B=2:3.14×  B=4:2.99×  B=8:3.12×
+      L=1024: B=1:1.69×  B=2:2.79×  B=4:2.17×  B=8:2.07×
+      L=4096: B=1:1.94×  B=2:3.10×  B=4:2.76×  B=8:2.89×
+      L=8192: B=1:2.11×  B=2:3.31×  B=4:2.80×  B=8:3.20×
+      L=16384: B=1:2.08×  B=2:3.21×  B=4:2.98×  B=8:3.50×
+    b=24 d=10:
+      L=   0: B=1:2.62×  B=2:3.17×  B=4:3.05×  B=8:1.37×
+      L=1024: B=1:1.60×  B=2:2.09×  B=4:1.78×  B=8:1.54×
+      L=4096: B=1:1.78×  B=2:2.48×  B=4:2.23×  B=8:2.09×
+      L=8192: B=1:1.75×  B=2:2.53×  B=4:2.22×  B=8:2.27×
+      L=16384: B=1:1.72×  B=2:2.43×  B=4:2.31×  B=8:2.42×
+    b=24 d=16:
+      L=   0: B=1:3.26×  B=2:3.80×  B=4:2.08×  B=8:1.64×
+      L=1024: B=1:1.65×  B=2:1.84×  B=4:1.62×  B=8:1.45×
+      L=4096: B=1:1.94×  B=2:2.12×  B=4:1.90×  B=8:1.92×
+      L=8192: B=1:1.97×  B=2:1.98×  B=4:2.01×  B=8:2.17×
+      L=16384: B=1:1.88×  B=2:1.97×  B=4:2.07×  B=8:2.17×
+    b=24 d=24:
+      L=   0: B=1:6.48×  B=2:5.56×  B=4:2.34×  B=8:2.04×
+      L=1024: B=1:2.39×  B=2:1.84×  B=4:1.68×  B=8:1.45×
+      L=4096: B=1:2.60×  B=2:2.00×  B=4:2.04×  B=8:1.91×
+      L=8192: B=1:2.58×  B=2:2.06×  B=4:2.21×  B=8:2.13×
+      L=16384: B=1:2.53×  B=2:1.99×  B=4:2.23×  B=8:2.16×
+    b=24 d=32:
+      L=   0: B=1:7.21×  B=2:4.78×  B=4:2.94×  B=8:2.88×
+      L=1024: B=1:2.21×  B=2:1.97×  B=4:1.81×  B=8:1.71×
+      L=4096: B=1:2.22×  B=2:2.01×  B=4:2.11×  B=8:2.05×
+      L=8192: B=1:2.08×  B=2:2.10×  B=4:2.29×  B=8:2.34×
+      L=16384: B=1:2.01×  B=2:2.16×  B=4:2.26×  B=8:2.41×
+    b=24 d=36:
+      L=   0: B=1:8.36×  B=2:3.47×  B=4:3.22×  B=8:3.08×
+      L=1024: B=1:2.13×  B=2:1.96×  B=4:1.74×  B=8:1.64×
+      L=4096: B=1:2.05×  B=2:2.07×  B=4:1.97×  B=8:1.95×
+      L=8192: B=1:2.05×  B=2:2.03×  B=4:2.12×  B=8:2.11×
+      L=16384: B=1:2.02×  B=2:2.06×  B=4:2.09×  B=8:2.18×
+    b=32 d=6:
+      L=   0: B=1:3.05×  B=2:3.45×  B=4:3.08×  B=8:1.50×
+      L=1024: B=1:1.64×  B=2:2.98×  B=4:2.17×  B=8:1.77×
+      L=4096: B=1:1.84×  B=2:3.40×  B=4:2.74×  B=8:2.40×
+      L=8192: B=1:1.89×  B=2:3.62×  B=4:2.73×  B=8:2.56×
+      L=16384: B=1:1.85×  B=2:3.43×  B=4:2.71×  B=8:2.84×
+    b=32 d=10:
+      L=   0: B=1:3.09×  B=2:3.87×  B=4:4.22×  B=8:1.59×
+      L=1024: B=1:1.63×  B=2:1.99×  B=4:1.94×  B=8:1.64×
+      L=4096: B=1:2.03×  B=2:2.05×  B=4:2.36×  B=8:2.29×
+      L=8192: B=1:1.97×  B=2:2.07×  B=4:2.45×  B=8:2.56×
+      L=16384: B=1:2.07×  B=2:2.13×  B=4:2.69×  B=8:2.78×
+    b=32 d=16:
+      L=   0: B=1:6.78×  B=2:5.95×  B=4:2.30×  B=8:2.07×
+      L=1024: B=1:2.37×  B=2:2.04×  B=4:1.81×  B=8:1.57×
+      L=4096: B=1:2.55×  B=2:2.24×  B=4:2.14×  B=8:2.02×
+      L=8192: B=1:2.71×  B=2:2.33×  B=4:2.32×  B=8:2.28×
+      L=16384: B=1:2.48×  B=2:2.33×  B=4:2.40×  B=8:2.33×
+    b=32 d=24:
+      L=   0: B=1:6.93×  B=2:4.57×  B=4:2.95×  B=8:2.84×
+      L=1024: B=1:2.24×  B=2:1.98×  B=4:1.84×  B=8:1.73×
+      L=4096: B=1:2.24×  B=2:2.04×  B=4:2.11×  B=8:2.13×
+      L=8192: B=1:2.11×  B=2:2.15×  B=4:2.25×  B=8:2.29×
+      L=16384: B=1:2.01×  B=2:2.15×  B=4:2.28×  B=8:2.40×
+    b=32 d=32:
+      L=   0: B=1:13.39×  B=2:4.30×  B=4:4.04×  B=8:3.88×
+      L=1024: B=1:2.59×  B=2:2.02×  B=4:1.85×  B=8:1.78×
+      L=4096: B=1:2.51×  B=2:2.10×  B=4:2.10×  B=8:2.08×
+      L=8192: B=1:2.48×  B=2:2.13×  B=4:2.20×  B=8:2.25×
+      L=16384: B=1:2.44×  B=2:2.09×  B=4:2.25×  B=8:2.30×
+    b=32 d=36:
+      L=   0: B=1:13.27×  B=2:5.11×  B=4:4.57×  B=8:4.48×
+      L=1024: B=1:2.34×  B=2:2.18×  B=4:1.87×  B=8:1.84×
+      L=4096: B=1:2.28×  B=2:2.27×  B=4:2.09×  B=8:2.10×
+      L=8192: B=1:2.13×  B=2:2.31×  B=4:2.07×  B=8:2.29×
+      L=16384: B=1:2.13×  B=2:2.32×  B=4:2.21×  B=8:2.32×
+    b=36 d=6:
+      L=   0: B=1:2.54×  B=2:3.21×  B=4:3.10×  B=8:1.37×
+      L=1024: B=1:1.65×  B=2:2.20×  B=4:1.82×  B=8:1.62×
+      L=4096: B=1:1.85×  B=2:2.48×  B=4:2.18×  B=8:2.22×
+      L=8192: B=1:1.92×  B=2:2.42×  B=4:2.29×  B=8:2.41×
+      L=16384: B=1:1.93×  B=2:2.42×  B=4:2.38×  B=8:2.58×
+    b=36 d=10:
+      L=   0: B=1:3.28×  B=2:3.88×  B=4:2.39×  B=8:1.68×
+      L=1024: B=1:1.67×  B=2:1.86×  B=4:1.64×  B=8:1.52×
+      L=4096: B=1:2.03×  B=2:2.03×  B=4:1.91×  B=8:2.02×
+      L=8192: B=1:2.09×  B=2:2.02×  B=4:2.04×  B=8:2.24×
+      L=16384: B=1:2.00×  B=2:1.97×  B=4:2.11×  B=8:2.32×
+    b=36 d=16:
+      L=   0: B=1:7.00×  B=2:5.97×  B=4:2.32×  B=8:2.09×
+      L=1024: B=1:2.37×  B=2:1.80×  B=4:1.65×  B=8:1.45×
+      L=4096: B=1:2.55×  B=2:1.95×  B=4:2.01×  B=8:1.84×
+      L=8192: B=1:2.71×  B=2:2.08×  B=4:2.12×  B=8:2.07×
+      L=16384: B=1:2.43×  B=2:2.01×  B=4:2.21×  B=8:2.14×
+    b=36 d=24:
+      L=   0: B=1:9.03×  B=2:3.41×  B=4:3.31×  B=8:3.22×
+      L=1024: B=1:2.11×  B=2:1.92×  B=4:1.73×  B=8:1.63×
+      L=4096: B=1:2.18×  B=2:2.00×  B=4:1.97×  B=8:1.93×
+      L=8192: B=1:2.02×  B=2:1.98×  B=4:2.09×  B=8:2.11×
+      L=16384: B=1:1.99×  B=2:2.08×  B=4:2.08×  B=8:2.15×
+    b=36 d=32:
+      L=   0: B=1:13.95×  B=2:5.07×  B=4:4.70×  B=8:4.59×
+      L=1024: B=1:2.38×  B=2:2.20×  B=4:1.87×  B=8:1.86×
+      L=4096: B=1:2.24×  B=2:2.26×  B=4:2.08×  B=8:2.06×
+      L=8192: B=1:2.17×  B=2:2.29×  B=4:2.13×  B=8:2.27×
+      L=16384: B=1:2.07×  B=2:2.30×  B=4:2.20×  B=8:2.35×
+    b=36 d=36:
+      L=   0: B=1:16.17×  B=2:5.46×  B=4:5.37×  B=8:5.17×
+      L=1024: B=1:2.43×  B=2:2.19×  B=4:2.04×  B=8:2.00×
+      L=4096: B=1:2.23×  B=2:2.19×  B=4:2.13×  B=8:2.14×
+      L=8192: B=1:2.10×  B=2:2.14×  B=4:2.17×  B=8:2.27×
+      L=16384: B=1:2.10×  B=2:2.12×  B=4:2.22×  B=8:2.30×
+========================================================================
+

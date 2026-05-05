@@ -78,6 +78,28 @@ Prerequisites
 
 from __future__ import annotations
 
+# ── Dependency shims ─────────────────────────────────────────────────────────
+# Must run before any transformers / EAGLE import.
+#
+# Problem: transformers 4.53.1 imports `kernels`, but kernels 0.13 uses a
+# huggingface_hub 1.x dataclass API that is broken / incompatible in this env.
+# Solution: inject a minimal `kernels` stub into sys.modules so transformers
+# gets the `get_kernel` symbol it needs without loading the real broken package.
+import sys as _sys, types as _types, importlib.machinery as _ilm
+if "kernels" not in _sys.modules:
+    _km = _types.ModuleType("kernels")
+    _km.get_kernel = lambda *a, **kw: None
+    _km.__spec__ = _ilm.ModuleSpec("kernels", None)   # required by importlib.util.find_spec
+    _km.__version__ = "0.0.0-stub"
+    # Pre-register sub-modules so any further `from kernels.x import y` is a no-op.
+    for _sub in ("kernels.layer", "kernels.utils", "kernels.deps"):
+        _sm = _types.ModuleType(_sub)
+        _sm.__spec__ = _ilm.ModuleSpec(_sub, None)
+        _sys.modules.setdefault(_sub, _sm)
+    _sys.modules["kernels"] = _km
+del _sys, _types, _ilm
+# ─────────────────────────────────────────────────────────────────────────────
+
 import argparse
 import contextlib
 import csv
@@ -257,10 +279,10 @@ def _check_env_versions() -> None:
     ac = _ver("accelerate")
 
     problems = []
-    if tx < (4, 53, 1):
+    if tx < (4, 46, 2):
         problems.append(
-            f"transformers {'.'.join(str(x) for x in tx)} < 4.53.1  "
-            "(EAGLE requires >=4.53.1)"
+            f"transformers {'.'.join(str(x) for x in tx)} < 4.46.2  "
+            "(EAGLE requires >=4.46.2)"
         )
     if tx >= (5, 0, 0):
         problems.append(
@@ -280,7 +302,7 @@ def _check_env_versions() -> None:
         print("  ← WARNING")
         for p in problems:
             print(f"    [env:warn] {p}")
-        print("    Run:  pip install 'transformers==4.53.1' 'accelerate>=0.26.0,<1.0'")
+        print("    Run:  pip install 'transformers==4.46.2' 'accelerate>=0.26.0,<1.0'")
     else:
         print("  OK")
 
@@ -294,13 +316,15 @@ _check_env_versions()
 
 def _patch_transformers_for_eagle() -> None:
     """
-    Compatibility shim for EAGLE 3.0.0 vs transformers v5+.
+    Compatibility shim so EAGLE 3.0.0 imports cleanly across transformers versions.
 
-    eagle/model/modeling_qwen3_kv.py imports LossKwargs, auto_docstring, and
-    can_return_tuple from transformers.utils.  These symbols were added in
-    transformers 4.47–4.50 and were moved / renamed in the v5 refactor.
-    We inject lightweight stubs for any missing symbol so EaModel imports
-    cleanly regardless of the installed transformers version.
+    EAGLE's modeling_qwen3_kv.py references symbols that were added or moved
+    across transformers 4.46–5.x.  We inject no-op stubs for any missing symbol
+    rather than hard-requiring a specific version.
+
+    Patched modules / symbols:
+      transformers.utils        — LossKwargs, auto_docstring, can_return_tuple
+      transformers.integrations — use_kernel_forward_from_hub  (added ~4.53)
     """
     try:
         import transformers.utils as _tu
@@ -324,7 +348,21 @@ def _patch_transformers_for_eagle() -> None:
             _tu.can_return_tuple = _can_return_tuple  # type: ignore[attr-defined]
 
     except Exception:
-        pass  # Let EaModel fail naturally if transformers isn't importable at all
+        pass
+
+    try:
+        import transformers.integrations as _ti
+
+        if not hasattr(_ti, "use_kernel_forward_from_hub"):
+            def _use_kernel_forward_from_hub(*args, **kwargs):
+                # No-op passthrough decorator — kernel hub not available.
+                if args and callable(args[0]):
+                    return args[0]
+                return lambda fn: fn
+            _ti.use_kernel_forward_from_hub = _use_kernel_forward_from_hub  # type: ignore[attr-defined]
+
+    except Exception:
+        pass
 
 
 # Apply at module load so _has("eagle") and all subsequent imports succeed.
@@ -434,53 +472,151 @@ def _load_sharegpt_prompts(
 # Context-length padding (growing-context simulation)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Realistic filler paragraph (~150 words / ~200 tokens per repetition).
-# Represents a prior assistant response in the conversation context — the
-# setting where a user has already exchanged several turns and the KV cache
-# contains a long history when new speculation begins.
-_CONTEXT_FILLER_PARA = (
-    "Large language models such as LLaMA, GPT, and Gemini have demonstrated "
-    "remarkable capabilities across a wide range of natural language processing "
-    "tasks including question answering, summarisation, code generation, and "
-    "mathematical reasoning. These models are trained on large corpora of text "
-    "using the next-token prediction objective, which encourages the model to "
-    "learn rich representations of language structure, world knowledge, and "
-    "logical reasoning patterns. During inference, the model generates text "
-    "autoregressively, one token at a time, using the key-value cache to avoid "
-    "recomputing attention over previously processed tokens. Speculative decoding "
-    "accelerates this process by drafting multiple candidate tokens ahead of the "
-    "target model and verifying them in parallel, achieving super-linear speedups "
-    "when the draft model has a high acceptance rate. The verification step "
-    "requires attention over both the committed prefix tokens in the KV cache and "
-    "the newly drafted tree tokens, making the efficiency of the verification "
-    "attention kernel a critical determinant of end-to-end throughput. "
+# arXiv paper used as the realistic long-context document.
+# FlashAttention-2 (Dao 2023) — on-topic and ~12k tokens of clean prose.
+_ARXIV_DOC_ID    = "1706.03762"   # "Attention Is All You Need" — confirmed HTML available
+_ARXIV_CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", ".cache")
+_ARXIV_CACHE_PATH = os.path.join(_ARXIV_CACHE_DIR, f"arxiv_{_ARXIV_DOC_ID}.txt")
+
+# Fallback text used only when the download fails.
+_FALLBACK_FILLER = (
+    "Large language models have demonstrated remarkable capabilities across a "
+    "wide range of natural language processing tasks. These models are trained "
+    "on large corpora of text using the next-token prediction objective. During "
+    "inference the model generates text autoregressively, one token at a time, "
+    "using the key-value cache to avoid recomputing attention over previously "
+    "processed tokens. Speculative decoding accelerates this process by drafting "
+    "multiple candidate tokens ahead of the target model and verifying them in "
+    "parallel, achieving super-linear speedups when the draft model has a high "
+    "acceptance rate. "
 )
+
+
+def _fetch_arxiv_text(paper_id: str, cache_path: str) -> str:
+    """Download an arXiv paper's HTML export and return stripped plain text.
+
+    Result is cached to *cache_path* so subsequent runs don't hit the network.
+    Falls back to _FALLBACK_FILLER on any network/parse error.
+    """
+    import urllib.request
+    import re as _re
+
+    if os.path.exists(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+        if text:
+            print(f"  [prefix] Loaded arXiv {paper_id} from cache ({len(text):,} chars)")
+            return text
+
+    url = f"https://arxiv.org/html/{paper_id}"
+    print(f"  [prefix] Downloading arXiv {paper_id} from {url} …")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        print(f"  [prefix] Download failed ({exc}); using fallback filler.")
+        return ""
+
+    # Strip HTML tags, collapse whitespace.
+    text = _re.sub(r"<[^>]+>", " ", html)
+    text = _re.sub(r"\s+", " ", text).strip()
+
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print(f"  [prefix] Downloaded and cached ({len(text):,} chars)")
+    return text
+
+
+_DOC_TEXT_CACHE: Optional[str] = None
+
+
+def _get_doc_text() -> str:
+    global _DOC_TEXT_CACHE
+    if _DOC_TEXT_CACHE is None:
+        _DOC_TEXT_CACHE = _fetch_arxiv_text(_ARXIV_DOC_ID, _ARXIV_CACHE_PATH)
+        if not _DOC_TEXT_CACHE:
+            _DOC_TEXT_CACHE = _FALLBACK_FILLER
+    return _DOC_TEXT_CACHE
+
+
+def _apply_chat_template_ids(tokenizer, messages: list, add_generation_prompt: bool) -> List[int]:
+    """Wrapper around apply_chat_template that always returns List[int]."""
+    result = tokenizer.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=add_generation_prompt
+    )
+    if isinstance(result, str):
+        return tokenizer.encode(result, add_special_tokens=False)
+    if isinstance(result, (list, tuple)) and result and isinstance(result[0], int):
+        return list(result)
+    if hasattr(result, "ids"):
+        return list(result.ids)
+    if hasattr(result, "input_ids"):
+        raw = result.input_ids
+        arr = raw.tolist() if hasattr(raw, "tolist") else list(raw)
+        return arr[0] if arr and isinstance(arr[0], list) else arr
+    return list(result)
 
 
 def _build_prefix_ids(
     target_len: int,
     tokenizer,
     device: torch.device,
+    is_llama3: bool = False,
 ) -> torch.Tensor:
-    """Build a [1, target_len] int64 tensor of filler tokens.
+    """Build a [1, target_len] KV-cache prefix from a real arXiv document.
 
-    Tokenises _CONTEXT_FILLER_PARA, repeats until long enough, truncates
-    to exactly *target_len* tokens.  The result is a real-text token
-    sequence that will be prefilled into the KV cache before speculation,
-    simulating a mid-conversation context of the given length.
+    The document (FlashAttention-2 paper by default) is downloaded once and
+    cached to .cache/.  For LLaMA-3/Instruct models it is wrapped in a chat
+    template as a user-turn share + brief assistant acknowledgment so the
+    sequence structure is valid.  The caller must strip BOS from the actual
+    prompt before concatenating (prefix already starts with BOS).
+
+    For non-LLaMA-3 models the raw document tokens are used (no template).
     """
-    # Tokenise one paragraph (no special tokens — we want raw body tokens)
-    para_ids: List[int] = tokenizer.encode(
-        _CONTEXT_FILLER_PARA, add_special_tokens=False
-    )
-    if not para_ids:
-        # Fallback: use id 13 (newline equivalent in most tokenizers)
-        para_ids = [13] * 50
+    doc_text = _get_doc_text()
+    doc_ids: List[int] = tokenizer.encode(doc_text, add_special_tokens=False)
+    if not doc_ids:
+        doc_ids = tokenizer.encode(_FALLBACK_FILLER, add_special_tokens=False) or [13] * 50
 
-    # Repeat until we have enough tokens, then truncate
-    reps = math.ceil(target_len / len(para_ids)) + 1
-    long_ids = (para_ids * reps)[:target_len]
-    return torch.tensor([long_ids], dtype=torch.long, device=device)
+    if not is_llama3 or not hasattr(tokenizer, "apply_chat_template"):
+        # Raw token tiling — no chat structure.
+        reps = math.ceil(target_len / len(doc_ids)) + 1
+        return torch.tensor([(doc_ids * reps)[:target_len]], dtype=torch.long, device=device)
+
+    # Wrap as: [BOS][user]{document…}[eot][assistant]{ack}[eot]
+    # The user turn is filled with the document (tiled if needed).
+    # Caller appends the actual prompt after stripping its BOS.
+    ack = (
+        "I've read the document carefully and I'm ready to answer your questions about it."
+    )
+    ack_ids = tokenizer.encode(ack, add_special_tokens=False)
+
+    # Measure template overhead (header tokens, eot tokens) from a tiny sample.
+    sample_ids = _apply_chat_template_ids(
+        tokenizer,
+        [{"role": "user", "content": "A"}, {"role": "assistant", "content": "B"}],
+        add_generation_prompt=False,
+    )
+    overhead = max(len(sample_ids) - 2, 20)  # tokens consumed by template structure
+
+    user_budget = max(target_len - overhead - len(ack_ids), len(doc_ids))
+    reps = math.ceil(user_budget / len(doc_ids)) + 1
+    user_ids = (doc_ids * reps)[:user_budget]
+    user_content = tokenizer.decode(user_ids, skip_special_tokens=True)
+
+    ids = _apply_chat_template_ids(
+        tokenizer,
+        [{"role": "user", "content": user_content}, {"role": "assistant", "content": ack}],
+        add_generation_prompt=False,
+    )
+
+    # Pad with raw doc tokens if still short (template overhead estimates can be off).
+    if len(ids) < target_len:
+        ids = ids + (doc_ids * math.ceil((target_len - len(ids)) / len(doc_ids)))
+
+    return torch.tensor([ids[:target_len]], dtype=torch.long, device=device)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -736,6 +872,28 @@ def load_eagle_model(
     except Exception:
         pass
 
+    # Build quantization config explicitly so transformers 5.x honours it
+    # (passing load_in_4bit=True alongside torch_dtype is silently ignored in newer transformers)
+    _quant_cfg = None
+    _load_kwargs: dict = {}
+    if load_in_4bit:
+        from transformers import BitsAndBytesConfig
+        _quant_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+        _load_kwargs["quantization_config"] = _quant_cfg
+        # torch_dtype must not be set when using bitsandbytes quantization
+    elif use_fp8:
+        _load_kwargs["load_in_8bit"] = True
+        _load_kwargs["torch_dtype"] = _dtype
+    else:
+        _load_kwargs["torch_dtype"] = _dtype
+
+    # bitsandbytes quantization requires device_map="auto"; explicit dict silently skips quant
+    _device_map = "auto" if load_in_4bit else {"": "cuda:0"}
     model = EaModel.from_pretrained(
         use_eagle3=use_eagle3,
         base_model_path=base_model,
@@ -743,12 +901,9 @@ def load_eagle_model(
         total_token=total_token,
         depth=depth,
         top_k=top_k,
-        torch_dtype=_dtype,
-        # Force EVERYTHING to GPU 0 to avoid performance-killing offloading
-        device_map={"": "cuda:0"},
+        device_map=_device_map,
         low_cpu_mem_usage=True,
-        load_in_8bit=use_fp8,
-        load_in_4bit=load_in_4bit,
+        **_load_kwargs,
     )
     model.eval()
     cfg = model.base_model.config
@@ -778,19 +933,34 @@ def run_ar_baseline(
     that breaks native .forward() and .generate(). To get a fair baseline,
     we load the original Llama model in isolation.
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     print(f"    [AR] Loading clean base model: {args.base_model} ...")
-    
+
     # Use bfloat16 for the baseline if supported, else float16
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
-    
+
+    _ar_kwargs: dict = {}
+    if args.load_in_4bit:
+        _ar_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+        # bitsandbytes requires device_map="auto" and no torch_dtype
+        _ar_kwargs["device_map"] = "auto"
+    elif args.fp8:
+        _ar_kwargs["load_in_8bit"] = True
+        _ar_kwargs["torch_dtype"] = dtype
+        _ar_kwargs["device_map"] = {"": "cuda:0"}
+    else:
+        _ar_kwargs["torch_dtype"] = dtype
+        _ar_kwargs["device_map"] = {"": "cuda:0"}
+
     temp_model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
-        torch_dtype=dtype,
-        device_map={"": "cuda:0"},
         low_cpu_mem_usage=True,
-        load_in_8bit=args.fp8,
-        load_in_4bit=args.load_in_4bit,
+        **_ar_kwargs,
     )
     temp_model.eval()
     prefill_device = next(temp_model.parameters()).device
@@ -804,6 +974,10 @@ def run_ar_baseline(
         else:
             input_ids = tokenizer([raw], return_tensors="pt").input_ids.to(prefill_device)
         if extra_prefix_ids is not None and extra_prefix_ids.shape[1] > 0:
+            # Prefix starts with BOS; strip BOS from prompt to avoid a duplicate mid-sequence.
+            bos_id = getattr(tokenizer, "bos_token_id", None)
+            if bos_id is not None and input_ids[0, 0].item() == bos_id:
+                input_ids = input_ids[:, 1:]
             input_ids = torch.cat([extra_prefix_ids.to(prefill_device), input_ids], dim=1)
 
         try:
@@ -997,12 +1171,15 @@ def run_generation(
                 prompt    = _get_prompt(model_type, raw)
                 input_ids = model.tokenizer([prompt], return_tensors="pt").input_ids.to(prefill_device)
 
-            # ── Prepend context-length filler ─────────────────────────────────
-            # extra_prefix_ids is a [1, L] tensor of filler tokens that models
-            # a mid-conversation KV cache of L tokens (growing-context sweep).
-            # We prepend them so the model prefills L tokens before speculation,
-            # giving the ragged kernel its realistic prefix advantage.
+            # ── Prepend chat-history prefix ───────────────────────────────────
+            # extra_prefix_ids is a [1, L] tensor of properly formatted prior
+            # conversation turns (built by _build_prefix_ids with is_llama3=True).
+            # It already starts with BOS, so we strip BOS from the current
+            # prompt before concatenating to avoid a duplicate mid-sequence.
             if extra_prefix_ids is not None and extra_prefix_ids.shape[1] > 0:
+                bos_id = getattr(model.tokenizer, "bos_token_id", None)
+                if bos_id is not None and input_ids[0, 0].item() == bos_id:
+                    input_ids = input_ids[:, 1:]
                 input_ids = torch.cat(
                     [extra_prefix_ids.to(prefill_device), input_ids], dim=1
                 )
@@ -1232,56 +1409,6 @@ def _ragged_tree_attn(
     return result
 
 
-@contextlib.contextmanager
-def ragged_eagle_context(branching_factor: int, max_depth: int,
-                         silent: bool = False,
-                         verify_flag: Optional[Dict[str, object]] = None,
-                         model=None,
-                         use_cuda_graph: bool = False):
-    """
-    Module-level attention patch for EAGLE-3 tree verification.
-
-    Replaces ``LlamaAttention.forward`` on the base model's attention class so
-    that during tree verification the entire QK→scale→mask→softmax→AV path is
-    replaced by a single call to ``_ragged_tree_attn``.
-
-    Why this beats the old ``torch.matmul`` hook
-    ─────────────────────────────────────────────
-    The matmul hook intercepted the QK matmul and returned zeros, but EAGLE's
-    code between QK and AV still ran:
-
-      ``zeros / sqrt(d)  →  + attention_mask  →  softmax(fp32)  →  .to(dtype)``
-
-    That's **6 CUDA kernels × 32 layers = 192 wasted launches** per step plus
-    ~1.5 GB of wasted HBM traffic (~5 ms on A10G).  This module-level patch
-    eliminates all of it by replacing the forward method directly.
-
-    Safety
-    ──────
-    • Only fires when ``verify_flag["in_tree_verify"]`` is True.
-    • For all other calls (initialize_tree, draft model, autoregressive decode)
-      the original LlamaAttention.forward runs unmodified.
-    • Patches the *class method*, so all 32 layers are covered atomically.
-    • Restores the original forward on context exit.
-
-    Args:
-        branching_factor: tree branching factor (= EAGLE top_k).
-        max_depth:        maximum tree depth.
-        silent:           if True, suppress the summary print on exit.
-        verify_flag:      dict with key ``"in_tree_verify"`` (bool) shared
-                          with ``_timed_tree_decoding``.
-        model:            the EaModel instance (required for module-level patching).
-    """
-    if model is None:
-        raise ValueError("ragged_eagle_context requires model= parameter "
-                         "for module-level attention patching")
-
-    _s: Dict[str, object] = {"n": 0}
-
-    # ── Resolve the LlamaAttention class to patch ───────────────────────────
-    _AttnClass = type(model.base_model.model.layers[0].self_attn)
-    _orig_forward = _AttnClass.forward
-
 # ── Shared buffers + Graph for CUDA Graphs (to save VRAM) ───────────────
 # We only need ONE set of buffers AND one graph for the whole model 
 # because layers execute sequentially and perform identical work on the 
@@ -1510,12 +1637,30 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
 
         return attn_output, None, past_key_value
 
+    # Accelerate's add_hook_to_module() stores the original forward as
+    # module._old_forward and replaces module.forward (instance-level) with a
+    # wrapper that calls _old_forward.  The instance-level attr shadows any
+    # class-level patch, so we must patch _old_forward on every attention
+    # instance.  Fall back to class-level patch for modules without the hook.
+    import types as _types
+    _layers = model.base_model.model.layers
+    _saved: List[tuple] = []
+    for _layer in _layers:
+        _attn = _layer.self_attn
+        if hasattr(_attn, "_old_forward"):
+            _saved.append((_attn, "old", _attn._old_forward))
+            _attn._old_forward = _types.MethodType(_ragged_attn_forward, _attn)
+        else:
+            _saved.append((_attn, "class", None))
+    # Always do class-level patch as belt-and-suspenders
     _AttnClass.forward = _ragged_attn_forward
-    
     try:
         yield _s
     finally:
         _AttnClass.forward = _orig_forward
+        for _attn, _kind, _orig_fw in _saved:
+            if _kind == "old":
+                _attn._old_forward = _orig_fw
         
         if not silent:
             n_fires = int(_s["n"])               # type: ignore[arg-type]
@@ -1691,134 +1836,90 @@ def main() -> None:
         print(f"  PROFILE MODE:     ON  (per-component timing in ragged path)")
     print("=" * 72)
 
-    # ── Compute KV cache max_length ───────────────────────────────────────────
-    # Must accommodate: longest prefix (context sweep) + longest prompt
-    # (~512 tokens for ShareGPT after chat-template) + max_new_tokens + tree
-    # tokens emitted per verification step (~total_token).  Round up to the
-    # next multiple of 256 for alignment.
-    _max_prefix    = max(context_lengths)
-    _prompt_budget = 512          # conservative upper bound for ShareGPT prompts
+    # ── Pre-warm doc download so it's cached before GPU work starts ──────────
+    _get_doc_text()
+
+    _prompt_budget = 512   # conservative upper bound for ShareGPT prompts
     _tree_budget   = max(c.total_token for c in configs)
-    _raw_max_len   = _max_prefix + _prompt_budget + args.max_new_tokens + _tree_budget
-    _kv_max_length = max(2048, math.ceil(_raw_max_len / 256) * 256)
-    print(f"\n  KV cache max_length: {_kv_max_length}  "
-          f"(prefix={_max_prefix} + prompt≤{_prompt_budget} + "
-          f"new={args.max_new_tokens} + tree={_tree_budget}, rounded to 256)")
+    max_cfg        = max(configs, key=lambda c: c.total_token)
 
-    # ── Load model once at the deepest config ────────────────────────────────
-    max_cfg = max(configs, key=lambda c: c.total_token)
-    model = load_eagle_model(
-        base_model=args.base_model,
-        eagle_model=args.eagle_model,
-        use_eagle3=is_eagle3,
-        total_token=max_cfg.total_token,
-        depth=max_cfg.depth,
-        top_k=max_cfg.top_k,
-        max_length=_kv_max_length,
-        use_fp8=args.fp8,
-    )
-
-    # ── Warmup: trigger Triton JIT compilation before timed runs ────────────
-    # The first time the ragged kernel sees a new (HEAD_DIM, MAX_DEPTH) combo,
-    # Triton compiles + autotunes, adding 10-15× overhead to that call.
-    # We run one short generation per unique depth to pay that cost upfront.
-    if not args.skip_ragged:
-        unique_depths = sorted(set(c.depth for c in configs))
-        print(f"\n  [warmup]  Compiling Triton kernels for {len(unique_depths)} "
-              f"depth configs: {unique_depths} …")
-        warmup_prompts = [prompts[0][:200]]  # first prompt, truncated
-        for _wd in unique_depths:
-            _wcfg = next(c for c in configs if c.depth == _wd)
-            set_tree_config(model, _wcfg)
-            try:
-                _warmup = run_generation(
-                    model, warmup_prompts, args.model_type,
-                    max_new_tokens=32,
-                    is_llama3=is_llama3,
-                    use_ragged=True,
-                    branching_factor=_wcfg.top_k,
-                    max_depth=_wcfg.depth,
-                    profile=False,
-                    max_length=_kv_max_length,
-                    use_cuda_graph=args.use_cuda_graph,
-                )
-            except torch.cuda.OutOfMemoryError as _oom:
-                print(f"  [OOM] warmup d={_wd} skipped — {_oom}")
-                torch.cuda.empty_cache()
-                continue
-            if _warmup:
-                print(f"  [warmup d={_wd}]  done ({_warmup[0].tok_per_sec:.1f} tok/s, "
-                      f"accept={_warmup[0].mean_accepted_per_step:.2f}/step)")
-            else:
-                print(f"  [warmup d={_wd}]  completed (no output)")
-            del _warmup
-        torch.cuda.empty_cache()
-
-    # ── Sweep ────────────────────────────────────────────────────────────────
-    # Per-config aggregated results:
-    #   config_results[i] = { "vanilla": List[GenRecord], "ragged": List[GenRecord] }
+    # ── Sweep — model is reloaded per context-length ─────────────────────────
+    # Loading once at the global max (66k) pre-allocates ~8.5 GB of KV cache,
+    # leaving insufficient VRAM for prefill at large contexts on a 20 GB card.
+    # Instead we size the KV cache to just fit the current context group, then
+    # free the model before advancing to the next group.
     all_rows: List[dict] = []
-    summary_rows: List[dict] = []   # one row per (ctx_len, b, d) config
+    summary_rows: List[dict] = []
 
-    # Pre-build prefix tensors for each context length (tokenise filler once)
-    _prefix_cache: dict = {}
-    if not args.skip_vanilla or not args.skip_ragged:
-        prefill_dev = next(model.base_model.parameters()).device
-        for ctx_len in context_lengths:
-            if ctx_len > 0:
-                _prefix_cache[ctx_len] = _build_prefix_ids(
-                    ctx_len, model.tokenizer, prefill_dev
-                )
-                actual = _prefix_cache[ctx_len].shape[1]
-                print(f"  [ctx] Built prefix tensor: L={ctx_len} tokens  "
-                      f"(actual={actual}, device={prefill_dev})")
-            else:
-                _prefix_cache[0] = None
-
-    # ── Native AR baseline (no SD) ────────────────────────────────────────
-    # We run this BEFORE the sweep to ensure a clean VRAM state for the 
-    # AutoModelForCausalLM instance.
-    ar_baselines: Dict[int, float] = {}
-    if getattr(args, 'include_ar_baseline', False):
-        # Temp-evict EAGLE model to make room for clean AR model
-        print(f"\n  [AR] Evicting EAGLE model temporarily for baseline runs...")
-        del model
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-        
-        for ctx_len in context_lengths:
-            extra_prefix = _prefix_cache.get(ctx_len, None)
-            print(f"\n  [AR baseline]  L={ctx_len} — greedy AR (no speculative decoding)")
-            ar_tok_s = run_ar_baseline(
-                args, prompts[:min(5, len(prompts))], is_llama3,
-                max_new_tokens=args.max_new_tokens,
-                extra_prefix_ids=extra_prefix,
-            )
-            ar_baselines[ctx_len] = ar_tok_s
-            if ar_tok_s > 0:
-                print(f"    → AR baseline: {ar_tok_s:.1f} tok/s at L={ctx_len}")
-            else:
-                print(f"    → AR baseline: OOM / no data")
-        
-        # Reload EAGLE model for the main sweep
-        print(f"\n  [AR] Reloading EAGLE model for speculative sweep...")
-        model = load_eagle_model(
-            base_model=args.base_model,
-            eagle_model=args.eagle_model,
-            use_eagle3=is_eagle3,
-            total_token=max_cfg.total_token,
-            depth=max_cfg.depth,
-            top_k=max_cfg.top_k,
-            max_length=_kv_max_length,
-            use_fp8=args.fp8,
-            load_in_4bit=args.load_in_4bit,
-        )
+    import gc
 
     for ctx_len in context_lengths:
-        extra_prefix = _prefix_cache.get(ctx_len, None)
-        ctx_tag = f"  L={ctx_len}" if ctx_len > 0 else ""
-        ar_tok_s = ar_baselines.get(ctx_len, 0.0)
+
+        # ── Per-context KV cache budget ───────────────────────────────────────
+        _raw  = ctx_len + _prompt_budget + args.max_new_tokens + _tree_budget
+        _kv_max_length = max(2048, math.ceil(_raw / 256) * 256)
+        print(f"\n{'═' * 72}")
+        print(f"  CONTEXT LENGTH  L={ctx_len}  —  KV cache max_length={_kv_max_length}"
+              f"  ({ctx_len} + {_prompt_budget} + {args.max_new_tokens} + {_tree_budget})")
+        print(f"{'═' * 72}")
+
+        # ── Load model sized for this context ─────────────────────────────────
+        try:
+            model = load_eagle_model(
+                base_model=args.base_model,
+                eagle_model=args.eagle_model,
+                use_eagle3=is_eagle3,
+                total_token=max_cfg.total_token,
+                depth=max_cfg.depth,
+                top_k=max_cfg.top_k,
+                max_length=_kv_max_length,
+                use_fp8=args.fp8,
+                load_in_4bit=args.load_in_4bit,
+            )
+        except torch.cuda.OutOfMemoryError as _oom:
+            print(f"  [OOM] Cannot load model at L={ctx_len}: {_oom}")
+            torch.cuda.empty_cache()
+            continue
+
+        # ── Warmup: trigger Triton JIT compilation ────────────────────────────
+        if not args.skip_ragged:
+            unique_depths = sorted(set(c.depth for c in configs))
+            print(f"\n  [warmup]  Compiling Triton kernels: depths={unique_depths} …")
+            warmup_prompts = [prompts[0][:200]]
+            for _wd in unique_depths:
+                _wcfg = next(c for c in configs if c.depth == _wd)
+                set_tree_config(model, _wcfg)
+                try:
+                    _warmup = run_generation(
+                        model, warmup_prompts, args.model_type,
+                        max_new_tokens=32, is_llama3=is_llama3,
+                        use_ragged=True, branching_factor=_wcfg.top_k,
+                        max_depth=_wcfg.depth, profile=False,
+                        max_length=_kv_max_length, use_cuda_graph=args.use_cuda_graph,
+                    )
+                except torch.cuda.OutOfMemoryError as _oom:
+                    print(f"  [OOM] warmup d={_wd} skipped — {_oom}")
+                    torch.cuda.empty_cache()
+                    continue
+                if _warmup:
+                    print(f"  [warmup d={_wd}]  done ({_warmup[0].tok_per_sec:.1f} tok/s, "
+                          f"accept={_warmup[0].mean_accepted_per_step:.2f}/step)")
+                del _warmup
+            torch.cuda.empty_cache()
+
+        # ── Build prefix tensor for this context length ───────────────────────
+        prefill_dev = next(model.base_model.parameters()).device
+        if ctx_len > 0:
+            extra_prefix = _build_prefix_ids(
+                ctx_len, model.tokenizer, prefill_dev, is_llama3=is_llama3
+            )
+            print(f"  [ctx] Built prefix tensor: L={ctx_len} tokens  "
+                  f"(actual={extra_prefix.shape[1]}, device={prefill_dev})")
+        else:
+            extra_prefix = None
+
+        ctx_tag  = f"  L={ctx_len}" if ctx_len > 0 else ""
+        ar_tok_s = 0.0
 
         for ci, cfg in enumerate(configs):
             print(f"\n{'━' * 72}")
@@ -1940,9 +2041,11 @@ def main() -> None:
                     if s.get("vanilla_tok_s", 0) > 0 else float("nan")
             summary_rows.append(s)
 
-    # ── Cleanup ──────────────────────────────────────────────────────────────
-    del model
-    torch.cuda.empty_cache()
+        # ── Free model before next context length ─────────────────────────────
+        del model, extra_prefix
+        gc.collect()
+        torch.cuda.empty_cache()
+        print(f"\n  [ctx={ctx_len}] Model freed, VRAM released for next group.")
 
     # ── Write CSV (datetime-stamped to avoid overwriting) ────────────────────
     os.makedirs(args.out_dir, exist_ok=True)
