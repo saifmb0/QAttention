@@ -261,9 +261,10 @@ class _RaggedProfiler:
 _ACTIVE_PROFILER: Optional[_RaggedProfiler] = None
 
 # ── Vanilla attention timer (Exp 1 — Amdahl table) ───────────────────────────
-# When --attn-profile is set, we patch F.scaled_dot_product_attention once at
-# module load to record per-call CUDA events.  The _IN_ATTN_PROFILE flag ensures
-# timing only fires during tree_verify (never during prefill or draft-model).
+# Patches transformers' eager_attention_forward (the matmul+softmax path used
+# by LlamaAttention when _attn_implementation=="eager") with CUDA event timing.
+# Falls back to patching F.scaled_dot_product_attention as well in case the
+# model uses the sdpa backend.  Both patches are gated by _IN_ATTN_PROFILE.
 
 _IN_ATTN_PROFILE: bool = False
 _ATTN_EVENTS: List[Tuple["torch.cuda.Event", "torch.cuda.Event"]] = []
@@ -284,11 +285,44 @@ def _sdpa_timed(query, key, value, attn_mask=None, dropout_p=0.0,
                      dropout_p=dropout_p, is_causal=is_causal,
                      scale=scale, **kwargs)
     e1.record()
+    torch.cuda.synchronize()
     _ATTN_EVENTS.append((e0, e1))
     return out
 
 
 torch.nn.functional.scaled_dot_product_attention = _sdpa_timed
+
+
+def _install_eager_attn_patch():
+    """Patch EAGLE's LlamaAttention.forward (eagle.model.modeling_llama_kv) to time
+    the full QK^T matmul+softmax+AV matmul block per layer call."""
+    try:
+        import eagle.model.modeling_llama_kv as _kv_mod
+        _LlamaAttn = _kv_mod.LlamaAttention
+    except Exception as exc:
+        print(f"  [attn-profile] WARNING: cannot import eagle.model.modeling_llama_kv: {exc}")
+        return
+
+    if getattr(_LlamaAttn.forward, '_is_attn_timed', False):
+        return  # already patched
+
+    _orig_forward = _LlamaAttn.forward
+
+    def _forward_timed(self, *args, **kwargs):
+        if not _IN_ATTN_PROFILE:
+            return _orig_forward(self, *args, **kwargs)
+        e0 = torch.cuda.Event(enable_timing=True)
+        e1 = torch.cuda.Event(enable_timing=True)
+        e0.record()
+        out = _orig_forward(self, *args, **kwargs)
+        e1.record()
+        torch.cuda.synchronize()
+        _ATTN_EVENTS.append((e0, e1))
+        return out
+
+    _forward_timed._is_attn_timed = True
+    _LlamaAttn.forward = _forward_timed
+    print(f"  [attn-profile] Patched {_kv_mod.__name__}.LlamaAttention.forward")
 
 
 # ── Version gate ─────────────────────────────────────────────────────────────
@@ -1735,7 +1769,7 @@ def ragged_eagle_context(branching_factor: int, max_depth: int,
 # Exp 2: Depth sweep — acceptance rate vs depth (vanilla only)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_eagle_model(args, max_length: int):
+def _load_eagle_model(args, max_length: int, total_token: int = 60, top_k: int = 10, depth: int = 7):
     """Load EAGLE-3 model + tokenizer. Returns (model, model_type, is_llama3)."""
     _patch_transformers_for_eagle()
     import eagle.model.ea_model as _eagle_ea
@@ -1748,13 +1782,13 @@ def _load_eagle_model(args, max_length: int):
     model = EaModel.from_pretrained(
         base_model_path=args.base_model,
         ea_model_path=args.eagle_model,
-        total_token=-1,
-        depth=-1,
-        top_k=-1,
+        total_token=total_token,
+        depth=depth,
+        top_k=top_k,
         torch_dtype=torch.float16,
         low_cpu_mem_usage=True,
         device_map="cuda",
-        is_eagle3=is_eagle3,
+        use_eagle3=is_eagle3,
         max_length=max_length,
     )
     model.eval()
@@ -1797,34 +1831,44 @@ def run_depth_sweep(args) -> None:
     print("=" * 72)
 
     max_length = 2048
-    model, model_type, is_llama3 = _load_eagle_model(args, max_length)
+    max_tt = max(_default_total_token(b, d) for d in depths)
+    max_d  = max(depths)
+    model, model_type, is_llama3 = _load_eagle_model(
+        args, max_length, total_token=max_tt, top_k=b, depth=max_d)
 
     rows = []
     for d in depths:
         tt = _default_total_token(b, d)
         model.ea_layer.total_tokens = tt
         model.ea_layer.depth        = d
-        model.ea_layer.top_k        = b
+        # top_k is fixed at b throughout; no init_tree() needed
 
         print(f"\n  ── depth={d:2d}  N={tt:4d}  b={b} {'─'*50}")
-        recs = run_generation(
-            model, prompts, model_type,
-            max_new_tokens=args.max_new_tokens,
-            is_llama3=is_llama3,
-            use_ragged=False,
-            branching_factor=b,
-            max_depth=d,
-            max_length=max_length,
-        )
-        acc   = sum(r.mean_accepted_per_step for r in recs) / len(recs)
-        toks  = sum(r.tok_per_sec            for r in recs) / len(recs)
-        vms   = sum(r.mean_verify_ms         for r in recs) / len(recs)
-        vfrac = sum(r.verify_fraction        for r in recs) / len(recs)
-        print(f"    → depth={d:2d} N={tt:4d}  acc/step={acc:.3f}  "
-              f"{toks:.1f} tok/s  verify={vms:.1f}ms ({vfrac:.0%})")
-        rows.append({"depth": d, "N_tree": tt, "branching": b,
-                     "acc_per_step": acc, "tok_per_sec": toks,
-                     "verify_ms": vms, "verify_fraction": vfrac})
+        try:
+            recs = run_generation(
+                model, prompts, model_type,
+                max_new_tokens=args.max_new_tokens,
+                is_llama3=is_llama3,
+                use_ragged=False,
+                branching_factor=b,
+                max_depth=d,
+                max_length=max_length,
+            )
+            acc   = sum(r.mean_accepted_per_step for r in recs) / len(recs)
+            toks  = sum(r.tok_per_sec            for r in recs) / len(recs)
+            vms   = sum(r.mean_verify_ms         for r in recs) / len(recs)
+            vfrac = sum(r.verify_fraction        for r in recs) / len(recs)
+            print(f"    → depth={d:2d} N={tt:4d}  acc/step={acc:.3f}  "
+                  f"{toks:.1f} tok/s  verify={vms:.1f}ms ({vfrac:.0%})")
+            rows.append({"depth": d, "N_tree": tt, "branching": b,
+                         "acc_per_step": acc, "tok_per_sec": toks,
+                         "verify_ms": vms, "verify_fraction": vfrac})
+        except torch.cuda.OutOfMemoryError as e:
+            print(f"    → depth={d:2d} N={tt:4d}  [OOM skipped] {e}")
+            torch.cuda.empty_cache()
+            rows.append({"depth": d, "N_tree": tt, "branching": b,
+                         "acc_per_step": float('nan'), "tok_per_sec": float('nan'),
+                         "verify_ms": float('nan'), "verify_fraction": float('nan')})
 
     # Save
     out_dir = args.out_dir
@@ -1855,9 +1899,9 @@ _CROSS_SYSTEM_CONFIGS = [
     # target_N, b, d
     (62,  12,  6),   # ≈ S=64
     (123, 16,  9),   # ≈ S=128  (also in existing sweep)
-    (247, 24, 19),   # ≈ S=256
+    (247, 16, 18),   # ≈ S=256  (6*16*18/7=247)
     (576, 24, 28),   # ≈ S=512
-    (988, 32, 36),   # ≈ S=1024 (OOM risk on 20GB)
+    (1024, 32, 32),  # ≈ S=1024 (fallback from 32, 36)
 ]
 
 
@@ -1903,10 +1947,8 @@ def run_cross_system(args) -> None:
         print(f"\n  ── target_N={tgt_n}  (b={b} d={d} N={tt}) {'─'*40}")
 
         try:
-            model, model_type2, is_llama32 = _load_eagle_model(args, max_length)
-            model.ea_layer.total_tokens = tt
-            model.ea_layer.depth        = d
-            model.ea_layer.top_k        = b
+            model, model_type2, is_llama32 = _load_eagle_model(
+                args, max_length, total_token=tt, top_k=b, depth=d)
 
             v_recs = run_generation(model, prompts, model_type,
                                     max_new_tokens=args.max_new_tokens,
@@ -2066,6 +2108,13 @@ def main() -> None:
                         help="Use 4-bit quantization (NF4) to save VRAM and fit larger trees/contexts on 20GB cards.")
     args = parser.parse_args()
 
+    if getattr(args, "section", "e2e") == "depth-sweep":
+        run_depth_sweep(args)
+        return
+    elif getattr(args, "section", "e2e") == "cross-system":
+        run_cross_system(args)
+        return
+
     # ── HF token propagation ─────────────────────────────────────────────────
     _hf_token = (args.hf_token
                  or os.environ.get("HF_TOKEN")
@@ -2203,6 +2252,9 @@ def main() -> None:
             torch.cuda.empty_cache()
             continue
 
+        if getattr(args, 'attn_profile', False):
+            _install_eager_attn_patch()
+
         # ── Warmup: trigger Triton JIT compilation ────────────────────────────
         if not args.skip_ragged:
             unique_depths = sorted(set(c.depth for c in configs))
@@ -2266,6 +2318,7 @@ def main() -> None:
                         is_llama3=is_llama3,
                         use_ragged=False,
                         profile=args.profile,
+                        attn_profile=getattr(args, 'attn_profile', False),
                         extra_prefix_ids=extra_prefix,
                         max_length=_kv_max_length,
                     )

@@ -1,5 +1,19 @@
+# Python
 *.pyc
-__pycache__
-# Third-party repos cloned by setup_blackwell.sh
+*.pyo
+**/__pycache__/
+*.egg-info/
+dist/
+build/
+
+# Benchmark outputs (machine-generated; reproduce with run_benchmarks.sh)
+logs/
+results/
+
+# Third-party repos cloned by setup.sh
 third_party/
+
+# Session / process files
 claude.sessions
+nohup.out
+*.pid

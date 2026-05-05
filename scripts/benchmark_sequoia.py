@@ -571,7 +571,8 @@ def run_e2e(args):
 
 def run_e2e_sweep(args):
     """Sweep through multiple tree-size growmaps in one invocation."""
-    import re, glob
+    import re, glob, csv
+    from datetime import datetime
     device = "cuda:0"
     dtype  = torch.float16
     M      = args.max_length
@@ -582,17 +583,32 @@ def run_e2e_sweep(args):
     torch.backends.cuda.enable_mem_efficient_sdp(False)
 
     sweep_dir = args.tree_sweep_dir
-    pattern   = os.path.join(sweep_dir, "*.pt")
-    all_maps  = sorted(glob.glob(pattern))
-    # Filter to S-prefixed size maps and sort by tree size numerically
-    def _size(p):
-        m = re.search(r"-S(\d+)\.pt$", p)
-        return int(m.group(1)) if m else 0
-    all_maps = [p for p in all_maps if _size(p) > 0]
-    all_maps.sort(key=_size)
+    
+    if getattr(args, "breadth_sweep", False):
+        pattern = os.path.join(sweep_dir, "*x4-tree.pt") # sweep breadth at fixed depth 4
+        all_maps = sorted(glob.glob(pattern))
+        def _sort_key(p):
+            m = re.search(r"(\d+)x4-tree\.pt$", p)
+            return int(m.group(1)) if m else 0
+        all_maps = [p for p in all_maps if _sort_key(p) > 0]
+        all_maps.sort(key=_sort_key)
+        def _label(p):
+            m = re.search(r"(\d+)x4-tree\.pt$", p)
+            return f"{m.group(1)}x4" if m else "unknown"
+    else:
+        pattern   = os.path.join(sweep_dir, "*.pt")
+        all_maps  = sorted(glob.glob(pattern))
+        # Filter to S-prefixed size maps and sort by tree size numerically
+        def _sort_key(p):
+            m = re.search(r"-S(\d+)\.pt$", p)
+            return int(m.group(1)) if m else 0
+        all_maps = [p for p in all_maps if _sort_key(p) > 0]
+        all_maps.sort(key=_sort_key)
+        def _label(p):
+            return str(_sort_key(p))
 
     if not all_maps:
-        raise RuntimeError(f"No growmaps found in {sweep_dir}")
+        raise RuntimeError(f"No growmaps found in {sweep_dir} with expected pattern")
 
     print(f"  draft={args.draft}  target={args.target}  M={M}")
 
@@ -608,10 +624,14 @@ def run_e2e_sweep(args):
     draft_engine = target_engine = tokenizer = vocab_size = None
     rows = []
     for gmap_path in all_maps:
-        sz = _size(gmap_path)
+        lbl = _label(gmap_path)
         gm = load_growmap(gmap_path)
+        sz = gm['size']
+        # max_length must exceed tree_size + max_prompt_tokens to avoid
+        # silent position_ids clamping (SpecTree line 62 size mismatch).
+        M_eff = max(M, sz + 256)
         print(f"\n{'═'*72}")
-        print(f"  growmap: {os.path.basename(gmap_path)}  tree_size={gm['size']}")
+        print(f"  growmap: {os.path.basename(gmap_path)}  label={lbl} tree_size={sz}  max_length={M_eff}")
         print(f"{'─'*72}")
         # Reload fresh engines per growmap: different tree sizes require
         # different CUDA graph capture lists; sharing engines across sizes
@@ -619,25 +639,45 @@ def run_e2e_sweep(args):
         del draft_engine, target_engine
         torch.cuda.empty_cache()
         print(f"\n  Loading models…")
-        draft_engine, target_engine, tokenizer, vocab_size = _load_engines(args, M, T)
+        draft_engine, target_engine, tokenizer, vocab_size = _load_engines(args, M_eff, T)
         v_tok, r_tok, speedup, v_acc, r_acc = _run_one_growmap(
             draft_engine, target_engine, tokenizer, vocab_size,
-            gm, gmap_path, prompts, M, T, top_p, device, dtype,
+            gm, gmap_path, prompts, M_eff, T, top_p, device, dtype,
         )
-        rows.append((sz, v_tok, r_tok, speedup, v_acc, r_acc))
+        rows.append({
+            'label': lbl,
+            'tree_size': sz,
+            'vanilla_tok_s': v_tok,
+            'ragged_tok_s': r_tok,
+            'speedup': speedup,
+            'v_acc_per_step': v_acc,
+            'r_acc_per_step': r_acc
+        })
 
     print(f"\n{'═'*72}")
     print(f"  E2E sweep summary  ({len(prompts)} prompts, M={M})")
     print(f"{'─'*72}")
-    print(f"  {'tree_size':>10}  {'vanilla tok/s':>14}  {'ragged tok/s':>13}  {'speedup':>9}  {'v acc/step':>11}  {'r acc/step':>11}")
-    for sz, v, r, sp, va, ra in rows:
-        print(f"  {sz:>10}  {v:>14.2f}  {r:>13.2f}  {sp:>8.3f}×  {va:>11.2f}  {ra:>11.2f}")
+    print(f"  {'label':>10}  {'tree_size':>10}  {'vanilla tok/s':>14}  {'ragged tok/s':>13}  {'speedup':>9}  {'v acc/step':>11}  {'r acc/step':>11}")
+    for r in rows:
+        print(f"  {r['label']:>10}  {r['tree_size']:>10}  {r['vanilla_tok_s']:>14.2f}  {r['ragged_tok_s']:>13.2f}  {r['speedup']:>8.3f}×  {r['v_acc_per_step']:>11.2f}  {r['r_acc_per_step']:>11.2f}")
 
+    out_dir = getattr(args, 'out_dir', os.path.join("results", "benchmark_sequoia"))
+    os.makedirs(out_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    prefix = "sequoia_breadth" if getattr(args, "breadth_sweep", False) else "sequoia_size"
+    csv_path = os.path.join(out_dir, f"{prefix}_{ts}.csv")
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['label', 'tree_size', 'vanilla_tok_s', 'ragged_tok_s', 'speedup', 'v_acc_per_step', 'r_acc_per_step'])
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"\nSaved: {csv_path}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
+    parser.add_argument("--breadth-sweep", action="store_true", help="Run breadth sweep instead of size sweep")
+    parser.add_argument("--out-dir", default=os.path.join("results", "benchmark_sequoia"), help="Output directory for CSVs")
     args = parser.parse_args()
     if args.section == "micro":
         run_micro(args)

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# setup_blackwell.sh
-# Bootstrap for sd-ragged — "hopper" branch
-# Target: NVIDIA H100 / H200 (SM 9.0, Hopper) running CUDA 12.x
+# setup.sh
+# Bootstrap for sd-ragged
+# Target: NVIDIA RTX 4000 Ada (SM 8.9, Lovelace) running CUDA 12.x
+# Also works on SM 9.0 (Hopper) and SM 12.0 (Blackwell) — kernel autotuner
+# selects the appropriate config tier at runtime.
 #
 # What this script does:
 #   1. Installs PyTorch 2.8.0 + CUDA 12.1 — stable, reproducible, known-good
@@ -49,11 +51,8 @@ print(out.strip().replace('.',''))
 " 2>/dev/null || echo "unknown")
     info "SM: $SM"
     if [[ "$SM" != "unknown" ]]; then
-        if [[ "$SM" -lt "90" ]] 2>/dev/null; then
-            warn "SM $SM detected — this branch targets SM90 (Hopper H100/H200)."
-            warn "Kernel will fall back to SM89 or SM75 autotune configs."
-        elif [[ "$SM" -ge "120" ]] 2>/dev/null; then
-            warn "SM $SM (Blackwell) detected — use the blackwell branch for that hardware."
+        if [[ "$SM" -lt "75" ]] 2>/dev/null; then
+            warn "SM $SM detected — kernel targets SM75+; older hardware may be slow."
         fi
     fi
 else
@@ -260,4 +259,4 @@ for lib, label in [("flashinfer", "FlashInfer"), ("xformers", "xformers")]:
         print(f"  {label:<12} NOT installed (optional)")
 EOF
 
-info "Setup complete!  Run:  bash run_blackwell.sh"
+info "Setup complete!  Run:  bash run_benchmarks.sh"

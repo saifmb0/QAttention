@@ -126,10 +126,10 @@ def _tree_n(
 # Defaults designed to show the kernel crossover clearly.
 # Eagle-3 operates at b∈{8-12}, d=7 (N~48-72).  We push d up to 20 so N
 # reaches 200+ at b=12, revealing the asymptotic speedup ceiling.
-DEFAULT_BATCH_SIZES       = [4, 8, 16, 32]   # N_branches (independent completions from shared prefix)
-DEFAULT_BRANCHING_FACTORS = [10]              # Eagle-3 default; fixed for Phase-1 sweep
-DEFAULT_DEPTHS            = [7]               # Eagle-3 default; fixed for Phase-1 sweep
-DEFAULT_PREFIX_LENGTHS    = [512, 1024, 2048, 4096]  # context_len — shared prefix lengths
+DEFAULT_BATCH_SIZES       = [1, 2, 4, 8, 16]   # N_branches (independent completions from shared prefix)
+DEFAULT_BRANCHING_FACTORS = [4, 8, 12, 16, 20, 24, 28]              # Eagle-3 default; fixed for Phase-1 sweep
+DEFAULT_DEPTHS            = [3, 5, 7, 10, 14, 20, 28]               # Eagle-3 default; fixed for Phase-1 sweep
+DEFAULT_PREFIX_LENGTHS    = [0, 1024, 4096, 8192, 16384, 32768]  # context_len — shared prefix lengths
 DEFAULT_TOKEN_CAP         = 0     # 0 = no cap; E2E benchmark uses 120
 DEFAULT_NUM_HEADS         = 32    # LLaMA-3.1-8B
 DEFAULT_HEAD_DIM          = 128   # LLaMA-3.1-8B
@@ -193,22 +193,7 @@ def _wrap_cuda_graph(fn):
 
 @dataclass
 class MicroRow:
-<<<<<<< HEAD
-    batch_size:       int
-    prefix_length:    int       # L — simulated past KV-cache length (0 = tree-only)
-    branching_factor: int
-    depth:            int
-    effective_depth:  int       # actual max depth represented by the benchmarked tree
-    num_tree_nodes:   int
-    num_heads:        int
-    head_dim:         int
-    eagle_tree_ms:    float     # Eagle baseline via FlashInfer (SGLang path) + tree bool mask
-    ragged_ms:        float     # our ragged kernel (+ flash prefix + LSE merge when L>0)
-    ragged_sibling_ms: float    # ours — sibling-coalesced single-pass variant; L=0 only (no merge wired)
-    speedup:          float     # eagle_tree_ms / ragged_ms  (>1 → ragged wins)
-    speedup_sibling_vs_base: float  # ragged_ms / ragged_sibling_ms  (>1 → sibling wins)
-=======
-    batch_size:              int
+    batch_size:              int    # n_sequences — number of independent parallel trees (NOT branching factor b)
     prefix_length:           int    # L — shared KV-cache prefix length (context_len)
     branching_factor:        int
     depth:                   int
@@ -220,12 +205,13 @@ class MicroRow:
     flashinfer_cascade_ms:   float  # FlashInfer cascade: shared-prefix pass + tree pass + LSE merge
     deft_ms:                 float  # DeFT Triton kernel (arXiv:2404.00242); NaN if not installed
     ragged_ms:               float  # ours: flash prefix + ragged tree + LSE merge
+    ragged_sibling_ms:       float  # ours — sibling-coalesced variant; L=0 only
     speedup_vs_tree:         float  # flashinfer_tree_ms / ragged_ms
     speedup_vs_cascade:      float  # flashinfer_cascade_ms / ragged_ms
     speedup_vs_deft:         float  # deft_ms / ragged_ms
+    speedup_sibling_vs_base: float  # ragged_ms / ragged_sibling_ms  (>1 → sibling wins)
     bw_gb_s:                 float  # ragged kernel tree-portion bandwidth (GB/s)
     bw_util_pct:             float  # bw_gb_s / peak_bw_gb_s × 100
->>>>>>> 1373cd4 (WIP, checkpoint for Qwen)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,7 +253,7 @@ def benchmark_one(
     def _nan_row(N_val=None):
         n = N_val if N_val is not None else N
         return MicroRow(B, L, b, d, 0, n, H, D,
-                        nan, nan, nan, nan, nan, nan, nan, nan, nan)
+                        nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan)
 
     # ── Tree mask: [N, N] bool (True = attend) ──────────────────────────────
     if use_pruned_trees:
@@ -279,16 +265,6 @@ def benchmark_one(
         # Adjust N to actual tree size
         N = len(parent_array)
         if N == 0:
-<<<<<<< HEAD
-            return MicroRow(B, L, b, d, 0, 0, H, D, nan, nan, nan, nan, nan)
-        tot = B * N
-        if tot > MAX_BATCH_TOKENS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
-        if N * N > MAX_TREE_MASK_ELEMENTS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
-        if B * N * (L + N) > MAX_FLATTENED_MASK_ELEMENTS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
-=======
             return _nan_row(0)
         tot = B * N
         if tot > MAX_BATCH_TOKENS:
@@ -297,7 +273,6 @@ def benchmark_one(
             return _nan_row()
         if B * N * (L + N) > MAX_FLATTENED_MASK_ELEMENTS:
             return _nan_row()
->>>>>>> 1373cd4 (WIP, checkpoint for Qwen)
         mask_np = tree_attention_mask_pruned(parent_array)   # [N, N] bool
         
         depths = [0] * len(parent_array)
@@ -311,19 +286,11 @@ def benchmark_one(
     else:
         tot = B * N
         if tot > MAX_BATCH_TOKENS:
-<<<<<<< HEAD
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
-        if N * N > MAX_TREE_MASK_ELEMENTS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
-        if B * N * (L + N) > MAX_FLATTENED_MASK_ELEMENTS:
-            return MicroRow(B, L, b, d, 0, N, H, D, nan, nan, nan, nan, nan)
-=======
             return _nan_row()
         if N * N > MAX_TREE_MASK_ELEMENTS:
             return _nan_row()
         if B * N * (L + N) > MAX_FLATTENED_MASK_ELEMENTS:
             return _nan_row()
->>>>>>> 1373cd4 (WIP, checkpoint for Qwen)
             
         mask_np = tree_attention_mask_n(b, N)   # [N, N] bool
         
@@ -382,20 +349,13 @@ def benchmark_one(
         attn_mask4d = tree_bias.unsqueeze(0).unsqueeze(0).expand(B, 1, -1, -1).contiguous()
     del tree_mask_t, tree_bias
 
-<<<<<<< HEAD
-    t_eagle        = nan
-    t_ragged       = nan
-    t_sibling      = nan
-    eagle_oom      = False
-    _eagle_graphed = None  # set by eagle block; checked by ragged block for symmetry
-=======
     t_fi_tree     = nan   # FlashInfer monolithic (prefix+tree concatenated, flattened mask)
     t_fi_cascade  = nan   # FlashInfer cascade (shared prefix pass + tree pass + merge)
     t_deft        = nan   # DeFT Triton kernel
     t_ragged      = nan   # ours
+    t_sibling     = nan   # sibling-coalesced variant (L=0 only)
     fi_tree_oom   = False
     _fi_graphed   = None  # set by FlashInfer tree block; checked for timing symmetry
->>>>>>> 1373cd4 (WIP, checkpoint for Qwen)
 
     # ── FlashInfer tree baseline (SGLang / monolithic path) ──────────────────
     # Uses BatchPrefillWithRaggedKVCacheWrapper with flattened custom_mask covering
@@ -658,7 +618,6 @@ def benchmark_one(
     finally:
         torch.cuda.empty_cache()
 
-<<<<<<< HEAD
     # ── Sibling-coalesced kernel ─────────────────────────────────────────────
     # Numerically equivalent to ragged_attention; structurally distinct
     # (single-pass gather + softmax).  Timed only at L=0 because the LSE-merge
@@ -680,10 +639,6 @@ def benchmark_one(
         finally:
             torch.cuda.empty_cache()
 
-    speedup = nan
-    if not (math.isnan(t_eagle) or math.isnan(t_ragged) or t_ragged <= 0):
-        speedup = t_eagle / t_ragged
-=======
     # ── Bandwidth utilization ────────────────────────────────────────────────
     # Ragged kernel tree-portion: each of B*N queries reads (actual_d+1) K+V entries.
     # bytes = Q_read + K_ancestors + V_ancestors + O_write
@@ -701,7 +656,6 @@ def benchmark_one(
         if math.isnan(num) or math.isnan(den) or den <= 0:
             return nan
         return num / den
->>>>>>> 1373cd4 (WIP, checkpoint for Qwen)
 
     speedup_sib_vs_base = nan
     if not (math.isnan(t_ragged) or math.isnan(t_sibling) or t_sibling <= 0):
@@ -715,38 +669,30 @@ def benchmark_one(
         del K_shared, V_shared
     torch.cuda.empty_cache()
 
-<<<<<<< HEAD
-    return MicroRow(B, L, b, d, actual_d, N, H, D,
-                    round(t_eagle,    4) if not math.isnan(t_eagle)    else nan,
-                    round(t_ragged,   4) if not math.isnan(t_ragged)   else nan,
-                    round(t_sibling,  4) if not math.isnan(t_sibling)  else nan,
-                    round(speedup,    4) if not math.isnan(speedup)    else nan,
-                    round(speedup_sib_vs_base, 4)
-                        if not math.isnan(speedup_sib_vs_base) else nan)
-=======
     def _r(v):
         return round(v, 4) if not math.isnan(v) else nan
 
     return MicroRow(
-        batch_size            = B,
-        prefix_length         = L,
-        branching_factor      = b,
-        depth                 = d,
-        effective_depth       = actual_d,
-        num_tree_nodes        = N,
-        num_heads             = H,
-        head_dim              = D,
-        flashinfer_tree_ms    = _r(t_fi_tree),
-        flashinfer_cascade_ms = _r(t_fi_cascade),
-        deft_ms               = _r(t_deft),
-        ragged_ms             = _r(t_ragged),
-        speedup_vs_tree       = _r(_sp(t_fi_tree,    t_ragged)),
-        speedup_vs_cascade    = _r(_sp(t_fi_cascade, t_ragged)),
-        speedup_vs_deft       = _r(_sp(t_deft,       t_ragged)),
-        bw_gb_s               = _r(bw_gb_s),
-        bw_util_pct           = _r(bw_util_pct),
+        batch_size               = B,
+        prefix_length            = L,
+        branching_factor         = b,
+        depth                    = d,
+        effective_depth          = actual_d,
+        num_tree_nodes           = N,
+        num_heads                = H,
+        head_dim                 = D,
+        flashinfer_tree_ms       = _r(t_fi_tree),
+        flashinfer_cascade_ms    = _r(t_fi_cascade),
+        deft_ms                  = _r(t_deft),
+        ragged_ms                = _r(t_ragged),
+        ragged_sibling_ms        = _r(t_sibling),
+        speedup_vs_tree          = _r(_sp(t_fi_tree,    t_ragged)),
+        speedup_vs_cascade       = _r(_sp(t_fi_cascade, t_ragged)),
+        speedup_vs_deft          = _r(_sp(t_deft,       t_ragged)),
+        speedup_sibling_vs_base  = _r(_sp(t_ragged,     t_sibling)),
+        bw_gb_s                  = _r(bw_gb_s),
+        bw_util_pct              = _r(bw_util_pct),
     )
->>>>>>> 1373cd4 (WIP, checkpoint for Qwen)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -863,7 +809,7 @@ def main() -> None:
     print(f"  GPU:      {p.name}  SM {p.major}.{p.minor}  "
           f"{p.total_memory // 1024**3} GB  peak BW {peak_bw_gb_s:.0f} GB/s")
     print(f"  Dims:     H={H}, D={D}  (fp16)")
-    print(f"  Grid:     N_branches(BS)∈{batch_sizes}  b∈{bfs}  d∈{depths}"
+    print(f"  Grid:     n_seq (parallel trees, NOT branching)∈{batch_sizes}  b (branching)∈{bfs}  d (depth)∈{depths}"
           + (f"  N_cap={token_cap}" if token_cap else "  N_cap=none"))
     print(f"  context_len:  L∈{prefix_lengths}  (shared prefix; cascade enabled when L>0)")
     print(f"  N range:  "
