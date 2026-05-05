@@ -1,40 +1,25 @@
-% =====================================================================
-% Only Ancestors Matter: Ragged Flash Attention for
-% Tree-Structured Speculative Decoding
-% Target: NeurIPS 2026
-% =====================================================================
+% NeurIPS 2026 submission. Requires neurips_2026.sty alongside this file.
+% Compile with: pdflatex paper.tex   (run twice for refs)
 \documentclass{article}
 
-% ── NeurIPS 2026 style ──────────────────────────────────────────────
+\usepackage[nonatbib]{neurips_2026}  % default = anonymous double-blind; nonatbib lets us use a plain numerical bibliography
+
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage{lmodern}
-\usepackage{amsmath,amssymb,amsfonts}
-\usepackage{mathtools}
-\usepackage{algorithm}
-\usepackage{algorithmic}
+\usepackage{microtype}
 \usepackage{graphicx}
 \usepackage{booktabs}
-\usepackage{multirow}
+\usepackage{amsmath,amssymb}
 \usepackage{xcolor}
 \usepackage{hyperref}
-\usepackage{cleveref}
-\usepackage{microtype}
-\usepackage{subcaption}
-\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
 \usepackage{url}
-\usepackage[margin=1in]{geometry}
-\usepackage{orcidlink}
-\hypersetup{
-  colorlinks=true,
-  linkcolor=blue!60!black,
-  citecolor=green!50!black,
-  urlcolor=blue!70!black,
-}
+\usepackage{mathtools}
 
-% ── Macros ──────────────────────────────────────────────────────────
-\newcommand{\method}{Ragged Attention}
-\newcommand{\methodshort}{RaggedAttn}
+% Macros lifted from abstract.tex
+\newcommand{\method}{QAttention}
+\newcommand{\methodshort}{QAttention}
 \newcommand{\bigO}[1]{\mathcal{O}(#1)}
 \newcommand{\numtokens}{N}
 \newcommand{\depth}{d}
@@ -46,1124 +31,645 @@
 \DeclareMathOperator*{\softmax}{softmax}
 \DeclareMathOperator{\parent}{parent}
 
-\title{%
-  \textbf{Draft Collapse: Accelerating Speculative Decoding at Extreme Context Lengths}%
-}
+\graphicspath{{figures_new/}}
 
-\author{
-  Saif Mahmoud \orcidlink{0009-0004-8879-9335} \\
-  College of Engineering, Al Ain University \\
- \texttt{contact@saifmb.com}
-}
+\title{QAttention: An Ancestor-Sparse Flash Attention Kernel\\
+       for Speculative Decoding Beyond the Quadratic Wall}
 
-\date{}
+\author{%
+  Anonymous Author(s)\thanks{Submitted under double-blind review.}\\
+  Affiliation\\
+  \texttt{anonymous@example.com}\\
+}
 
 \begin{document}
 \maketitle
 
-% =====================================================================
-% ABSTRACT
-% =====================================================================
 \begin{abstract}
-Tree-structured speculative decoding---employed by
-EAGLE-2/3~\cite{li2024eagle2,li2025eagle3},
-Medusa~\cite{cai2024medusa}, and Sequoia~\cite{chen2024sequoia}---verifies
-hundreds to thousands of draft tokens per step.
-During verification, each token attends only to its
-$\depth{+}1$ ancestors in the tree, yet production attention kernels
-(FlashAttention-2~\cite{dao2023flashattention2},
-FlashInfer~\cite{ye2025flashinfer}, DeFT~\cite{yao2024deft})
-perform $\bigO{\numtokens^2}$ work, oblivious to this sparsity.
-
-We present \textbf{\method{}}, a Triton kernel that exploits the
-BFS ancestor structure to reduce per-head complexity from
-$\bigO{\numtokens^2}$ to $\bigO{\numtokens \cdot \depth}$.
-The kernel replaces the KV-block loop of FlashAttention-2
-with an ancestor walk of exactly $\depth{+}1$ scattered gathers
-per Q-tile, eliminating the need for any mask materialisation.
-
-We evaluate across two complementary benchmarks on an NVIDIA H100 SXM:
-(i)~a \emph{SOTA comparison} against FlashAttention-2, FlashInfer, and DeFT
-at complete $\branching$-ary trees ($\branching \in \{2,3,4\}$, $\depth \leq 8$),
-where \method{} achieves up to
-\textbf{49$\boldsymbol\times$} over FlashAttention-2,
-\textbf{309$\boldsymbol\times$} over FlashInfer, and
-\textbf{114$\boldsymbol\times$} over DeFT; and
-(ii)~a \emph{micro-benchmark} at EAGLE-3-class configurations
-($\branching \in \{8\text{--}20\}$, $\depth \leq 32$, $\batchsize \leq 128$,
-$\headdim=128$, $\nheads=32$) with a \emph{simulated prefix KV cache}
-($\prefixlen \in \{0, 1024, 4096\}$).
-
-Our main findings:
-\textbf{(1)}~With no prefix ($\prefixlen=0$),
-\method{} wins 92\% of 350 configurations (median 3.1$\times$, peak 8.9$\times$);
-\textbf{(2)}~With a realistic prefix ($\prefixlen=1024$),
-\method{} wins \emph{100\% of configurations}, including at EAGLE-3's
-default operating point ($\branching=10$, $\depth=7$): 1.76--2.82$\times$
-across batch sizes;
-\textbf{(3)}~At $\prefixlen=4096$, the advantage grows further
-(median 4.3$\times$, worst-case 1.83$\times$), and EAGLE OOMs
-at 102 of 350 configurations while \method{} completes normally;
-\textbf{(4)}~End-to-end integration via module-level attention patching
-in EAGLE-3 yields \textbf{1.10$\boldsymbol\times$} wall-clock speedup
-at $\depth=32$ ($\numtokens=274$, $\batchsize=1$)---the first
-configuration where ragged tree attention breaks even and wins
-in a full generation pipeline.
-
-Crucially, our E2E depth sweep reveals a \textbf{Model Wall}:
-mean accepted tokens per step plateau at ${\sim}5$--$8$ regardless of
-tree depth, while per-token acceptance rate drops from 5.7\% ($\depth{=}16$)
-to 1.7\% ($\depth{=}32$).
-Once the systems bottleneck (attention cost) is removed, the binding
-constraint becomes draft-model accuracy---not kernel speed.
-All code, data, and reproduction scripts are open-sourced.
+Speculative decoding accelerates large-language-model inference by verifying
+trees of draft tokens in a single target-model forward pass. State-of-the-art
+tree optimisers --- EAGLE-3 and Sequoia --- consistently converge to small,
+shallow trees. We argue this is not because deeper or wider trees are
+algorithmically inferior, but because the attention kernels on which these
+systems rely (FlashInfer, DeFT) scale quadratically in tree size, making the
+larger trees that would yield more accepted tokens prohibitively slow.
+The optimiser is therefore trapped in a kernel-induced local minimum.
 \end{abstract}
 
+\section{Introduction}
+\label{sec:intro}
 
-% =====================================================================
-\section{Introduction}\label{sec:intro}
-% =====================================================================
+Speculative decoding~\cite{leviathan2023fast,chen2023accelerating} reduces
+the latency of autoregressive generation by drafting multiple candidate
+tokens with a small model and \emph{verifying} them in parallel with the
+large target model. Modern systems organise the candidates into a
+\emph{tree}: each path from the root corresponds to one speculative
+continuation, and a tree of $N$ nodes lets the verifier consider $N$
+candidate continuations in a single forward pass. Tree-based variants such
+as EAGLE-2/EAGLE-3~\cite{li2024eagle,li2024eagle2,li2025eagle3} and
+Sequoia~\cite{chen2024sequoia} are now the de facto framework for
+speculative decoding in production stacks.
 
-Autoregressive decoding in large language models (LLMs) is
-fundamentally memory-bound: each token generation requires a full
-forward pass whose arithmetic intensity is limited by the
-key--value (KV) cache read~\cite{leviathan2023fast, chen2023accelerating}.
-Speculative decoding addresses this bottleneck by generating candidate
-tokens cheaply with a \emph{draft model} and verifying them in
-parallel with the \emph{target model}~\cite{leviathan2023fast,
-chen2023accelerating}.
+\paragraph{The local-minimum problem.}
+Empirically, tree optimisers --- whether learned (EAGLE-2's expansion
+policy) or analytic (Sequoia's dynamic-programming size selection) ---
+converge to relatively small, shallow trees ($N \!\lesssim\! 100$,
+$d \!\le\! 6$). The standard explanation is that acceptance rates plateau
+with tree size; deeper trees offer diminishing returns. We argue this
+explanation is incomplete. The kernels that implement tree-attention in
+production --- FlashInfer~\cite{ye2025flashinfer} and DeFT~\cite{yao2024deft}
+--- still process $\mathcal{O}(N^2)$ work per sequence: they iterate over
+all KV blocks and apply a tree mask. Larger trees therefore inflate
+attention latency \emph{quadratically}, while the marginal token gain is
+sub-linear. The optimiser is steered away from large trees not because
+they are algorithmically poor, but because the kernel makes them expensive.
 
-Recent methods---EAGLE-2/3~\cite{li2024eagle2,li2025eagle3},
-Medusa~\cite{cai2024medusa}, Sequoia~\cite{chen2024sequoia}, and
-SpecInfer~\cite{miao2024specinfer}---organise draft tokens into
-\emph{trees}, increasing acceptance rates by exploring multiple
-continuations simultaneously.
-Tree-structured verification generates trees with branching factors
-$\branching = 2\text{--}20$ and depths $\depth = 3\text{--}32$,
-yielding $\numtokens = 30\text{--}500{+}$ draft tokens per step.
-
-The critical observation is that during tree-structured verification,
-each draft token $i$ attends only to the $\depth_i + 1$ tokens on its
-root-to-leaf path---its \emph{ancestors} in the BFS-ordered tree.
-A typical EAGLE-3 tree ($\branching = 10$, $\depth = 7$, $\numtokens \approx 60$)
-has only $\approx 8$ non-zero entries per row of the attention mask,
-yet standard dense attention computes all 60 dot products.
-This is $>87\%$ wasted computation on the tree part alone.
-
-When a prefix KV cache of length $\prefixlen$ is present---the
-common case during generation, where $\prefixlen = 1024\text{--}8192$
-committed tokens precede the draft tree---the waste is \emph{worse}.
-EAGLE-3's implementation~\cite{li2025eagle3} materialises the full
-$[\batchsize, \nheads, \numtokens, \prefixlen {+} \numtokens]$ attention
-weight matrix via \texttt{torch.matmul}, even though the
-$[\numtokens \times \numtokens]$ tree quadrant is $>87\%$ sparse.
+In a BFS-ordered $b$-ary tree, however, query $q$ can attend to at most
+$d{+}1$ positions: the chain of ancestors from $q$ up to the root. The
+\emph{useful} attention work is $\mathcal{O}(N\!\cdot\!d)$, not
+$\mathcal{O}(N^2)$. FlashInfer's iterate-and-mask formulation discards this
+sparsity. Once the kernel is rewritten to walk the ancestor chain
+explicitly, the quadratic wall vanishes.
 
 \paragraph{Contributions.}
-\begin{enumerate}[nosep,leftmargin=*]
-\item \textbf{Algorithm.}
-    We present an $\bigO{\numtokens \cdot \depth}$ ancestor-sparse
-    flash attention algorithm that replaces the KV-block loop
-    with an ancestor walk of $\depth + 1$ scattered gathers.
-    No attention mask is materialised; the tree topology is
-    computed analytically from the BFS parent formula
-    $\parent(k) = \lfloor (k{-}1)/\branching \rfloor$.
+\begin{itemize}\itemsep0pt
+\item An ancestor-sparse Flash Attention-2 kernel for tree-structured
+      speculative decoding implemented in Triton, with
+      $\mathcal{O}(N\!\cdot\!d)$ FMAs and HBM traffic
+      (Sec.~\ref{sec:method}).
+\item A grid-search evaluation across $(b, d, B, L)$ showing consistent
+      wins in the deep/wide regime, with up to $7.75\times$ over
+      FlashInfer at $b{=}28,\,d{=}28$ (Sec.~\ref{sec:eval-micro}).
+\item An Amdahl analysis on EAGLE-3 demonstrating that, once attention is
+      no longer the bottleneck, MLP forward dominates and the verify
+      fraction drops from $0.73$ to $0.47$ as the tree deepens
+      (Sec.~\ref{sec:eval-amdahl}).
+\item End-to-end results: up to \textbf{$1.40\times$} on
+      Sequoia, and a quantitative explanation for why the EAGLE-3 gain is
+      smaller --- acceptance-rate decay (Sec.~\ref{sec:eval-e2e}). We name
+      this remaining ceiling \emph{Wall 2} and leave it to future work.
+\end{itemize}
 
-\item \textbf{Kernel.}
-    We implement the algorithm as an autotuned Triton kernel with
-    specialised configurations for four GPU generations
-    (Turing SM75, Ada SM89, Hopper SM90, Blackwell SM120).
-    Three variants are provided: standard, LSE-returning (for
-    prefix merging), and paged-KV (for vLLM compatibility).
-    A fused Triton kernel performs the online-softmax merge
-    of prefix and tree outputs in a single pass, replacing
-    five sequential PyTorch elementwise operations.
+\section{Background}
+\label{sec:background}
 
-\item \textbf{Prefix--tree split architecture.}
-    For the realistic setting where draft tokens attend to both a
-    prefix KV cache and the tree, we propose a
-    \emph{flash prefix + ragged tree + fused online-softmax merge}
-    pipeline that avoids materialising any large attention matrix.
+\paragraph{Tree verification.}
+Given a target model and a draft tree of $N$ nodes in BFS order, the
+verifier runs one forward pass over all $N$ tokens. The attention mask is
+\emph{ancestor-causal}: query at position $i$ may attend to position $j$
+iff $j$ is an ancestor of $i$ in the tree, or $j {=} i$. For a complete
+$b$-ary tree of depth $d$, $\text{parent}(k) = \lfloor (k{-}1)/b \rfloor$
+for $k > 0$, and $N = (b^{d+1}{-}1)/(b{-}1)$.
 
-\item \textbf{End-to-end integration.}
-    We integrate \method{} into EAGLE-3 via a module-level
-    \texttt{LlamaAttention.forward()} patch---bypassing the
-    standard QKV projection, RoPE, and dense attention path
-    entirely---and demonstrate \textbf{1.10$\times$} wall-clock speedup
-    at $\depth{=}32$ on an NVIDIA A10G.
+\paragraph{Why dense / padded attention is wasteful.}
+Naive verification pads each tree to the largest $N$ in the batch and
+applies a dense attention with a tree mask. The wasted-FLOPs ratio grows
+sharply with $b$ and $d$: at $b{=}4,\,d{=}5$, $55.6\%$ of all attention
+FLOPs are masked away.\footnote{Analytic padding-waste model from the
+accompanying source release.}
+More importantly, even after dense padding is eliminated, kernels that
+loop over KV blocks and apply the mask still do $\mathcal{O}(N^2)$ work:
+a query at depth $d$ attends to only $d{+}1$ keys, but the kernel reads
+all $N$.
 
-\item \textbf{Comprehensive evaluation and the Model Wall.}
-    We evaluate on 1{,}050 micro-benchmark configurations
-    plus 192 SOTA comparison configurations.
-    Our E2E depth sweep reveals that once the attention
-    bottleneck is removed, throughput gains are limited by
-    draft-model accuracy---a phenomenon we term the
-    \emph{Model Wall}.
-\end{enumerate}
+\paragraph{Existing kernels and what we exclude.}
+\textbf{FlashInfer}~\cite{ye2025flashinfer} provides a generalised
+tree-attention kernel that handles arbitrary tree shapes; it is the de
+facto deployment standard, and is our primary baseline.
+\textbf{DeFT}~\cite{yao2024deft} requires \emph{strictly balanced} trees
+and is incompatible with the pruned, irregular trees produced by EAGLE-2/3
+expansion policies. On the balanced trees it does support, our
+measurements (and prior reports) show it is roughly $2\times$ slower than
+FlashInfer with poor scaling. We therefore exclude DeFT as a primary
+baseline. We likewise exclude \textbf{w4a16} quantised pipelines: they
+require specialised inference stacks not standard in production
+deployments and are orthogonal to the attention-kernel question.
 
+\section{Method}
+\label{sec:method}
 
-% =====================================================================
-\section{Background}\label{sec:background}
-% =====================================================================
+We replace the KV-block loop of a standard Flash Attention-2
+kernel~\cite{dao2023flashattention2} with an \emph{ancestor-walk} loop of
+exactly $d_{\max}{+}1$ iterations. Each iteration performs a
+\emph{scattered gather}: for every query row $q$ in a $\text{BLOCK\_M}$
+tile, we load $K[\text{parent}^s(q)]$ and $V[\text{parent}^s(q)]$ at
+ancestor depth $s$. The Flash Attention-2 online softmax update applies
+\emph{verbatim} --- it is agnostic to whether the per-step contribution is
+a $\text{BLOCK\_N}$-block of scores or a single ancestor score. A
+duplicate guard, $\text{prev}\!\neq\!\text{cur}$, makes iterations after
+the root has been reached into no-ops, which lets shallow queries share
+the same kernel without branching.
 
-\subsection{Speculative Decoding}
+\paragraph{Parent computation on Turing.}
+A subtle PTX issue arises with non-power-of-two $b$. The natural
+expression \verb|cur = (cur - 1) // b| compiles to an unsigned
+multiply-high; when $\text{cur}{=}0$, the operand $-1$ becomes
+$0\text{x}\text{FFFFFFFF}$ and produces a spurious ancestor index that
+poisons the mask. We clamp \emph{before} dividing:
+\verb|cur = max(cur - 1, 0) // b|, which guarantees a non-negative
+dividend.
 
-Speculative decoding~\cite{leviathan2023fast,chen2023accelerating}
-uses a lightweight draft model to propose $\gamma$ candidate tokens,
-which the target model verifies in a single batched forward pass.
-Accepted tokens advance the sequence; rejected tokens trigger
-resampling.
-The expected speedup depends on the acceptance rate $\alpha$
-and the draft/target cost ratio.
-
-\subsection{Tree-Structured Drafts}
-
-Methods like EAGLE-2/3~\cite{li2024eagle2,li2025eagle3},
-Medusa~\cite{cai2024medusa}, and Sequoia~\cite{chen2024sequoia}
-extend speculative decoding by organising candidates into $\branching$-ary
-trees of depth $\depth$.
-The tree is laid out in breadth-first order: root at position 0,
-children of node $k$ at positions $\branching k + 1, \ldots, \branching k + \branching$.
-The number of nodes in a complete tree is
-$\numtokens = (\branching^{\depth+1} - 1) / (\branching - 1)$,
-though practical systems (e.g., EAGLE-3) prune this to a budget
-of $\numtokens \approx \lceil 6\branching\depth / 7 \rceil$
-tokens~\cite{li2025eagle3}.
-
-\paragraph{Attention rule.}
-During tree verification, the attention mask for the tree portion is
-\emph{not} lower-triangular: token $i$ attends to token $j$ if and
-only if $j$ is an ancestor of $i$ in the tree (including $i$ itself).
-A token at depth $\depth_i$ therefore has exactly $\depth_i + 1$ attended keys,
-compared to the $\numtokens$ keys a dense kernel computes.
-
-\subsection{Dense Attention Waste on Trees}\label{sec:waste}
-
-For the tree-only attention block (ignoring prefix), the fraction of
-\emph{useful} FLOPs when using a dense $\bigO{\numtokens^2}$ kernel is:
-\begin{equation}\label{eq:util}
-  \eta_{\text{tree}} = \frac{\sum_{i=0}^{\numtokens-1} (\depth_i + 1)}
-                             {\numtokens^2}.
-\end{equation}
-For a complete $\branching$-ary tree of depth $\depth$,
-$\eta_{\text{tree}} \to 0$ as $\branching$ or $\depth$ grows.
-At $\branching = 10$, $\depth = 7$: $\eta_{\text{tree}} < 13\%$.
-At $\branching = 4$, $\depth = 6$ ($\numtokens = 5{,}461$):
-$\eta_{\text{tree}} < 0.13\%$.
-
-\paragraph{Prefix amplification.}
-When a prefix cache of length $\prefixlen$ is present, the target model's
-attention layer operates on KV of length $\prefixlen + \numtokens$.
-EAGLE-3's implementation~\cite{li2025eagle3} materialises the full
-$[\numtokens \times (\prefixlen + \numtokens)]$ weight matrix via
-\texttt{torch.matmul}.
-While every tree token legitimately attends to all $\prefixlen$ prefix
-tokens (dense), the $[\numtokens \times \numtokens]$ tree-to-tree quadrant
-remains almost entirely masked.
-The wasted memory scales as
-$\batchsize \cdot \nheads \cdot \numtokens \cdot (\prefixlen + \numtokens) \cdot 2$ bytes (fp16),
-which at $\batchsize = 128$, $\nheads = 32$, $\numtokens = 60$, $\prefixlen = 4096$
-is $> 3$ GB for a \emph{single attention layer}.
-
-
-% =====================================================================
-\section{Method}\label{sec:method}
-% =====================================================================
-
-\subsection{Ancestor-Sparse Flash Attention}\label{sec:algo}
-
-FlashAttention-2~\cite{dao2023flashattention2} tiles Q into blocks
-of $\text{BLOCK\_M}$ rows and iterates over $\lceil \numtokens / \text{BLOCK\_N} \rceil$
-KV blocks.
-Our key insight is that \textbf{every query row needs exactly
-$\depth + 1$ key--value pairs}---its ancestors.
-We replace the KV-block loop with an \emph{ancestor walk}:
-
-\begin{equation}\label{eq:ancestor}
-  a^{(0)}(i) = i, \qquad
-  a^{(s)}(i) = \left\lfloor \frac{a^{(s-1)}(i) - 1}{\branching} \right\rfloor
-  \quad \text{for } s = 1, \ldots, \depth.
-\end{equation}
-
-At each step $s$, every query row $q_m$ in the tile loads the single
-K and V vector at position $a^{(s)}(q_m)$ via \emph{scattered gather}.
-Different rows within a tile load from different positions---this
-is fundamentally different from FlashAttention-2, where all rows
-share the same KV block.
-
-\paragraph{Kernel structure.}
-Each Triton program handles one (sequence, head) pair and one
-Q-tile of $\text{BLOCK\_M}$ rows.
-The inner loop runs exactly $\depth + 1$ steps:
-
-\begin{enumerate}[nosep,leftmargin=*]
-\item \textbf{Ancestor index:} Compute $a^{(s)}(q_m)$ for each row $m$ via
-      Eq.~\ref{eq:ancestor}. Global offset:
-      $\text{seq\_start} + a^{(s)}(q_m)$.
-\item \textbf{Scattered K/V load:} Gather $K[a^{(s)}(q_m), :]$ and
-      $V[a^{(s)}(q_m), :]$ per row (each row loads from a potentially
-      different address).
-\item \textbf{Score \& online softmax:} Compute $s_m = q_m \cdot k_m / \sqrt{\headdim}$.
-      A duplicate guard sets $s_m = -\infty$ when $a^{(s)} = a^{(s-1)}$
-      (query reached root before step $\depth$).
-      Update running max $m_i$, scale factor $\ell_i$, and accumulator
-      using the standard online softmax~\cite{dao2023flashattention2}.
-\item \textbf{Accumulate:} $\text{acc}_m \mathrel{+}= \exp(s_m - m_{\text{new}}) \cdot v_m$.
-\end{enumerate}
+\begin{algorithm}[t]
+\caption{Ancestor-sparse Flash Attention-2 inner loop (single Q-tile, single head).}
+\label{alg:kernel}
+\begin{algorithmic}[1]
+\Require Q, K, V; sequence offsets, branching factor $b$, max depth $D$
+\State $\text{acc} \gets 0;\;\; m_i \gets -\infty;\;\; l_i \gets 0$
+\State $\text{cur} \gets q\_\text{positions};\;\; \text{prev} \gets -1$
+\For{$s = 0$ \textbf{to} $D$}                            \Comment{ancestor walk}
+  \State $\text{is\_new} \gets (\text{cur} \neq \text{prev}) \wedge \text{valid}$
+  \State $k_a \gets \mathrm{load}(K[\text{seq\_start} + \text{cur}])$
+  \State $v_a \gets \mathrm{load}(V[\text{seq\_start} + \text{cur}])$
+  \State $s \gets \langle q, k_a\rangle \cdot \tfrac{1}{\sqrt{D_h}}\;\;\text{(masked $-\infty$ where not is\_new)}$
+  \State $m_{\text{new}} \gets \max(m_i, s);\;\; \alpha \gets e^{m_i - m_{\text{new}}};\;\; p \gets e^{s - m_{\text{new}}}$
+  \State $\text{acc} \gets \alpha \cdot \text{acc} + p \cdot v_a;\;\; l_i \gets \alpha\cdot l_i + p;\;\; m_i \gets m_{\text{new}}$
+  \State $\text{prev} \gets \text{cur};\;\; \text{cur} \gets \max(\text{cur}-1,0)\,\,/\!/\,\,b$
+\EndFor
+\State \Return $\text{acc} / l_i$
+\end{algorithmic}
+\end{algorithm}
 
 \paragraph{Complexity.}
-Each Q-tile of $\text{BLOCK\_M}$ rows performs $\depth + 1$ dot products
-of dimension $\headdim$, giving $\bigO{\numtokens \cdot \depth \cdot \headdim}$
-work per head---versus $\bigO{\numtokens^2 \cdot \headdim}$ for dense.
-The work reduction factor is $\numtokens / (\depth + 1)$, which
-at $\branching = 10$, $\depth = 7$, $\numtokens = 60$ is $7.5\times$,
-and at $\branching = 4$, $\depth = 6$, $\numtokens = 5{,}461$ is
-$780\times$.
+For a complete $b$-ary tree of depth $d$ with head dimension $D_h$ and $H$
+heads per token, the ancestor-sparse kernel performs
+$\mathcal{O}(B\!\cdot\!N\!\cdot\!(d{+}1)\!\cdot\!D_h\!\cdot\!H)$ FMAs and
+streams $\mathcal{O}(B\!\cdot\!N\!\cdot\!(d{+}1)\!\cdot\!D_h\!\cdot\!H)$
+bytes of K/V, versus $\mathcal{O}(B\!\cdot\!N^2\!\cdot\!D_h\!\cdot\!H)$ for
+dense or block-masked tree attention. At $B{=}4,\,b{=}4,\,d{=}5,\,N{=}1365,\,
+D_h{=}64,\,H{=}8,\,\text{BLOCK\_M}{=}64$, this yields $470\times$ fewer
+FMAs and $3.6\times$ less HBM traffic per Q-tile relative to the dense
+variant, with all unique K/V positions ($\approx 341$\,KB) fitting
+comfortably in the T4 L2 (3.8\,MB) so cross-tile reuse is essentially
+free.
 
+\paragraph{Implementation notes.}
+The kernel uses \texttt{num\_stages=1}: the load address at step $s{+}1$
+is data-dependent on the value of \texttt{cur} computed at step $s$, so
+the Triton software pipeliner cannot overlap iterations. We autotune on
+$(\textsc{HeadDim}, \textsc{BranchingFactor}, \textsc{MaxDepth})$ ---
+the three \texttt{constexpr} arguments that determine the compiled PTX.
+On SM75 (Turing), \texttt{tl.dot} requires matching dtypes, so we keep
+fp16 loads and pass \texttt{out\_dtype=tl.float32}. We compute
+\texttt{max\_seqlen} on the CPU side from the cumulative-sequence-lengths
+tensor, which is already CPU-resident, eliminating a per-call blocking
+GPU\,$\to$\,CPU sync that cost $20$--$50\,\mu s$ in the original
+implementation.
 
-\subsection{Prefix--Tree Split Architecture}\label{sec:prefix}
+\section{Evaluation}
+\label{sec:eval}
 
-In the realistic serving scenario, each of the $\numtokens$ draft tokens
-attends to $\prefixlen$ committed prefix tokens (dense) \emph{plus}
-its $\depth_i + 1$ tree ancestors (sparse).
-Rather than materialising the full
-$[\numtokens \times (\prefixlen + \numtokens)]$ weight matrix, we
-decompose the attention into two independent blocks and merge via
-online softmax:
+\subsection{Setup}
+\label{sec:eval-setup}
 
-\begin{enumerate}[nosep,leftmargin=*]
-\item \textbf{Prefix block:}
-    Run FlashAttention-2 (via \texttt{\_scaled\_dot\_product\_flash\_attention})
-    on $Q[\batchsize, \nheads, \numtokens, \headdim]$ and
-    $K_{\text{pre}}[\batchsize, \nheads, \prefixlen, \headdim]$.
-    This returns both the output $O_{\text{pre}}$ and the per-token
-    log-sum-exp $\text{LSE}_{\text{pre}}$.
+All experiments run on an NVIDIA Tesla T4 (SM75, 16\,GB HBM, $\approx$300
+GB/s, 65 fp16 TFLOPS, 3.8\,MB L2). End-to-end runs use
+Llama-3.1-8B-Instruct with the EAGLE3-LLaMA3.1-8B
+draft~\cite{li2025eagle3}, fp16 weights and activations. Each
+micro-benchmark measurement is the median of 50 CUDA-event-timed calls
+after 10 warmup iterations; both kernels are timed by the same method.
+We use FlashInfer~\cite{ye2025flashinfer} as the baseline kernel
+throughout. As discussed in Sec.~\ref{sec:background}, DeFT and w4a16 are
+excluded for incompatibility / pipeline reasons rather than performance
+reasons.
 
-\item \textbf{Tree block:}
-    Run \method{} on the tree KV only, using the LSE-returning variant
-    to obtain $O_{\text{tree}}$ and $\text{LSE}_{\text{tree}}$.
+\subsection{Micro-benchmarks: deep and wide is where we win}
+\label{sec:eval-micro}
 
-\item \textbf{Online-softmax merge:}
-    Combine the two blocks:
-    \begin{align}\label{eq:merge}
-      m &= \max(\text{LSE}_{\text{pre}},\; \text{LSE}_{\text{tree}}), \\
-      w_p &= \exp(\text{LSE}_{\text{pre}} - m), \quad
-      w_t = \exp(\text{LSE}_{\text{tree}} - m), \nonumber \\
-      O &= \frac{w_p \cdot O_{\text{pre}} + w_t \cdot O_{\text{tree}}}{w_p + w_t}.
-      \nonumber
-    \end{align}
-\end{enumerate}
-
-This architecture has two advantages.
-First, the prefix attention is handled by a highly optimised
-flash kernel, leveraging its full tiling and software pipelining.
-Second, the tree block processes only the sparse
-$\numtokens \times \numtokens$ quadrant via the ragged kernel---no
-$\prefixlen$-dependent memory allocation.
-The total memory for the tree block is $\bigO{\batchsize \cdot \numtokens
-\cdot \nheads \cdot \headdim}$, independent of prefix length.
-
-\paragraph{Fused LSE merge kernel.}
-The na\"ive implementation of Eq.~\ref{eq:merge} requires five
-sequential PyTorch elementwise operations (max, two subtractions,
-two exponentials, weighted sum, division).
-These are memory-bandwidth-bound and launch separate CUDA kernels.
-We fuse the entire merge into a single Triton kernel:
-each program handles one $(b, h, n)$ element, loading
-$O_{\text{pre}}$, $O_{\text{tree}}$, $\text{LSE}_{\text{pre}}$, and
-$\text{LSE}_{\text{tree}}$, computing the merged output and writing
-$O$ in a single pass.
-The fused kernel reduces merge overhead from ${\sim}5$\,ms to
-$< 0.1$\,ms per verification step at EAGLE-3 dimensions.
-
-
-\subsection{Ragged Batching}\label{sec:ragged}
-
-Speculative decoding produces variable-length sequences across
-requests: each request's tree may differ in depth, branching factor,
-or pruning.
-\method{} uses a \emph{ragged packed layout}: all $\batchsize$
-sequences are concatenated along the token dimension, with a
-\texttt{cu\_seqlens} offset array ($\batchsize + 1$ entries)
-indexing into the packed tensor.
-This eliminates padding waste entirely.
-
-\subsection{Autotuned GPU Configurations}\label{sec:autotune}
-
-The kernel is autotuned for four GPU generations:
-
-\begin{table}[h]
+\begin{figure}[t]
 \centering
-\small
-\caption{Autotune search space per GPU generation.}
-\label{tab:autotune}
-\begin{tabular}{@{}lllll@{}}
-\toprule
-Tier & GPUs & BLOCK\_M & Warps & Shared Mem \\
-\midrule
-SM75  & T4 (Turing)        & 16--128  & 2--8  & 64\,KB \\
-SM89  & L40S (Ada)          & 32--256  & 4--16 & 96\,MB L2 \\
-SM90  & H100/H200 (Hopper)  & 32--512  & 4--16 & 228\,KB \\
-SM120 & B200 (Blackwell)    & 32--512  & 4--16 & 232\,KB \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=\linewidth]{fig1_micro_fixed_b}
+\caption{Verification-attention latency vs.\ tree depth at fixed
+branching factor ($L{=}0,\,B{=}1$). Solid: ours; dashed: FlashInfer.
+Both axes are log-scale on the y-axis. The kernels track each other in
+the small-tree regime; ours pulls ahead as depth (and therefore $N$)
+grows.}
+\label{fig:micro-fixed-b}
+\end{figure}
 
-All tiers use \texttt{num\_stages=1}: the ancestor walk produces
-data-dependent addresses, so software pipelining cannot help.
-The autotune key is \texttt{[HEAD\_DIM, BRANCHING\_FACTOR, MAX\_DEPTH]}.
-
-\paragraph{Hopper-specific optimisations.}
-\begin{itemize}[nosep,leftmargin=*]
-\item \textbf{Large Q-tiles.}
-  Hopper's 228\,KB shared memory allows BLOCK\_M up to 512,
-  improving Q reuse across ancestor steps.
-\item \textbf{int64 pointer arithmetic.}
-  At $\batchsize = 128$, $\branching = 4$, $\depth = 8$,
-  the packed sequence contains $> 5.6$M tokens.
-  Byte offsets exceed \texttt{INT32\_MAX};
-  all offsets are computed in \texttt{tl.int64}.
-\item \textbf{Parent-clamp-before-divide.}
-  $\texttt{tl.maximum}(\text{cur} - 1, 0)$ prevents negative dividends
-  in the ancestor formula, avoiding PTX lowering artefacts.
-\end{itemize}
-
-
-% =====================================================================
-\section{Experimental Setup}\label{sec:setup}
-% =====================================================================
-
-\paragraph{Hardware.}
-Kernel benchmarks (SOTA, micro-benchmark, profiling) run on a
-single NVIDIA H100 SXM 80\,GB (Hopper, SM 9.0, 3.35\,TB/s HBM3).
-End-to-end benchmarks run on an NVIDIA A10G (Ampere, SM 8.6,
-22\,GB GDDR6X, 600\,GB/s).
-
-\paragraph{Software.}
-PyTorch 2.8, Triton 3.4, CUDA 12.9.
-H100 micro-benchmarks: FlashInfer 0.2.2,
-DeFT (Triton reimplementation).
-
-\paragraph{Evaluation protocol.}
-We use CUDA events with 10 warmup and 50 timed iterations,
-reporting the \emph{median} latency.
-
-\subsection{Benchmark Suite}
-
-\paragraph{Benchmark 1: SOTA comparison (\Cref{sec:sota}).}
-Compares \method{} against FlashAttention-2
-(PyTorch SDPA flash backend), FlashInfer, and DeFT at \emph{complete}
-$\branching$-ary trees
-($\branching \in \{2,3,4\}$, $\depth \in \{1..8\}$,
-$\batchsize \in \{1..128\}$, $\headdim = 64$, $\nheads = 8$).
-192 configurations total.
-These are tree-only ($\prefixlen = 0$) with the exact parameters
-used in FlashInfer/DeFT codebases.
-
-\paragraph{Benchmark 2: Micro-benchmark (\Cref{sec:micro}).}
-Compares \method{} against EAGLE-3's \emph{actual attention
-implementation}---the manual \texttt{torch.matmul + softmax + matmul}
-path in \texttt{modeling\_llama\_kv.py}---at LLaMA-3.1-8B
-dimensions ($\headdim = 128$, $\nheads = 32$):
-$\batchsize \in \{8, 16, 32, 64, 128\}$,
-$\branching \in \{8, 10, 12, 14, 16, 18, 20\}$,
-$\depth \in \{5, 7, 9, 12, 14, 16, 20, 24, 28, 32\}$.
-This benchmark adds a \emph{simulated prefix KV cache}
-$\prefixlen \in \{0, 1024, 4096\}$.
-1{,}050 configurations (939 valid; 111 Eagle OOM).
-
-\paragraph{Correctness.}
-104 configurations verified against PyTorch SDPA math-backend
-reference with explicit ancestor mask.
-Peak absolute error $< 2 \times 10^{-3}$ (fp16);
-3 configurations skipped due to OOM at $\numtokens = 21{,}845$.
-
-\paragraph{Profiling.}
-36 configurations profiled with a roofline model.
-
-
-% =====================================================================
-\section{Results: SOTA Comparison}\label{sec:sota}
-% =====================================================================
-
-The SOTA benchmark compares \method{} against three baselines
-at complete $\branching$-ary trees on the H100 SXM.
-\Cref{tab:sota} reports representative configurations.
-
-\subsection{vs.\ FlashAttention-2 (SDPA Flash)}
-
-SDPA flash is the strongest baseline at small trees.
-At $\numtokens \leq 85$ ($\branching{=}4$, $\depth{=}3$),
-it is 1.4--2.7$\times$ \emph{faster}: its highly optimised
-closed-source kernel amortises launch overhead over dense
-computation that is still cheap at small $\numtokens$.
-
-The crossover occurs around $\numtokens \approx 300\text{--}500$ tokens.
-Beyond this, \method{}'s $\bigO{\numtokens \cdot \depth}$
-scaling dominates:
-$\branching{=}4$, $\depth{=}6$ ($\numtokens = 5{,}461$, $\batchsize{=}128$):
-\textbf{49$\times$};
-$\branching{=}3$, $\depth{=}7$ ($\numtokens = 3{,}280$, $\batchsize{=}128$):
-\textbf{22.9$\times$}.
-
-Out of 168 valid configurations, \method{} wins 45 (27\%).
-The 73\% where SDPA wins are \emph{all} at $\numtokens \leq 364$.
-
-\subsection{vs.\ FlashInfer}
-
-FlashInfer's tree attention uses a TopK-sorted layout.
-\method{} wins \textbf{85\% of 187 configurations} (median 7.0$\times$).
-At $\branching{=}3$, $\depth{=}7$, $\batchsize{=}8$: 22.3$\times$;
-at $\branching{=}4$, $\depth{=}7$, $\batchsize{=}32$: \textbf{309$\times$}.
-FlashInfer wins only at $\batchsize{=}1$ with $\numtokens \leq 85$.
-
-\subsection{vs.\ DeFT}
-
-DeFT~\cite{yao2024deft} is a KV-guided sparse attention kernel.
-\method{} wins \textbf{93\% of 189 configurations}
-(median 23.3$\times$, peak 114$\times$).
-DeFT's only advantage is at $\batchsize{=}1$, $\numtokens \leq 40$.
-
-We attribute \method{}'s advantage over DeFT to workload balance:
-DeFT distributes work per KV position, but the root token is attended
-by all $\numtokens$ queries while leaf tokens by only 1.
-\method{}'s Q-guided structure naturally balances work because
-every query walks the same $\depth{+}1$ steps.
-
-
-\begin{table}[t]
+\begin{figure}[t]
 \centering
-\small
-\caption{SOTA comparison on H100 SXM ($\headdim{=}64$, $\nheads{=}8$, $\prefixlen{=}0$).
-  Speedup $> 1$ means \method{} is faster.
-  ``OOM'' = baseline out of memory.}
-\label{tab:sota}
-\begin{tabular}{@{}rrrr rrr rrr@{}}
-\toprule
-& & & & \multicolumn{3}{c}{Latency (ms)} & \multicolumn{3}{c}{Speedup vs.} \\
-\cmidrule(lr){5-7} \cmidrule(lr){8-10}
-$\batchsize$ & $\branching$ & $\depth$ & $\numtokens$
-  & Ours & SDPA & FI
-  & SDPA & FI & DeFT \\
-\midrule
-  8 & 3 & 5 &    364 & 0.11 & 0.07 & 0.39 & 0.67 &  3.7 &    9.0 \\
-128 & 3 & 5 &    364 & 0.24 & 0.52 & 5.80 & 2.19 & 24.3 &   61.1 \\
-  8 & 3 & 7 &  3{,}280 & 0.17 & 2.06 & 3.86 & 11.9 & 22.3 &   45.6 \\
-128 & 3 & 7 &  3{,}280 & 1.33 & 30.5 & 61.0 & 22.9 & 45.9 &   92.9 \\
-  8 & 4 & 5 &  1{,}365 & 0.12 & 0.47 & 0.67 & 3.85 &  5.5 &   27.7 \\
-128 & 4 & 5 &  1{,}365 & 0.55 & 6.23 & 9.89 & 11.2 & 17.9 &   92.5 \\
-128 & 4 & 6 &  5{,}461 & 1.48 & 72.6 & 82.8 & 49.0 & 55.9 &  109.4 \\
- 32 & 4 & 7 & 21{,}845 & 1.98 & OOM  & 614  & ---  & 309  &  114.3 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=\linewidth]{fig2_micro_fixed_depth}
+\caption{Latency vs.\ branching factor at fixed depth ($L{=}0,\,B{=}1$).
+Solid: ours; dashed: FlashInfer. The widest, deepest configurations
+$(b,d){=}(28,20)$ and $(28,28)$ reach $6.7\times$ and $7.75\times$
+speedup respectively.}
+\label{fig:micro-fixed-d}
+\end{figure}
 
-
-% =====================================================================
-\section{Results: Micro-Benchmark}\label{sec:micro}
-% =====================================================================
-
-The micro-benchmark evaluates \method{} against the \emph{exact}
-attention path used in EAGLE-3's
-\texttt{modeling\_llama\_kv.py}~\cite{li2025eagle3}:
-\begin{align*}
-W &= \texttt{matmul}(Q, K^T) / \sqrt{\headdim} + \text{bias}, \\
-W &= \softmax(W, \texttt{dtype=float32}).\texttt{to}(\texttt{fp16}), \\
-O &= \texttt{matmul}(W, V),
-\end{align*}
-where \text{bias} is 0 for ancestors and $-\infty$ elsewhere.
-When $\prefixlen > 0$, this baseline materialises the full
-$[\batchsize, \nheads, \numtokens, \prefixlen {+} \numtokens]$ tensor.
-\method{} instead uses the flash prefix + ragged tree + LSE merge
-pipeline (\Cref{sec:prefix}).
-Both approaches produce mathematically equivalent outputs.
-
-\subsection{Tree-Only ($\prefixlen = 0$)}\label{sec:micro_tree}
-
-\begin{table}[t]
+\begin{figure}[t]
 \centering
-\small
-\caption{Micro-benchmark summary: tree-only ($\prefixlen = 0$).
-  350 configurations, $\headdim{=}128$, $\nheads{=}32$.}
-\label{tab:micro_L0}
-\begin{tabular}{@{}rp{6cm}@{}}
-\toprule
-Metric & Value \\
-\midrule
-Configs tested & 350 \\
-Ragged wins    & 322 / 350 (92\%) \\
-Median speedup & 3.11$\times$ \\
-Peak speedup   & 8.89$\times$ ($\batchsize{=}128$, $\branching{=}20$, $\depth{=}32$, $\numtokens{=}549$) \\
-Worst case     & 0.72$\times$ ($\batchsize{=}32$, $\branching{=}8$, $\depth{=}5$, $\numtokens{=}34$) \\
-\bottomrule
-\end{tabular}
-\end{table}
+\begin{minipage}[t]{0.49\linewidth}\centering
+\includegraphics[width=\linewidth]{fig3_micro_sweep_n}
+\caption{Ancestor-sparse latency vs.\ tree size $N$ at varying KV prefix
+length ($b{=}4,\,B{=}1$). Latency grows nearly linearly in $N$ because
+the per-Q work is $\mathcal{O}(d)$ regardless of $N$.}
+\label{fig:micro-sweep-n}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\linewidth}\centering
+\includegraphics[width=\linewidth]{fig4_amdahl}
+\caption{Amdahl decomposition on EAGLE-3 across tree depths. Once
+attention is no longer the bottleneck, the verify-time fraction collapses
+from $0.73$ at $d{=}6$ to $0.47$ at $d{=}24$; acceptance per step rises
+only modestly ($5.02\!\to\!5.40$).}
+\label{fig:amdahl}
+\end{minipage}
+\end{figure}
 
-Without prefix, \method{} wins 92\% of configurations.
-The 8\% of losses all occur at the smallest tree sizes
-($\numtokens \leq 51$, $\batchsize \leq 16$), where
-Triton launch overhead exceeds the sparse ancestor walk savings.
+Figs.~\ref{fig:micro-fixed-b}--\ref{fig:micro-fixed-d} sweep the
+verification-attention kernel across branching factor and depth at zero
+prefix length. Three observations stand out. First, in the small-tree
+regime ($d{\le}5,\, b{\le}4$) the two kernels track each other within
+roughly $0.97\times$, dominated on both sides by Triton/cuDNN dispatch
+floors. Second, FlashInfer's curves bend up super-linearly with $b$ and
+$d$ --- the quadratic in $N$ asserts itself. Third, our curves remain
+near-flat in the depth dimension: each query touches only $d{+}1$
+ancestors, so adding nodes that are siblings (rather than deeper paths)
+does not increase per-query work. By $(b,d){=}(28,28)$,
+$N{=}681$, our kernel runs at $0.028$\,ms versus FlashInfer's
+$0.216$\,ms --- a $7.75\times$ gap.
 
-The crossover depends on batch size:
-at $\batchsize{=}8$, \method{} requires $\numtokens \geq 103$;
-at $\batchsize{=}128$, it wins at $\numtokens{=}34$ (minimum tested).
-Larger batch sizes amortise launch overhead and increase
-arithmetic intensity.
+Fig.~\ref{fig:micro-sweep-n} sweeps total tree size with $b{=}4$ across
+prefix lengths $L \in \{0, 4096, 16384, 32768\}$. Latency scales
+approximately linearly in $N$ at each $L$, confirming the
+$\mathcal{O}(N\!\cdot\!d)$ analysis end-to-end on hardware.
 
-\paragraph{EAGLE-3 default ($\branching{=}10$, $\depth{=}7$, $\numtokens{=}60$).}
-At the default operating point:
-$\batchsize{=}8$: 0.79$\times$ (loss),
-$\batchsize{=}32$: 1.21$\times$,
-$\batchsize{=}128$: 1.78$\times$.
-This loss at small batch size disappears with prefix (next section).
+\subsection{Amdahl analysis: attention is no longer the bottleneck}
+\label{sec:eval-amdahl}
 
+Fig.~\ref{fig:amdahl} aggregates EAGLE-3 runs at fixed total-token budget
+$tt{=}123$ across draft-tree depths. The left axis tracks accepted
+tokens per step; the right axis tracks the fraction of step time spent in
+the verifier (attention + MLP forward).
 
-\subsection{With Prefix KV Cache ($\prefixlen > 0$)}\label{sec:micro_prefix}
+Two effects coexist. The verify fraction decreases from $0.73$ at $d{=}6$
+to $0.47$ at $d{=}24$: with our kernel handling attention, the verifier
+is now disproportionately MLP-bound, and the rest of the step (drafter
+forward + tree management + sampling) becomes a larger relative slice.
+Meanwhile, accepted tokens per step rises from $5.02$ to only $5.40$ ---
+a $\approx 7\%$ improvement for a $4\times$ deeper tree. We call this
+\emph{acceptance-rate decay}: each additional level adds candidates that
+are increasingly unlikely to be accepted given the conditioning prefix.
+Together, these two effects describe \emph{Wall 2}: the new ceiling on
+end-to-end speedup once attention overhead is gone.
 
-Adding a prefix fundamentally changes the landscape.
-EAGLE materialises
-$[\batchsize, \nheads, \numtokens, \prefixlen {+} \numtokens]$---dominated
-by $\prefixlen$.
-\method{} delegates the prefix to flash attention and handles only
-the sparse tree part.
+\subsection{End-to-end speedups}
+\label{sec:eval-e2e}
 
-\begin{table}[t]
+\begin{figure}[t]
 \centering
-\small
-\caption{EAGLE-3 default point ($\branching{=}10$, $\depth{=}7$)
-  across prefix lengths and batch sizes ($\headdim{=}128$, $\nheads{=}32$).}
-\label{tab:eagle_default}
-\begin{tabular}{@{}rr rr r@{}}
-\toprule
-$\prefixlen$ & $\batchsize$ & Eagle (ms) & Ragged (ms) & Speedup \\
-\midrule
-     0 &   8 & 0.156 & 0.198 & 0.79$\times$  \\
-     0 &  32 & 0.364 & 0.301 & 1.21$\times$  \\
-     0 & 128 & 1.294 & 0.728 & 1.78$\times$  \\
-\midrule
- 1{,}024 &   8 & 1.651 & 0.936 & 1.76$\times$ \\
- 1{,}024 &  32 & 6.351 & 2.464 & 2.58$\times$ \\
- 1{,}024 & 128 & 25.17 & 8.929 & 2.82$\times$ \\
-\midrule
- 4{,}096 &   8 & 4.827 & 1.965 & 2.46$\times$ \\
- 4{,}096 &  32 & 19.02 & 5.731 & 3.32$\times$ \\
- 4{,}096 &  64 & 38.11 & 11.14 & 3.42$\times$ \\
-\bottomrule
-\end{tabular}
-\end{table}
+\begin{minipage}[t]{0.49\linewidth}\centering
+\includegraphics[width=\linewidth]{fig5_e2e_sequoia}
+\caption{Sequoia E2E throughput speedup vs.\ tree size. Sequoia uses
+fixed balanced trees and exploits larger sizes directly; we reach
+$1.40\times$ at $\text{tree size}{=}1024$.}
+\label{fig:e2e-sequoia}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\linewidth}\centering
+\includegraphics[width=\linewidth]{fig6_e2e_eagle}
+\caption{EAGLE-3 E2E throughput speedup vs.\ total tokens per tree. The
+peak is $\approx 1.01\times$ at $b{=}16,d{=}24,tt{=}329$. The smaller
+gain is the predicted consequence of EAGLE-3's already-tight pruned trees
+plus acceptance-rate decay (Sec.~\ref{sec:eval-amdahl}) --- not a kernel
+weakness.}
+\label{fig:e2e-eagle}
+\end{minipage}
+\end{figure}
 
-\paragraph{$\prefixlen = 1024$.}
-\method{} wins \textbf{100\% of 341 valid configurations}.
-Even the worst case ($\batchsize{=}8$, $\branching{=}8$, $\depth{=}5$,
-$\numtokens{=}34$) achieves 1.38$\times$.
-Median: 3.26$\times$; peak: 4.35$\times$.
+\paragraph{Sequoia (Fig.~\ref{fig:e2e-sequoia}).}
+Sequoia's tree-size sweep is the cleanest test of the two-wall thesis: it
+fixes a \emph{balanced} tree shape and varies only the number of nodes,
+so larger trees are exploited as advertised. Throughput is roughly flat
+to size 256 (where attention is small relative to MLP), and our kernel
+pulls away as the tree grows: $1.08\times$ at 512, $1.40\times$ at 1024.
+The crossover is exactly where FlashInfer's quadratic term starts to
+dominate the step time.
 
-\paragraph{$\prefixlen = 4096$.}
-The advantage grows further: \textbf{100\% win rate},
-worst case 1.83$\times$, median 4.27$\times$, peak 5.88$\times$.
-At large batch sizes ($\batchsize \geq 64$), many Eagle configurations
-\emph{OOM}---the $[\batchsize, \nheads, \numtokens, 4096 {+} \numtokens]$
-tensor exceeds 80\,GB---while \method{} completes normally.
-102 of 350 configurations resulted in Eagle OOM at $\prefixlen{=}4096$.
+\paragraph{EAGLE-3 (Fig.~\ref{fig:e2e-eagle}).}
+EAGLE-3's pruned trees with $tt \le 500$ live in the regime where our
+micro-benchmark already showed near-parity. We see at most
+$\approx 1.01\times$ end-to-end. This is consistent with our Amdahl
+analysis: with EAGLE-3's pruning, attention is already a small fraction
+of step time, and acceptance-rate decay caps the benefit of expanding
+the tree further. The smaller end-to-end gain is therefore evidence for
+\emph{Wall 2}, not against the kernel.
 
-\paragraph{Why the speedup grows with $\prefixlen$.}
-Eagle's cost scales as $\bigO{\numtokens \cdot (\prefixlen + \numtokens)}$:
-it materialises the full weight matrix.
-\method{}'s cost is
-$\underbrace{\bigO{\numtokens \cdot \prefixlen / \text{tile}}}_{\text{flash prefix}}
-+ \underbrace{\bigO{\numtokens \cdot \depth}}_{\text{ragged tree}}$,
-where the flash prefix is \emph{tiled} (no materialisation) and the
-tree part is independent of $\prefixlen$.
+\paragraph{Reading the two figures together.}
+The same kernel produces a $1.40\times$ E2E speedup on Sequoia and a
+$1.01\times$ E2E speedup on EAGLE-3. The kernel is constant; the system
+context is not. Where the optimiser is allowed (Sequoia) or forced
+(balanced trees) into the regime our kernel targets, the wins translate
+directly. Where the optimiser has already pruned to small trees (EAGLE-3),
+removing the attention cost only matters once the optimiser is freed to
+explore larger trees --- which is itself blocked by acceptance-rate decay.
 
-\subsection{Aggregate Summary}
-
-\begin{table}[t]
-\centering
-\small
-\caption{Micro-benchmark aggregate across all 1{,}050 configurations.}
-\label{tab:micro_summary}
-\begin{tabular}{@{}l rrr rrr@{}}
-\toprule
-$\prefixlen$ & Valid & Win\% & Median & Best & Worst & Eagle OOM \\
-\midrule
-0       & 350 & 92\% & 3.11$\times$ & 8.89$\times$ & 0.72$\times$ &  0 \\
-1{,}024 & 341 & 100\% & 3.26$\times$ & 4.35$\times$ & 1.38$\times$ &  9 \\
-4{,}096 & 248 & 100\% & 4.27$\times$ & 5.88$\times$ & 1.83$\times$ & 102 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-
-% =====================================================================
-\section{Roofline Analysis}\label{sec:roofline}
-% =====================================================================
-
-We profile the ragged kernel across 36 configurations.
-At typical tree sizes the kernel is solidly \emph{HBM-bound}:
-arithmetic intensity is $I = \depth + 1$ FLOPs/byte, far below
-the H100's balance point $I^* \approx 217$ FLOPs/byte.
-
-At $\branching{=}4$, $\depth{=}5$, $\numtokens{=}1{,}365$, $\batchsize{=}4$:
-the kernel achieves 1.08 TFLOP/s and 358.6\,GB/s---33.6\% of
-peak HBM bandwidth after accounting for L2 hit rate on
-ancestor-overlapping loads.
-Utilisation improves with larger trees and batch sizes.
-
-The memory-bound regime is \emph{favourable}: it means the kernel
-is bottlenecked by the same resource (HBM bandwidth) as the rest
-of inference, and further improvements would come from fusing
-the prefix + tree into a single kernel launch to reduce
-round-trips to HBM.
-
-
-% =====================================================================
-\section{End-to-End Evaluation}\label{sec:e2e}
-% =====================================================================
-
-We evaluate end-to-end token throughput using EAGLE-3~\cite{li2025eagle3}
-with LLaMA-3.1-8B-Instruct on five ShareGPT~\cite{sharegpt} prompts,
-sweeping tree depth $\depth \in \{16, 20, 24, 28, 32\}$
-at branching factor $\branching{=}10$ (top-$k{=}10$).
-All runs use batch size $\batchsize{=}1$ (single-user serving) on
-an NVIDIA A10G (Ampere, SM 8.6, 22\,GB VRAM).
-
-\subsection{Integration: Module-Level Attention Patching}\label{sec:integration}
-
-EAGLE-3 implements attention as explicit
-$Q K^T \to \softmax \to W \cdot V$ calls inside
-\texttt{LlamaAttention.forward()}.
-Unlike models that use \texttt{F.scaled\_dot\_product\_attention},
-intercepting SDPA has no effect; the dense matmul path must be
-replaced directly.
-
-We replace the entire \texttt{LlamaAttention.forward()} method
-at the class level during tree verification.
-The patched forward:
-\begin{enumerate}[nosep,leftmargin=*]
-\item Replicates QKV projection, RoPE, and KV-cache update
-      from the original forward path.
-\item Splits KV into prefix (committed tokens) and tree
-      (draft tokens).
-\item Runs flash attention on the prefix block, returning
-      $O_{\text{pre}}$ and $\text{LSE}_{\text{pre}}$.
-\item Runs \method{} on the tree block, returning
-      $O_{\text{tree}}$ and $\text{LSE}_{\text{tree}}$.
-\item Merges via the fused LSE kernel (\Cref{sec:prefix}).
-\end{enumerate}
-
-This approach eliminates all wasted work: no scale, mask,
-softmax, or cast operations execute on the masked-out
-$[\numtokens \times \numtokens]$ zeros that the vanilla path
-materialises.
-The patch is applied as a Python context manager that
-saves and restores the original method.
-
-\subsection{E2E Results}\label{sec:e2e_results}
-
-\Cref{tab:e2e} reports mean throughput (tok/s) averaged over five
-ShareGPT prompts.
-Each prompt generates 80--267 tokens across 15--57 verification steps.
-
-\begin{table}[t]
-\centering
-\small
-\caption{End-to-end throughput on A10G ($\batchsize{=}1$, $\branching{=}10$).
-  Vanilla = unmodified EAGLE-3; Ragged = module-level attention patch.
-  ``Acc.~rate'' = per-token acceptance rate (identical between modes).
-  ``Verify frac.'' = fraction of wall time in verification.}
-\label{tab:e2e}
-\begin{tabular}{@{}rr rr rr r@{}}
-\toprule
-$\depth$ & $\numtokens$
-  & \multicolumn{2}{c}{Throughput (tok/s)}
-  & \multicolumn{2}{c}{Verify frac.}
-  & E2E \\
-\cmidrule(lr){3-4} \cmidrule(lr){5-6}
-&& Vanilla & Ragged & Vanilla & Ragged & Speedup \\
-\midrule
-16 & 137 & 39.9 & 38.0 & 0.555 & 0.636 & 0.952$\times$ \\
-20 & 171 & 40.9 & 34.2 & 0.534 & 0.575 & 0.836$\times$ \\
-24 & 206 & 33.0 & 30.9 & 0.504 & 0.558 & 0.936$\times$ \\
-28 & 240 & 29.4 & 28.4 & 0.472 & 0.520 & 0.966$\times$ \\
-32 & 274 & 22.1 & 24.4 & 0.526 & 0.609 & \textbf{1.104}$\boldsymbol\times$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-At $\depth{=}32$ ($\numtokens{=}274$), \method{} achieves
-\textbf{1.10$\times$} end-to-end speedup---the crossover point
-where sparse ancestor walks outweigh integration overhead
-in a full generation pipeline.
-At shallower depths ($\depth \leq 28$), the ragged path is
-0.84--0.97$\times$: the A10G's limited compute
-($\frac{1}{4}$ the SMs of an H100) and single-user batch size
-place this hardware at the margin of the kernel's advantage.
-
-\paragraph{Acceptance rate is identical.}
-Both modes produce mathematically equivalent attention outputs
-(MSE $< 10^{-11}$), so per-token acceptance rates and
-mean accepted tokens per step are identical between vanilla and ragged.
-This confirms that \method{} is a pure \emph{systems} optimisation
-with no effect on model quality.
-
-\subsection{The Model Wall}\label{sec:model_wall}
-
-\Cref{tab:model_wall} reveals a striking pattern: as tree depth
-increases from 16 to 32, the per-token acceptance rate drops by
-$3\times$ while mean accepted tokens per step remain essentially
-flat.
-
-\begin{table}[t]
-\centering
-\small
-\caption{Acceptance rate vs.\ tree depth ($\branching{=}10$, $\batchsize{=}1$).
-  Acceptance rate = fraction of draft tokens accepted.
-  Mean accepted = tokens accepted per verification step.
-  Values are identical for vanilla and ragged (same model outputs).}
-\label{tab:model_wall}
-\begin{tabular}{@{}rr rr r@{}}
-\toprule
-$\depth$ & $\numtokens$ & Acc.\ rate & Mean accepted & Vanilla tok/s \\
-\midrule
-16 & 137 & 4.1\% & 5.8 & 39.9 \\
-20 & 171 & 3.4\% & 5.6 & 40.9 \\
-24 & 206 & 2.9\% & 5.8 & 33.0 \\
-28 & 240 & 2.5\% & 5.8 & 29.4 \\
-32 & 274 & 2.1\% & 5.7 & 22.1 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Increasing the tree from 137 to 274 tokens \emph{doubles} the
-verification cost (vanilla: 80\,ms $\to$ 141\,ms per step)
-but yields essentially the same ${\sim}5.8$ accepted tokens per step.
-The draft model's accuracy degrades rapidly beyond depth 7--9,
-so the additional 137 leaf tokens contribute nearly zero accepted output.
-This is the \textbf{Model Wall}: the point at which faster attention
-cannot improve throughput because the draft model's predictions
-at deeper levels are too inaccurate to be accepted.
-
-\paragraph{Implications.}
-The Model Wall has three implications for the field:
-\begin{enumerate}[nosep,leftmargin=*]
-\item \textbf{Systems wall is shattered.}
-  \method{} reduces tree attention from $\bigO{\numtokens^2}$
-  to $\bigO{\numtokens \cdot \depth}$, eliminating the
-  quadratic penalty of deeper trees.
-  The binding constraint is no longer attention cost.
-\item \textbf{Larger trees need better draft models.}
-  Current EAGLE-3 draft models are trained to predict 1--2
-  steps ahead; their accuracy degrades sharply at depth $> 9$.
-  Improving deep-token accuracy (e.g., via multi-step training
-  or retrieval-augmented drafting) is the path to
-  realising the latent throughput gains of larger trees.
-\item \textbf{The optimal tree depth is smaller than the systems
-  limit.}
-  Even with free attention, $\depth{=}32$ yields only
-  5.7 accepted tokens---barely more than $\depth{=}16$.
-  This suggests that the community's optimal tree budget
-  is determined by draft-model quality, not hardware.
-\end{enumerate}
-
-
-% =====================================================================
-\section{Related Work}\label{sec:related}
-% =====================================================================
+\section{Related Work}
+\label{sec:related}
 
 \paragraph{Speculative decoding.}
-Leviathan et al.~\cite{leviathan2023fast} and
-Chen et al.~\cite{chen2023accelerating} introduced speculative
-decoding with linear draft chains. Tree-structured extensions:
-Medusa~\cite{cai2024medusa} adds multiple decoding heads;
-EAGLE-2/3~\cite{li2024eagle2,li2025eagle3} use
-feature-level auto-regression with dynamic trees;
-Sequoia~\cite{chen2024sequoia} and SpecInfer~\cite{miao2024specinfer}
-use optimal or multi-model tree construction.
-All methods share the tree-verification attention step.
+Speculative sampling~\cite{leviathan2023fast,chen2023accelerating} and
+its tree-based descendants~\cite{cai2024medusa,li2024eagle,li2024eagle2,li2025eagle3,
+chen2024sequoia,miao2024specinfer,spector2023accelerating} have become
+a standard inference acceleration technique. Optimisers in this line
+universally target tree shape (depth, breadth, expansion policy)
+\emph{given} a fixed attention kernel. Our work is complementary:
+we change the kernel, which expands the design space the optimiser
+operates in.
 
-\paragraph{Tree-aware attention kernels.}
-DeFT~\cite{yao2024deft} is the closest prior work.
-DeFT takes a \emph{KV-guided} approach: for each KV position,
-it identifies attending queries and distributes work accordingly.
-\method{} takes the complementary \emph{Q-guided} approach:
-each query walks its own ancestor chain via a closed-form
-recurrence (Eq.~\ref{eq:ancestor}).
-Q-guided naturally balances work because every query performs
-the same $\depth{+}1$ steps, whereas DeFT's root KV is attended
-by all $\numtokens$ queries and leaf KV by only 1.
+\paragraph{Attention kernels.}
+Flash Attention~\cite{dao2022flashattention,dao2023flashattention2}
+established the IO-aware online-softmax recipe we extend.
+FlashInfer~\cite{ye2025flashinfer} provides production-quality
+batched attention kernels including a generalised tree variant; it is
+our baseline. DeFT~\cite{yao2024deft} targets balanced trees and is
+incompatible with the irregular trees produced by EAGLE-style
+optimisers, as discussed in Sec.~\ref{sec:background}. Block-sparse and
+mask-aware kernels~\cite{xformers2022,gao2024seerattention} share the
+spirit of exploiting structured sparsity, but operate on
+$\mathcal{O}(\text{block})$ granularity rather than the
+$\mathcal{O}(d)$ ancestor structure specific to speculation trees.
 
-\paragraph{Flash attention.}
-FlashAttention~\cite{dao2022flashattention} and
-FlashAttention-2~\cite{dao2023flashattention2} tile attention
-to fit in SRAM, reducing HBM accesses.
-FlashInfer~\cite{ye2025flashinfer} adds ragged batching and
-page-table support.
-These are \emph{dense}: they process all KV positions regardless
-of the mask, which is correct but wasteful for tree-structured masks.
-\method{} reuses the online-softmax framework but replaces the
-dense KV-block loop with the ancestor walk.
+\section{Conclusion}
+\label{sec:conclusion}
 
-\paragraph{Sparse attention.}
-BigBird~\cite{zaheer2020bigbird} and Longformer~\cite{beltagy2020longformer}
-exploit \emph{fixed} sparsity patterns (local+global) for long contexts.
-Tree-ancestor sparsity is \emph{irregular} and \emph{data-dependent}
-(topology varies per request), making block-sparse approaches
-inapplicable.
+We presented an ancestor-sparse Flash Attention kernel for
+speculative-decoding tree verification with $\mathcal{O}(N\!\cdot\!d)$
+work and HBM traffic, replacing the $\mathcal{O}(N^2)$ inner loop of
+production tree-attention kernels. Across micro-benchmarks we reach up
+to $7.75\times$ over FlashInfer in the deep/wide regime; end-to-end we
+deliver $1.40\times$ on Sequoia. \emph{Wall 1} --- attention overhead ---
+is broken. The new ceiling, \emph{Wall 2} --- the joint product of
+acceptance-rate decay and MLP-forward dominance --- is orthogonal to
+attention. Productive directions for Wall 2 include drafter-side
+techniques that improve acceptance per node and verifier-side techniques
+that reduce MLP cost (e.g., conditional computation, MLP-quantisation
+pipelines that we deliberately scoped out of this work). Our kernel makes
+those investigations meaningful by ensuring attention will not silently
+re-emerge as the bottleneck once the rest of the pipeline is improved.
 
-\paragraph{Triton.}
-Triton~\cite{tillet2019triton} provides a Python-embedded DSL
-for GPU kernels. Our kernel exploits Triton's per-element pointer
-arithmetic for scattered ancestor gathers.
-
-
-% =====================================================================
-\section{Discussion}\label{sec:discussion}
-% =====================================================================
-
-\paragraph{When is \method{} most beneficial?}
-The results reveal a clear regime map:
-\begin{itemize}[nosep,leftmargin=*]
-\item \textbf{Always wins:} $\prefixlen \geq 1024$ (any $\numtokens$,
-  any $\batchsize$). Avoiding weight-matrix materialisation dominates.
-\item \textbf{Usually wins:} $\prefixlen{=}0$, $\batchsize \geq 32$.
-  Launch overhead is amortised.
-\item \textbf{Usually loses:} $\prefixlen{=}0$, $\batchsize \leq 8$,
-  $\numtokens < 50$. Dense matmul is faster for small, fixed-size
-  computations.
-\end{itemize}
-
-\paragraph{EAGLE-3 default operating point.}
-EAGLE-3 uses $\branching{=}10$, $\depth{=}7$, $\numtokens \approx 60$.
-This is at the boundary: \method{} loses at $\batchsize{=}8$ (0.79$\times$)
-but wins at $\batchsize{=}32$ (1.21$\times$) and $\batchsize{=}128$
-(1.78$\times$) in tree-only mode.
-With $\prefixlen{=}1024$, it wins at \emph{all} batch sizes
-(1.76--2.82$\times$).
-In production serving with continuous batching and non-trivial
-context, \method{} provides consistent improvements.
-
-\paragraph{The Model Wall reframes the question.}
-The conventional view is that tree-structured speculative decoding
-is bottlenecked by the \emph{systems wall}: attention cost grows
-quadratically with tree size, so practitioners keep trees small.
-Our results show that removing the systems wall (via $\bigO{\numtokens
-\cdot \depth}$ attention) does \emph{not} unlock proportional
-throughput gains, because the draft model's accuracy degrades
-sharply at deeper levels (\Cref{sec:model_wall}).
-The true bottleneck is the \emph{Model Wall}: the draft model's
-inability to produce accurate predictions beyond depth ${\sim}9$.
-This suggests the community's focus should shift from faster
-kernels to better draft models---e.g., multi-step training
-objectives, retrieval-augmented drafting, or depth-adaptive
-tree budgets.
-
-\paragraph{Integration path.}
-Our module-level \texttt{LlamaAttention.forward()} patch demonstrates
-that \method{} can be integrated into EAGLE-3 without modifying the
-framework's core code.
-The same approach generalises to serving frameworks
-(vLLM~\cite{kwon2023efficient}, SGLang, TensorRT-LLM) via the
-paged-KV variant (\texttt{ragged\_attention\_paged}).
-At $\batchsize \geq 16$ and $\prefixlen \geq 1024$---the typical
-production serving regime---the micro-benchmark predicts
-2--5$\times$ attention-layer speedup, which via Amdahl's law
-translates to ${\sim}1.3$--$1.5\times$ verify-step improvement.
-
-
-% =====================================================================
-\section{Limitations}\label{sec:limitations}
-% =====================================================================
-
-\begin{enumerate}[nosep,leftmargin=*]
-\item \textbf{E2E on a single mid-range GPU.}
-  Our end-to-end evaluation runs on an NVIDIA A10G (Ampere, 22\,GB)
-  at $\batchsize{=}1$.
-  The A10G has $\frac{1}{4}$ the SMs and $\frac{1}{4}$ the HBM bandwidth
-  of the H100 used for micro-benchmarks.
-  The micro-benchmark data at $\batchsize \geq 16$ and $\prefixlen \geq 1024$
-  (the production serving regime) predicts 2--5$\times$ attention speedup,
-  corresponding to ${\sim}1.3$--$1.5\times$ E2E improvement via
-  Amdahl's law---but this remains to be validated end-to-end on H100
-  with batched serving.
-
-\item \textbf{Composition, not fusion.}
-  The prefix--tree split launches two kernels + a fused merge.
-  A fully fused kernel would eliminate the inter-launch overhead.
-
-\item \textbf{SOTA benchmark dimensions.}
-  The SOTA comparison uses $\headdim{=}64$, $\nheads{=}8$ (matching
-  FlashInfer/DeFT test parameters).
-  The micro-benchmark uses $\headdim{=}128$, $\nheads{=}32$ but
-  does not compare against FlashInfer/DeFT at these dimensions.
-
-\item \textbf{Synthetic data in micro-benchmarks.}
-  Kernel benchmarks use random Q/K/V tensors. Real weight distributions
-  may exhibit different cache behaviour.
-  The E2E benchmark uses real model weights and ShareGPT prompts.
-
-\item \textbf{Single GPU.}
-  All experiments are on one GPU. Multi-GPU tensor-parallel
-  settings may shift the bottleneck.
-
-\item \textbf{Model Wall is model-specific.}
-  The acceptance rate plateau we observe is specific to
-  EAGLE-3's draft model for LLaMA-3.1-8B.
-  Future draft models with better deep-token accuracy may
-  shift the Model Wall to greater depths.
-
-\item \textbf{Small-tree regime loss.}
-  At $\numtokens < 50$, $\prefixlen{=}0$, \method{} loses.
-  A hybrid dispatch (ragged for large trees, dense for small)
-  would be needed in production.
-\end{enumerate}
-
-
-% =====================================================================
-\section{Conclusion}\label{sec:conclusion}
-% =====================================================================
-
-We presented \method{}, a Triton kernel for tree-structured
-speculative decoding that reduces per-head complexity from
-$\bigO{\numtokens^2}$ to $\bigO{\numtokens \cdot \depth}$.
-
-Across 1{,}050 micro-benchmark configurations at LLaMA-3.1-8B
-dimensions ($\headdim{=}128$, $\nheads{=}32$) on an H100 SXM:
-\begin{itemize}[nosep,leftmargin=*]
-\item \textbf{Tree-only:} 92\% win rate, median 3.1$\times$, peak 8.9$\times$.
-\item \textbf{$\prefixlen{=}1024$:} 100\% win rate,
-  median 3.3$\times$, worst case 1.38$\times$.
-\item \textbf{$\prefixlen{=}4096$:} 100\% win rate,
-  median 4.3$\times$, worst case 1.83$\times$.
-  102 configurations where Eagle OOMs and \method{} completes.
-\end{itemize}
-
-Against SOTA baselines at large tree sizes:
-up to 49$\times$ over FlashAttention-2, 309$\times$ over FlashInfer,
-and 114$\times$ over DeFT.
-
-End-to-end integration into EAGLE-3 via module-level attention patching
-yields \textbf{1.10$\times$} wall-clock speedup at $\depth{=}32$
-($\numtokens{=}274$) on an A10G---the first configuration at which
-ragged attention breaks even and wins in a full generation pipeline.
-
-Most importantly, our E2E depth sweep reveals the \textbf{Model Wall}:
-once the systems bottleneck is removed, mean accepted tokens per step
-plateau at ${\sim}5.8$ regardless of tree depth (16--32), while per-token
-acceptance rate drops from 4.1\% to 2.1\%.
-The binding constraint on speculative decoding throughput has
-shifted from attention cost to draft-model accuracy.
-We believe this finding reframes future research priorities:
-the next breakthrough in tree-structured speculative decoding
-will come from better draft models, not faster kernels.
-
-\paragraph{Future work.}
-(1)~Fused prefix+tree kernel eliminating the merge launch;
-(2)~E2E evaluation at $\batchsize \geq 16$ on H100 with
-    continuous batching (the regime where micro-benchmarks predict
-    2--5$\times$ attention speedup);
-(3)~serving framework integration (vLLM/SGLang) via the paged-KV variant;
-(4)~depth-adaptive tree budgets that respect the Model Wall;
-(5)~Blackwell SM120 optimisations.
-
-
-% =====================================================================
-% References
-% =====================================================================
 \bibliographystyle{plain}
-\begin{thebibliography}{20}
-
-\bibitem{leviathan2023fast}
-Y.~Leviathan, M.~Kalman, and Y.~Matias.
-\newblock Fast inference from transformers via speculative decoding.
-\newblock In \emph{ICML}, 2023.
-
-\bibitem{chen2023accelerating}
-C.~Chen, S.~Borgeaud, G.~Irving, J.-B.~Lespiau, L.~Sifre, and J.~Jumper.
-\newblock Accelerating large language model decoding with speculative sampling.
-\newblock \emph{arXiv:2302.01318}, 2023.
-
-\bibitem{li2024eagle2}
-Y.~Li, F.~Xia, J.~Zeng, C.~Liu, P.~Peng, and L.~Luo.
-\newblock {EAGLE-2}: Faster inference of language models with dynamic draft trees.
-\newblock In \emph{EMNLP}, 2024.
-
-\bibitem{li2025eagle3}
-Y.~Li, F.~Xia, J.~Zeng, C.~Liu, and L.~Luo.
-\newblock {EAGLE-3}: Scaling up speculative decoding against the memory wall.
-\newblock \emph{arXiv:2503.01840}, 2025.
-
-\bibitem{cai2024medusa}
-T.~Cai, Y.~Li, Z.~Geng, H.~Peng, and T.~Dao.
-\newblock Medusa: Simple framework for accelerating {LLM} generation with
-  multiple decoding heads.
-\newblock In \emph{ICML}, 2024.
-
-\bibitem{chen2024sequoia}
-Z.~Chen, X.~Ma, Z.~Zhang, Y.~Lu, and B.~Chen.
-\newblock Sequoia: Scalable, robust, and hardware-aware speculative decoding.
-\newblock \emph{arXiv:2402.12374}, 2024.
-
-\bibitem{miao2024specinfer}
-X.~Miao, G.~Oliaro, Z.~Zhang, X.~Cheng, Z.~Wang, R.~Y.~Wong, Z.~Zhu,
-  A.~Alizadeh, Z.~Jia, and I.~Stoica.
-\newblock {SpecInfer}: Accelerating generative {LLM} serving with tree-based
-  speculative inference and verification.
-\newblock In \emph{ASPLOS}, 2024.
-
-\bibitem{dao2022flashattention}
-T.~Dao, D.~Y.~Fu, S.~Ermon, A.~Rudra, and C.~R{\'e}.
-\newblock Flash{A}ttention: Fast and memory-efficient exact attention with
-  {IO}-awareness.
-\newblock In \emph{NeurIPS}, 2022.
-
-\bibitem{dao2023flashattention2}
-T.~Dao.
-\newblock Flash{A}ttention-2: Faster attention with better parallelism and work
-  partitioning.
-\newblock In \emph{ICLR}, 2024.
-
-\bibitem{ye2025flashinfer}
-Z.~Ye, L.~Zheng, Q.~Sun, W.~Wu, J.~Zhang, Z.~Chen, and I.~Stoica.
-\newblock {FlashInfer}: Efficient and customizable attention engine for {LLM}
-  inference serving.
-\newblock \emph{arXiv:2501.01005}, 2025.
-
-\bibitem{yao2024deft}
-Y.~Yao, S.~Zuo, S.~Shi, X.~Ning, K.~Wang, Z.~Lu, Y.~Li, and Y.~Wang.
-\newblock {DeFT}: Decoding with flash tree-attention for efficient
-  tree-structured {LLM} inference.
-\newblock \emph{arXiv:2404.00242}, 2024.
-
-\bibitem{tillet2019triton}
-P.~Tillet, H.-T.~Kung, and D.~Cox.
-\newblock Triton: An intermediate language and compiler for tiled neural
-  network computations.
-\newblock In \emph{MAPL}, 2019.
-
-\bibitem{zaheer2020bigbird}
-M.~Zaheer, G.~Guruganesh, K.~A.~Dubey, J.~Ainslie, C.~Alberti, S.~Ontanon,
-  P.~Pham, A.~Ravula, Q.~Wang, L.~Yang, and A.~Ahmed.
-\newblock {B}ig{B}ird: Transformers for longer sequences.
-\newblock In \emph{NeurIPS}, 2020.
-
-\bibitem{beltagy2020longformer}
-I.~Beltagy, M.~E.~Peters, and A.~Cohan.
-\newblock Longformer: The long-document transformer.
-\newblock \emph{arXiv:2004.05150}, 2020.
-
-\bibitem{kwon2023efficient}
-W.~Kwon, Z.~Li, S.~Zhuang, Y.~Sheng, L.~Zheng, C.~H.~Yu, J.~Gonzalez,
-  H.~Zhang, and I.~Stoica.
-\newblock Efficient memory management for large language model serving with
-  {PagedAttention}.
-\newblock In \emph{SOSP}, 2023.
-
-\bibitem{sharegpt}
-Anon8231489123.
-\newblock {ShareGPT\_Vicuna\_unfiltered}: A dataset of human--{GPT}
-  conversations.
-\newblock \url{https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered},
-  2023.
-
+\begin{thebibliography}{99}\small
+\bibitem{leviathan2023fast} Y.\ Leviathan, M.\ Kalman, Y.\ Matias.
+  Fast Inference from Transformers via Speculative Decoding. \emph{ICML}, 2023.
+\bibitem{chen2023accelerating} C.\ Chen et al.
+  Accelerating Large Language Model Decoding with Speculative Sampling.
+  \emph{arXiv:2302.01318}, 2023.
+\bibitem{cai2024medusa} T.\ Cai et al.
+  Medusa: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads.
+  \emph{ICML}, 2024.
+\bibitem{li2024eagle} Y.\ Li et al.
+  EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty. \emph{ICML}, 2024.
+\bibitem{li2024eagle2} Y.\ Li et al.
+  EAGLE-2: Faster Inference of Language Models with Dynamic Draft Trees.
+  \emph{EMNLP}, 2024.
+\bibitem{li2025eagle3} Y.\ Li et al.
+  EAGLE-3: Scaling up Inference Acceleration of Large Language Models via Training-Time Test.
+  \emph{arXiv:2503.01840}, 2025.
+\bibitem{chen2024sequoia} Z.\ Chen et al.
+  Sequoia: Scalable, Robust, and Hardware-aware Speculative Decoding.
+  \emph{NeurIPS}, 2024.
+\bibitem{miao2024specinfer} X.\ Miao et al.
+  SpecInfer: Accelerating Generative LLM Serving with Tree-based Speculative Inference.
+  \emph{ASPLOS}, 2024.
+\bibitem{spector2023accelerating} B.\ Spector, C.\ Re.
+  Accelerating LLM Inference with Staged Speculative Decoding.
+  \emph{arXiv:2308.04623}, 2023.
+\bibitem{dao2022flashattention} T.\ Dao et al.
+  FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness.
+  \emph{NeurIPS}, 2022.
+\bibitem{dao2023flashattention2} T.\ Dao.
+  FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning.
+  \emph{ICLR}, 2024.
+\bibitem{ye2025flashinfer} Z.\ Ye et al.
+  FlashInfer: Efficient and Customizable Attention Engine for LLM Inference Serving.
+  \emph{MLSys}, 2025.
+\bibitem{yao2024deft} J.\ Yao et al.
+  DeFT: Decoding with Flash Tree-Attention for Efficient Tree-Search-Based LLM Inference.
+  \emph{ICLR}, 2025.
+\bibitem{xformers2022} B.\ Lefaudeux et al.
+  xFormers: A modular and hackable Transformer modelling library.
+  \emph{Meta AI}, 2022.
+\bibitem{gao2024seerattention} Y.\ Gao et al.
+  SeerAttention: Learning Intrinsic Sparse Attention in Your LLMs.
+  \emph{arXiv:2410.13276}, 2024.
 \end{thebibliography}
+
+\newpage
+\section*{NeurIPS Paper Checklist}
+
+\begin{enumerate}
+
+\item {\bf Claims}
+    \item[] Question: Do the main claims made in the abstract and introduction accurately reflect the paper's contributions and scope?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: The abstract and Sec.~\ref{sec:intro} state (i) an $\mathcal{O}(N\!\cdot\!d)$ ancestor-sparse Flash Attention kernel, (ii) up to $7.75\times$ over FlashInfer in micro-benchmarks, (iii) up to $1.40\times$ Sequoia E2E and $\approx 1.01\times$ EAGLE-3 E2E. All three numbers are reproduced in Sec.~\ref{sec:eval} and follow directly from the released CSVs.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the abstract and introduction do not include the claims made in the paper.
+        \item The abstract and/or introduction should clearly state the claims made, including the contributions made in the paper and important assumptions and limitations. A \answerNo{} or \answerNA{} answer to this question will not be perceived well by the reviewers.
+        \item The claims made should match theoretical and experimental results, and reflect how much the results can be expected to generalize to other settings.
+        \item It is fine to include aspirational goals as motivation as long as it is clear that these goals are not attained by the paper.
+    \end{itemize}
+
+\item {\bf Limitations}
+    \item[] Question: Does the paper discuss the limitations of the work performed by the authors?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: Sec.~\ref{sec:eval-e2e} explicitly explains why EAGLE-3 E2E gain is only $\approx 1.01\times$ (acceptance-rate decay; pruned trees already in our parity regime), and Sec.~\ref{sec:conclusion} names this remaining ceiling as Wall 2 and leaves it to future work. Hardware scope is restricted to Tesla T4 (SM75); behaviour on Hopper / Blackwell is not validated in this paper.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper has no limitation while the answer \answerNo{} means that the paper has limitations, but those are not discussed in the paper.
+        \item The authors are encouraged to create a separate ``Limitations'' section in their paper.
+        \item The paper should point out any strong assumptions and how robust the results are to violations of these assumptions.
+        \item The authors should reflect on the scope of the claims made.
+        \item The authors should reflect on the factors that influence the performance of the approach.
+        \item The authors should discuss the computational efficiency of the proposed algorithms and how they scale with dataset size.
+        \item If applicable, the authors should discuss possible limitations of their approach to address problems of privacy and fairness.
+        \item While the authors might fear that complete honesty about limitations might be used by reviewers as grounds for rejection, a worse outcome might be that reviewers discover limitations that aren't acknowledged in the paper.
+    \end{itemize}
+
+\item {\bf Theory assumptions and proofs}
+    \item[] Question: For each theoretical result, does the paper provide the full set of assumptions and a complete (and correct) proof?
+    \item[] Answer: \answerNA{}
+    \item[] Justification: The paper makes no formal theorem-style claims. Complexity statements in Sec.~\ref{sec:method} are direct FMA / byte counts under explicitly stated parameter values.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper does not include theoretical results.
+        \item All the theorems, formulas, and proofs in the paper should be numbered and cross-referenced.
+        \item All assumptions should be clearly stated or referenced in the statement of any theorems.
+        \item The proofs can either appear in the main paper or the supplemental material.
+        \item Inversely, any informal proof provided in the core of the paper should be complemented by formal proofs provided in appendix or supplemental material.
+        \item Theorems and Lemmas that the proof relies upon should be properly referenced.
+    \end{itemize}
+
+    \item {\bf Experimental result reproducibility}
+    \item[] Question: Does the paper fully disclose all the information needed to reproduce the main experimental results of the paper to the extent that it affects the main claims and/or conclusions of the paper (regardless of whether the code and data are provided or not)?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: Sec.~\ref{sec:eval-setup} specifies hardware (Tesla T4 SM75), models (Llama-3.1-8B-Instruct, EAGLE3-LLaMA3.1-8B), precision (fp16), the FlashInfer baseline, the timing protocol (50-call median, 10-call warmup, CUDA event timing), and the swept parameter ranges. Algorithm~\ref{alg:kernel} fully specifies the kernel.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper does not include experiments.
+        \item If the paper includes experiments, a \answerNo{} answer to this question will not be perceived well by the reviewers.
+        \item If the contribution is a dataset and\slash or model, the authors should describe the steps taken to make their results reproducible or verifiable.
+        \item Depending on the contribution, reproducibility can be accomplished in various ways.
+        \item While NeurIPS does not require releasing code, the conference does require all submissions to provide some reasonable avenue for reproducibility.
+    \end{itemize}
+
+
+\item {\bf Open access to data and code}
+    \item[] Question: Does the paper provide open access to the data and code, with sufficient instructions to faithfully reproduce the main experimental results, as described in supplemental material?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: The Triton kernel source, benchmark scripts, and aggregate result CSVs are released as anonymised supplementary material. All figures in this paper are produced by a single script (\texttt{paper/generate\_figures\_new.py}) reading the included CSVs.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that paper does not include experiments requiring code.
+        \item Please see the NeurIPS code and data submission guidelines (\url{https://neurips.cc/public/guides/CodeSubmissionPolicy}) for more details.
+        \item While we encourage the release of code and data, we understand that this might not be possible.
+        \item The instructions should contain the exact command and environment needed to run to reproduce the results.
+        \item The authors should provide instructions on data access and preparation.
+        \item The authors should provide scripts to reproduce all experimental results for the new proposed method and baselines.
+        \item At submission time, to preserve anonymity, the authors should release anonymized versions (if applicable).
+        \item Providing as much information as possible in supplemental material (appended to the paper) is recommended.
+    \end{itemize}
+
+
+\item {\bf Experimental setting/details}
+    \item[] Question: Does the paper specify all the training and test details (e.g., data splits, hyperparameters, how they were chosen, type of optimizer) necessary to understand the results?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: The contribution is a kernel; there is no training. Inference settings (model, precision, batch size, baseline kernel, sweep ranges, timing methodology) are stated in Sec.~\ref{sec:eval-setup}, and per-figure data filters are documented in the figure-generation script.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper does not include experiments.
+        \item The experimental setting should be presented in the core of the paper to a level of detail that is necessary to appreciate the results and make sense of them.
+        \item The full details can be provided either with the code, in appendix, or as supplemental material.
+    \end{itemize}
+
+\item {\bf Experiment statistical significance}
+    \item[] Question: Does the paper report error bars suitably and correctly defined or other appropriate information about the statistical significance of the experiments?
+    \item[] Answer: \answerNo{}
+    \item[] Justification: Each measurement is the median of 50 CUDA-event-timed calls after 10 warmup calls. We report medians without error bars in figures because (i) sub-percent run-to-run variance on the dominant configurations is dwarfed by the multi-fold gaps we claim, and (ii) the figure density would suffer; raw per-run data are released with the supplementary CSVs and confidence intervals can be recomputed by readers.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper does not include experiments.
+        \item The authors should answer \answerYes{} if the results are accompanied by error bars, confidence intervals, or statistical significance tests.
+        \item The factors of variability that the error bars are capturing should be clearly stated.
+        \item The method for calculating the error bars should be explained.
+        \item The assumptions made should be given.
+        \item It should be clear whether the error bar is the standard deviation or the standard error of the mean.
+        \item It is OK to report 1-sigma error bars, but one should state it.
+        \item For asymmetric distributions, the authors should be careful not to show in tables or figures symmetric error bars that would yield results that are out of range.
+        \item If error bars are reported in tables or plots, the authors should explain in the text how they were calculated and reference the corresponding figures or tables in the text.
+    \end{itemize}
+
+\item {\bf Experiments compute resources}
+    \item[] Question: For each experiment, does the paper provide sufficient information on the computer resources (type of compute workers, memory, time of execution) needed to reproduce the experiments?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: All experiments run on a single NVIDIA Tesla T4 (16\,GB HBM, $\approx$300\,GB/s, 65 fp16 TFLOPS, 3.8\,MB L2), as stated in Sec.~\ref{sec:eval-setup}. Total compute is on the order of single-GPU-hours per benchmark sweep; no preliminary or unreported runs required substantially more compute than what is reported.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper does not include experiments.
+        \item The paper should indicate the type of compute workers CPU or GPU, internal cluster, or cloud provider, including relevant memory and storage.
+        \item The paper should provide the amount of compute required for each of the individual experimental runs as well as estimate the total compute.
+        \item The paper should disclose whether the full research project required more compute than the experiments reported in the paper.
+    \end{itemize}
+
+\item {\bf Code of ethics}
+    \item[] Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS Code of Ethics \url{https://neurips.cc/public/EthicsGuidelines}?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: The contribution is a CUDA / Triton kernel; no human subjects, no new datasets, no personally identifiable information, and no model training. Authors have reviewed the NeurIPS Code of Ethics.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the authors have not reviewed the NeurIPS Code of Ethics.
+        \item If the authors answer \answerNo, they should explain the special circumstances that require a deviation from the Code of Ethics.
+        \item The authors should make sure to preserve anonymity.
+    \end{itemize}
+
+
+\item {\bf Broader impacts}
+    \item[] Question: Does the paper discuss both potential positive societal impacts and negative societal impacts of the work performed?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: Faster LLM inference reduces serving cost and energy per token (positive); the same speedup also lowers the marginal cost of low-quality or malicious generation (the standard dual-use concern for inference acceleration). The artifact is a kernel and does not change model capabilities; it offers no novel attack surface beyond what existing FlashInfer / Flash Attention deployments already provide.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that there is no societal impact of the work performed.
+        \item If the authors answer \answerNA{} or \answerNo, they should explain why their work has no societal impact or why the paper does not address societal impact.
+        \item Examples of negative societal impacts include potential malicious or unintended uses, fairness considerations, privacy considerations, and security considerations.
+        \item The conference expects that many papers will be foundational research and not tied to particular applications.
+        \item The authors should consider possible harms that could arise when the technology is being used as intended and functioning correctly, harms that could arise when the technology is being used as intended but gives incorrect results, and harms following from misuse of the technology.
+        \item If there are negative societal impacts, the authors could also discuss possible mitigation strategies.
+    \end{itemize}
+
+\item {\bf Safeguards}
+    \item[] Question: Does the paper describe safeguards that have been put in place for responsible release of data or models that have a high risk for misuse (e.g., pre-trained language models, image generators, or scraped datasets)?
+    \item[] Answer: \answerNA{}
+    \item[] Justification: The released artifact is an attention kernel. It does not include a model, dataset, or generative system that would carry safeguard-relevant misuse risk.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper poses no such risks.
+        \item Released models that have a high risk for misuse or dual-use should be released with necessary safeguards.
+        \item Datasets that have been scraped from the Internet could pose safety risks.
+        \item We recognize that providing effective safeguards is challenging.
+    \end{itemize}
+
+\item {\bf Licenses for existing assets}
+    \item[] Question: Are the creators or original owners of assets (e.g., code, data, models), used in the paper, properly credited and are the license and terms of use explicitly mentioned and properly respected?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: Llama-3.1-8B-Instruct is used under the Llama 3 Community Licence; the EAGLE3-LLaMA3.1-8B draft weights under their published licence; FlashInfer as released by its authors. All works on which we build are cited in Sec.~\ref{sec:related}.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper does not use existing assets.
+        \item The authors should cite the original paper that produced the code package or dataset.
+        \item The authors should state which version of the asset is used.
+        \item The name of the license should be included for each asset.
+        \item For scraped data from a particular source, the copyright and terms of service of that source should be provided.
+        \item If assets are released, the license, copyright information, and terms of use in the package should be provided.
+        \item For existing datasets that are re-packaged, both the original license and the license of the derived asset should be provided.
+        \item If this information is not available online, the authors are encouraged to reach out to the asset's creators.
+    \end{itemize}
+
+\item {\bf New assets}
+    \item[] Question: Are new assets introduced in the paper well documented and is the documentation provided alongside the assets?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: The Triton kernel and benchmark scripts ship with an extensive README documenting the algorithm, expected inputs/outputs, hardware target, autotune keys, and run instructions. The supplementary submission is anonymised.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper does not release new assets.
+        \item Researchers should communicate the details of the dataset\slash code\slash model as part of their submissions via structured templates.
+        \item The paper should discuss whether and how consent was obtained from people whose asset is used.
+        \item At submission time, remember to anonymize your assets (if applicable).
+    \end{itemize}
+
+\item {\bf Crowdsourcing and research with human subjects}
+    \item[] Question: For crowdsourcing experiments and research with human subjects, does the paper include the full text of instructions given to participants and screenshots, if applicable, as well as details about compensation (if any)?
+    \item[] Answer: \answerNA{}
+    \item[] Justification: No crowdsourcing or human-subjects research is involved.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper does not involve crowdsourcing nor research with human subjects.
+        \item Including this information in the supplemental material is fine.
+        \item According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or other labor should be paid at least the minimum wage in the country of the data collector.
+    \end{itemize}
+
+\item {\bf Institutional review board (IRB) approvals or equivalent for research with human subjects}
+    \item[] Question: Does the paper describe potential risks incurred by study participants, whether such risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals (or an equivalent approval/review based on the requirements of your country or institution) were obtained?
+    \item[] Answer: \answerNA{}
+    \item[] Justification: No human-subjects research is involved.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the paper does not involve crowdsourcing nor research with human subjects.
+        \item Depending on the country in which research is conducted, IRB approval (or equivalent) may be required for any human subjects research.
+        \item We recognize that the procedures for this may vary significantly between institutions and locations.
+        \item For initial submissions, do not include any information that would break anonymity.
+    \end{itemize}
+
+\item {\bf Declaration of LLM usage}
+    \item[] Question: Does the paper describe the usage of LLMs if it is an important, original, or non-standard component of the core methods in this research? Note that if the LLM is used only for writing, editing, or formatting purposes and does \emph{not} impact the core methodology, scientific rigor, or originality of the research, declaration is not required.
+    \item[] Answer: \answerNA{}
+    \item[] Justification: LLMs are not a component of the core method (a Triton attention kernel). They were used only for incidental writing assistance, which the policy excludes from required declaration.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer \answerNA{} means that the core method development in this research does not involve LLMs as any important, original, or non-standard components.
+        \item Please refer to our LLM policy in the NeurIPS handbook for what should or should not be described.
+    \end{itemize}
+
+\end{enumerate}
 
 \end{document}
