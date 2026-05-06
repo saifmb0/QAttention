@@ -1,76 +1,63 @@
-#!/usr/bin/env python3
 import os
 import glob
 import pandas as pd
 import re
+import warnings
+warnings.filterwarnings("ignore")
 
-def get_stable_name(fname):
-    stem, ext = os.path.splitext(fname)
-    stem = re.sub(r'_\d{8}_\d{6}$', '', stem)
-    return stem + ext
-
-def aggregate_experiment(base_dir):
-    runs = sorted(glob.glob(os.path.join(base_dir, "run_*")))
+def process_dir(d):
+    runs = sorted(glob.glob(os.path.join(d, "run_*")))
     if not runs:
         return
+    
+    all_dfs = {}
+    for r in runs:
+        csvs = glob.glob(os.path.join(r, "*.csv"))
+        # Prioritize files without timestamps if they exist to avoid duplicates
+        plain_csvs = [c for c in csvs if not re.search(r'_\d{8}_\d{6}\.csv$', c)]
+        target_csvs = plain_csvs if plain_csvs else csvs
         
-    stable_names = set()
-    for run in runs:
-        for f in glob.glob(os.path.join(run, "*.csv")):
-            stable_names.add(get_stable_name(os.path.basename(f)))
+        for c in target_csvs:
+            b = os.path.basename(c)
+            name = re.sub(r'_\d{8}_\d{6}', '', b)
+            if name not in all_dfs:
+                all_dfs[name] = []
+            all_dfs[name].append(pd.read_csv(c))
             
-    for sname in stable_names:
-        dfs = []
-        for run in runs:
-            stem = sname.replace('.csv', '')
-            matches = glob.glob(os.path.join(run, f"{stem}*.csv"))
-            if matches:
-                # Prefer pruned over plain
-                best_match = next((m for m in matches if 'pruned' in m), matches[0])
-                dfs.append(pd.read_csv(best_match))
+    res_dfs = []
+    for name, list_df in all_dfs.items():
+        if len(list_df) == 0: continue
+        df = pd.concat(list_df, ignore_index=True)
         
-        if not dfs:
-            continue
+        config_cols = [c for c in df.columns if not pd.api.types.is_float_dtype(df[c])]
+        metrics = [c for c in df.columns if pd.api.types.is_float_dtype(df[c])]
+        
+        if len(metrics) > 0 and len(config_cols) > 0:
+            df = df.groupby(config_cols, dropna=False)[metrics].mean().reset_index()
+        elif len(metrics) > 0:
+            df = df.mean().to_frame().T
             
-        combined = pd.concat(dfs)
-        
-        configs = []
-        metrics = []
-        
-        # Identify columns
-        # Configuration parameters are typically integers, strings, or booleans.
-        # Runtimes and metrics are floats.
-        for col in dfs[0].columns:
-            if pd.api.types.is_float_dtype(dfs[0][col]):
-                metrics.append(col)
-            else:
-                configs.append(col)
-                
-        if not metrics:
-            print(f"  [aggregate] Warning: No float metrics found in {sname}. Skipping.")
-            continue
-            
-        # Group by configuration parameters and average the metrics.
-        # This keeps the exact configuration parameters (without averaging them)
-        # and leaves the metric columns with their original names.
-        agg_df = combined.groupby(configs, dropna=False)[metrics].mean().reset_index()
-        
-        # Reorder columns to match the original structure
-        agg_df = agg_df[dfs[0].columns]
-            
-        out_name = sname.replace('.csv', '_aggregate.csv')
-        out_path = os.path.join(base_dir, out_name)
-        agg_df.to_csv(out_path, index=False)
-        print(f"  [aggregate] {sname} -> {out_path} (Configs: {len(configs)}, Metrics: {len(metrics)})")
+        res = []
+        for col in list_df[0].columns:
+            if col in df.columns:
+                res.append(df[col])
+        res_dfs.append(pd.concat(res, axis=1))
+
+    out_path = os.path.join(d, "aggregate.csv")
+    if len(res_dfs) >= 1:
+        with open(out_path, "w") as f:
+            for i, rdf in enumerate(res_dfs):
+                rdf.to_csv(f, index=False)
+                if i < len(res_dfs) - 1:
+                    f.write("\n")
 
 def main():
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    results_dir = os.path.join(repo_root, "results")
-    
-    for exp in ["micro", "sequoia", "eagle_e2e", "amdahl"]:
-        exp_dir = os.path.join(results_dir, exp)
-        if os.path.isdir(exp_dir):
-            aggregate_experiment(exp_dir)
-            
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    results = os.path.join(root, "results")
+    for d in os.listdir(results):
+        d_path = os.path.join(results, d)
+        if os.path.isdir(d_path) and d != "old":
+            process_dir(d_path)
+
 if __name__ == "__main__":
     main()
