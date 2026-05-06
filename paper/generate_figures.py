@@ -1,250 +1,405 @@
 #!/usr/bin/env python3
-"""Publication-quality figure generation for the tree-attention NeurIPS paper.
+"""Figure generation for the paper.
 
-Data-selection logic and column mappings are unchanged from the previous
-revision; only the styling layer has been rewritten.
+Generates:
+1. micro speedup heatmap
+2. micro kernel latency vs tree size
+3. sequoia end-to-end speedup
+4. eagle accepted tokens vs cost
+5. eagle acceptance rate vs cost
 """
+
 import os
-import pandas as pd
+from io import StringIO
+
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+from matplotlib.lines import Line2D
+from matplotlib.ticker import MultipleLocator, ScalarFormatter
 
-# ---------------------------------------------------------------------------
-# Global publication style
-# ---------------------------------------------------------------------------
-plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["Times New Roman", "DejaVu Serif", "Times"],
-    "mathtext.fontset": "stix",
-    "font.size": 9,
-    "axes.titlesize": 9,
-    "axes.titleweight": "regular",
-    "axes.labelsize": 9,
-    "legend.fontsize": 8,
-    "legend.frameon": False,
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-    "axes.linewidth": 0.8,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.grid": True,
-    "grid.alpha": 0.3,
-    "grid.linewidth": 0.5,
-    "grid.color": "#999999",
-    "lines.linewidth": 1.4,
-    "lines.markersize": 4,
-    "savefig.dpi": 300,
-    "savefig.bbox": "tight",
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-})
 
-# Paul Tol "muted" — colorblind-safe, four consistent series colors
-TOL = ["#332288", "#117733", "#DDCC77", "#CC6677"]  # indigo, green, sand, rose
-OURS_COLOR = "#117733"
-FI_COLOR   = "#CC6677"
-REF_COLOR  = "#999999"
+plt.rcParams.update(
+    {
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "DejaVu Serif", "Times"],
+        "mathtext.fontset": "stix",
+        "font.size": 10,
+        "axes.titlesize": 11,
+        "axes.labelsize": 10,
+        "legend.fontsize": 9,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "axes.grid": True,
+        "grid.alpha": 0.3,
+        "savefig.dpi": 300,
+        "savefig.bbox": "tight",
+    }
+)
 
-FIG_DIR = os.path.join(os.path.dirname(__file__), "figures")
+BASE_DIR = os.path.dirname(__file__)
+FIG_DIR = os.path.join(BASE_DIR, "figures")
 os.makedirs(FIG_DIR, exist_ok=True)
 
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+REPO_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
+
+PALETTE = {
+    1: "#332288",
+    4: "#117733",
+}
+
+TOL = ["#332288", "#117733", "#DDCC77", "#CC6677"]
+OURS_COLOR = "#117733"
+REF_COLOR = "#999999"
 
 
 def _save(name):
-    """Save current figure as both PDF (for LaTeX) and PNG at 300 dpi."""
     for ext in ("pdf", "png"):
         plt.savefig(os.path.join(FIG_DIR, f"{name}.{ext}"))
     plt.close()
 
 
-def _markevery(n, target=8):
-    return max(1, n // target)
+def load_micro():
+    candidates = [
+        os.path.join(REPO_ROOT, "results", "micro", "aggregate.csv"),
+        os.path.join(REPO_ROOT, "results", "micro", "micro_benchmark_pruned_aggregate.csv"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            micro = pd.read_csv(path)
+            break
+    else:
+        raise FileNotFoundError("Could not find a micro aggregate CSV in results/micro")
+
+    if "speedup_vs_tree" not in micro.columns or micro["speedup_vs_tree"].isnull().all():
+        micro["speedup_vs_tree"] = micro["flashinfer_tree_ms"] / micro["ragged_ms"]
+    return micro
 
 
-def load_data():
-    micro   = pd.read_csv(os.path.join(repo_root, 'results', 'micro',     'micro_benchmark_pruned_aggregate.csv'))
-    amdahl  = pd.read_csv(os.path.join(repo_root, 'results', 'amdahl',    'amdahl_aggregate.csv'))
-    sequoia = pd.read_csv(os.path.join(repo_root, 'results', 'sequoia',   'sequoia_size_aggregate.csv'))
-    eagle   = pd.read_csv(os.path.join(repo_root, 'results', 'eagle_e2e', 'e2e_summary_aggregate.csv'))
-    return micro, amdahl, sequoia, eagle
+def load_sequoia():
+    path = os.path.join(REPO_ROOT, "results", "sequoia", "aggregate.csv")
+    return pd.read_csv(path)
 
 
-# ---------------------------------------------------------------------------
-# Fig 1 — Latency vs depth at fixed branching factor (double column)
-# ---------------------------------------------------------------------------
-def plot_micro_fixed_b(micro):
-    df = micro[(micro['prefix_length'] == 0) & (micro['batch_size'] == 1)]
-    bs = sorted(df['branching_factor'].unique())
-    selected_bs = [b for b in [4, 8, 12, 16] if b in bs]
-    if len(selected_bs) < 4:
-        selected_bs = bs[:4]
+def load_eagle():
+    path = os.path.join(REPO_ROOT, "results", "eagle_e2e", "aggregate.csv")
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read().strip()
 
-    fig, ax = plt.subplots(figsize=(7.0, 3.0))
-    for i, b in enumerate(selected_bs):
-        sub = df[df['branching_factor'] == b].sort_values('depth')
-        n = len(sub)
-        me = _markevery(n)
-        ax.plot(sub['depth'], sub['flashinfer_tree_ms'],
-                linestyle='--', marker='s', markevery=me,
-                color=TOL[i], label=f'FlashInfer ($b{{=}}{b}$)')
-        ax.plot(sub['depth'], sub['ragged_ms'],
-                linestyle='-', marker='o', markevery=me,
-                color=TOL[i], label=f'Ours ($b{{=}}{b}$)')
+    headers = [
+        "context_length,depth,total_token,top_k,label,vanilla_tok_s,vanilla_acc,vanilla_verify,ragged_tok_s,ragged_acc,ragged_verify,e2e_speedup",
+        "context_length,depth,total_token,top_k,config_label,mode,model,eagle_model,prompt,num_tokens,num_steps,wall_ms,tok_per_sec,mean_accepted_per_step,acceptance_rate,mean_verify_ms,verify_fraction",
+    ]
 
-    ax.set_xlabel(r'Tree depth $d$')
-    ax.set_ylabel('Latency (ms)')
-    ax.set_yscale('log')
-    ax.legend(ncol=4, loc='upper left', columnspacing=1.0,
-              handlelength=2.0, handletextpad=0.5)
-    plt.tight_layout()
-    _save('fig1_micro_fixed_b')
+    sections = {}
+    current_header = None
+    current_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped in headers:
+            if current_header is not None and current_lines:
+                sections[current_header] = pd.read_csv(StringIO("\n".join(current_lines)))
+            current_header = stripped
+            current_lines = [stripped]
+        else:
+            current_lines.append(stripped)
 
+    if current_header is not None and current_lines:
+        sections[current_header] = pd.read_csv(StringIO("\n".join(current_lines)))
 
-# ---------------------------------------------------------------------------
-# Fig 2 — Latency vs branching factor at fixed depth (double column)
-# ---------------------------------------------------------------------------
-def plot_micro_fixed_depth(micro):
-    df = micro[(micro['prefix_length'] == 0) & (micro['batch_size'] == 1)]
-    ds = sorted(df['depth'].unique())
-    selected_ds = [d for d in [3, 5, 7, 10] if d in ds]
-    if len(selected_ds) < 4:
-        selected_ds = ds[:4]
+    if headers[1] in sections:
+        eagle = sections[headers[1]]
+        eagle = eagle.copy()
+        for col in ["total_token", "mean_accepted_per_step", "acceptance_rate", "wall_ms", "tok_per_sec", "mean_verify_ms", "verify_fraction"]:
+            if col in eagle.columns:
+                eagle[col] = pd.to_numeric(eagle[col], errors="coerce")
+        return eagle
 
-    fig, ax = plt.subplots(figsize=(7.0, 3.0))
-    for i, d in enumerate(selected_ds):
-        sub = df[df['depth'] == d].sort_values('branching_factor')
-        n = len(sub)
-        me = _markevery(n)
-        ax.plot(sub['branching_factor'], sub['flashinfer_tree_ms'],
-                linestyle='--', marker='s', markevery=me,
-                color=TOL[i], label=f'FlashInfer ($d{{=}}{d}$)')
-        ax.plot(sub['branching_factor'], sub['ragged_ms'],
-                linestyle='-', marker='o', markevery=me,
-                color=TOL[i], label=f'Ours ($d{{=}}{d}$)')
-
-    ax.set_xlabel(r'Branching factor $b$')
-    ax.set_ylabel('Latency (ms)')
-    ax.set_yscale('log')
-    ax.legend(ncol=4, loc='upper left', columnspacing=1.0,
-              handlelength=2.0, handletextpad=0.5)
-    plt.tight_layout()
-    _save('fig2_micro_fixed_depth')
+    raise ValueError("Could not parse eagle aggregate.csv")
 
 
-# ---------------------------------------------------------------------------
-# Fig 3 — Sweep tree size N at varying prefix length L (single column)
-# ---------------------------------------------------------------------------
-def plot_micro_sweep_n(micro):
-    df = micro[(micro['batch_size'] == 1) & (micro['branching_factor'] == 4)]
-    pls = sorted(df['prefix_length'].unique())
-    selected_pls = [pl for pl in [0, 4096, 16384, 32768] if pl in pls]
-    if len(selected_pls) < 4:
-        selected_pls = pls[:4]
+def plot_speedup_heatmap(micro):
+    df = micro[(micro["batch_size"] == 1) & (micro["prefix_length"] == 0)]
+    pivot_df = df.pivot_table(index="depth", columns="branching_factor", values="speedup_vs_tree")
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.6))
-    for i, pl in enumerate(selected_pls):
-        sub = df[df['prefix_length'] == pl].sort_values('num_tree_nodes')
-        n = len(sub)
-        me = _markevery(n)
-        ax.plot(sub['num_tree_nodes'], sub['ragged_ms'],
-                linestyle='-', marker='o', markevery=me,
-                color=TOL[i], label=f'$L{{=}}{pl}$')
+    fig, ax = plt.subplots(figsize=(8, 6))
+    im = ax.imshow(pivot_df.values, cmap="YlGnBu", aspect="auto", origin="lower")
+    cbar = fig.colorbar(im)
+    cbar.set_label("Speedup (FlashInfer / Ours)")
 
-    ax.set_xscale('log')
-    ax.set_xlabel(r'Tree size $N$ (nodes)')
-    ax.set_ylabel('Latency (ms)')
-    ax.legend(loc='upper left', title='Prefix length',
-              title_fontsize=8, ncol=2, columnspacing=1.0)
-    plt.tight_layout()
-    _save('fig3_micro_sweep_n')
+    ax.set_xticks(np.arange(len(pivot_df.columns)))
+    ax.set_yticks(np.arange(len(pivot_df.index)))
+    ax.set_xticklabels(pivot_df.columns)
+    ax.set_yticklabels(pivot_df.index)
+
+    for i in range(len(pivot_df.index)):
+        for j in range(len(pivot_df.columns)):
+            val = pivot_df.values[i, j]
+            if not np.isnan(val):
+                ax.text(j, i, f"{val:.2f}", ha="center", va="center", color="black" if val < 2 else "white")
+
+    ax.set_title("Tree-Attention Speedup: Depth vs Branching Factor\n(Batch Size=1, Prefix=0)")
+    ax.set_xlabel("Branching Factor (b)")
+    ax.set_ylabel("Tree Depth (d)")
+    _save("speedup_heatmap_d_vs_b")
 
 
-# ---------------------------------------------------------------------------
-# Fig 4 — Amdahl: acceptance rate & verify fraction vs depth (single column)
-# ---------------------------------------------------------------------------
-def plot_amdahl(amdahl):
-    df = amdahl.groupby('depth').mean(numeric_only=True).reset_index().sort_values('depth')
+def plot_speedup_vs_nodes(micro):
+    df = micro[micro["prefix_length"] == 0].copy()
+    selected_batch_sizes = [1, 4]
 
-    fig, ax1 = plt.subplots(figsize=(3.5, 2.6))
+    fig, (ax_top, ax_bottom) = plt.subplots(
+        2,
+        1,
+        sharex=True,
+        figsize=(7, 5.5),
+        gridspec_kw={"height_ratios": [1, 2], "hspace": 0.05},
+    )
+
+    lower_ylim = (0.0, 0.30)
+    upper_ylim = (0.34, 0.95)
+
+    for bs in selected_batch_sizes:
+        sub = df[df["batch_size"] == bs]
+        if sub.empty:
+            continue
+
+        grouped = (
+            sub.groupby("num_tree_nodes", as_index=False)
+            .agg(
+                flashinfer_tree_ms=("flashinfer_tree_ms", "mean"),
+                ragged_ms=("ragged_ms", "mean"),
+            )
+            .sort_values("num_tree_nodes")
+        )
+        grouped = grouped[grouped["num_tree_nodes"] >= 100]
+        if grouped.empty:
+            continue
+
+        color = PALETTE.get(bs)
+
+        for ax in (ax_top, ax_bottom):
+            ax.plot(
+                grouped["num_tree_nodes"],
+                grouped["ragged_ms"],
+                marker="o",
+                linestyle="-",
+                linewidth=1.8,
+                markersize=4,
+                color=color,
+            )
+            ax.plot(
+                grouped["num_tree_nodes"],
+                grouped["flashinfer_tree_ms"],
+                marker="s",
+                linestyle="--",
+                linewidth=1.6,
+                markersize=4,
+                color=color,
+                alpha=0.9,
+            )
+
+    ax_bottom.set_ylim(*lower_ylim)
+    ax_top.set_ylim(*upper_ylim)
+
+    ax_top.spines["bottom"].set_visible(False)
+    ax_bottom.spines["top"].set_visible(False)
+    ax_top.tick_params(labeltop=False)
+    ax_top.xaxis.tick_top()
+    ax_bottom.xaxis.tick_bottom()
+
+    kwargs = dict(color="black", clip_on=False, linewidth=1.0)
+    ax_top.plot((-0.015, 0.015), (-0.015, 0.015), transform=ax_top.transAxes, **kwargs)
+    ax_top.plot((0.985, 1.015), (-0.015, 0.015), transform=ax_top.transAxes, **kwargs)
+    ax_bottom.plot((-0.015, 0.015), (0.985, 1.015), transform=ax_bottom.transAxes, **kwargs)
+    ax_bottom.plot((0.985, 1.015), (0.985, 1.015), transform=ax_bottom.transAxes, **kwargs)
+
+    ax_bottom.set_xlim(left=100)
+    ax_bottom.xaxis.set_major_locator(MultipleLocator(100))
+    ax_bottom.xaxis.set_major_formatter(ScalarFormatter())
+    ax_bottom.ticklabel_format(axis="x", style="plain")
+
+    ax_bottom.set_xlabel("Tree Size (Number of Nodes)")
+    ax_bottom.set_ylabel("Latency (ms)")
+    ax_top.set_ylabel("Latency (ms)")
+    ax_top.set_title("Kernel Latency vs Tree Size\n(Prefix Length = 0)")
+
+    legend_handles = [
+        Line2D([0], [0], color=PALETTE[1], marker="o", linestyle="-", linewidth=1.8, markersize=4, label="Ours, BS=1"),
+        Line2D([0], [0], color=PALETTE[1], marker="s", linestyle="--", linewidth=1.6, markersize=4, label="FlashInfer, BS=1"),
+        Line2D([0], [0], color=PALETTE[4], marker="o", linestyle="-", linewidth=1.8, markersize=4, label="Ours, BS=4"),
+        Line2D([0], [0], color=PALETTE[4], marker="s", linestyle="--", linewidth=1.6, markersize=4, label="FlashInfer, BS=4"),
+    ]
+    ax_top.legend(
+        handles=legend_handles,
+        title="Kernel / Batch Size",
+        loc="upper left",
+        ncol=2,
+        frameon=False,
+    )
+    ax_bottom.grid(True, which="both", ls="-", alpha=0.3)
+    ax_top.grid(True, which="both", ls="-", alpha=0.3)
+    _save("speedup_vs_nodes")
+
+
+def plot_sequoia_e2e(sequoia):
+    df = sequoia.sort_values("tree_size")
+    fig, ax1 = plt.subplots(figsize=(3.6, 2.5))
     ax2 = ax1.twinx()
-    ax2.spines['top'].set_visible(False)   # twin axes need explicit reset
+    ax2.spines["top"].set_visible(False)
 
-    l1, = ax1.plot(df['depth'], df['mean_accepted_per_step'],
-                   linestyle='-', marker='o', color=OURS_COLOR,
-                   label='Accepted tokens / step')
-    l2, = ax2.plot(df['depth'], df['verify_fraction'],
-                   linestyle='--', marker='s', color=TOL[0],
-                   label='Verify time fraction')
+    l1, = ax1.plot(
+        df["tree_size"],
+        df["speedup"],
+        linestyle="-",
+        marker="o",
+        markersize=3.2,
+        linewidth=1.2,
+        color=OURS_COLOR,
+        label="QAtten / Sequoia speedup",
+    )
+    l2, = ax2.plot(
+        df["tree_size"],
+        df["v_acc_per_step"] / df["r_acc_per_step"],
+        linestyle="--",
+        marker="s",
+        markersize=2.8,
+        linewidth=1.0,
+        color=TOL[0],
+        label="Sequoia/QAtten accepted tokens/step",
+    )
 
-    ax1.set_xlabel(r'Tree depth $d$')
-    ax1.set_ylabel('Accepted tokens / step', color=OURS_COLOR)
-    ax2.set_ylabel('Verify time fraction', color=TOL[0])
-    ax1.tick_params(axis='y', labelcolor=OURS_COLOR)
-    ax2.tick_params(axis='y', labelcolor=TOL[0])
-
-    ax1.legend(handles=[l1, l2], loc='center right',
-               handlelength=2.0, handletextpad=0.5)
+    ax1.axhline(y=1.0, color=REF_COLOR, linestyle="--", linewidth=0.6, zorder=0)
+    ax2.axhline(y=1.0, color=REF_COLOR, linestyle="--", linewidth=0.6, zorder=0)
+    ax1.set_xscale("log")
+    ax1.set_xlabel("Sequoia tree size (nodes)")
+    ax1.set_ylabel(r"QAtten / Sequoia speedup ($\times$)", color=OURS_COLOR)
+    ax2.set_ylabel("Sequoia/QAtten accepted tokens/step", color=TOL[0])
+    ax1.tick_params(axis="y", labelcolor=OURS_COLOR)
+    ax2.tick_params(axis="y", labelcolor=TOL[0])
+    ax2.yaxis.set_major_locator(MultipleLocator(0.04))
+    ax2.set_ylim([0, 1.08])
+    ax1.legend(handles=[l1, l2], loc="upper left", fontsize=8, handlelength=2.0)
     plt.tight_layout()
-    _save('fig4_amdahl')
+    _save("fig5_e2e_sequoia")
 
 
-# ---------------------------------------------------------------------------
-# Fig 5 — Sequoia E2E speedup vs tree size (single column)
-# ---------------------------------------------------------------------------
-def plot_sequoia(sequoia):
-    df = sequoia.sort_values('tree_size')
+def plot_eagle_accepted_step(eagle):
+    df = (
+        eagle.groupby("total_token", as_index=False)
+        .agg(
+            mean_accepted_per_step=("mean_accepted_per_step", "mean"),
+            wall_ms=("wall_ms", "mean"),
+        )
+        .sort_values("total_token")
+    )
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.4))
-    ax.axhline(y=1.0, color=REF_COLOR, linestyle='--',
-               linewidth=0.6, zorder=0)
-    ax.plot(df['tree_size'], df['speedup'],
-            linestyle='-', marker='o', color=OURS_COLOR, label='Ours vs FlashInfer')
+    baseline = df.iloc[0]
+    df = df.copy()
+    df["rel_accepted_per_step"] = df["mean_accepted_per_step"] / baseline["mean_accepted_per_step"]
+    df["rel_wall_ms"] = df["wall_ms"] / baseline["wall_ms"]
 
-    ax.set_xscale('log')
-    ax.set_xlabel('Sequoia tree size (nodes)')
-    ax.set_ylabel(r'End-to-end speedup ($\times$)')
-    ax.legend(loc='upper left')
+    fig, ax = plt.subplots(figsize=(3.6, 2.6))
+    ax.plot(
+        df["total_token"],
+        df["rel_accepted_per_step"],
+        linestyle="-",
+        marker="o",
+        color=OURS_COLOR,
+        markersize=2.8,
+        linewidth=1.2,
+        label="Accepted tokens / step",
+    )
+    ax.plot(
+        df["total_token"],
+        df["rel_wall_ms"],
+        linestyle="--",
+        marker="s",
+        color=TOL[0],
+        markersize=2.8,
+        linewidth=1.1,
+        label="Wall time",
+    )
+
+    ax.axhline(1.0, color=REF_COLOR, linestyle="--", linewidth=0.7, zorder=0)
+    ax.axvline(80, color=REF_COLOR, linestyle=":", linewidth=0.8)
+    ax.text(80, 1.82, "~80", ha="center", va="top", fontsize=8, color=REF_COLOR)
+
+    ax.set_xlabel("Total tokens per tree")
+    ax.set_ylabel("Relative to first config")
+    ax.set_ylim(0.0, 1.9)
+    ax.set_ylim(1, 1.9)
+    ax.set_yticks(np.arange(1.0, 2.0, 0.2))
+    ax.set_title("EAGLE Scaling: Accepted Tokens vs Cost")
+    ax.legend(loc="upper left", handlelength=2.0, handletextpad=0.5)
+    ax.grid(True, which="both", ls="-", alpha=0.3)
     plt.tight_layout()
-    _save('fig5_e2e_sequoia')
+    _save("fig4_eagle_accepted_step")
 
 
-# ---------------------------------------------------------------------------
-# Fig 6 — EAGLE-3 E2E speedup vs total tokens (single column)
-# ---------------------------------------------------------------------------
-def plot_eagle(eagle):
-    eagle = eagle.copy()
-    eagle['b'] = eagle['label'].str.extract(r'b=(\d+)').astype(float)
+def plot_eagle_acceptance_rate(eagle):
+    df = (
+        eagle.groupby("total_token", as_index=False)
+        .agg(
+            acceptance_rate=("acceptance_rate", "mean"),
+            wall_ms=("wall_ms", "mean"),
+        )
+        .sort_values("total_token")
+    )
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.6))
-    ax.axhline(y=1.0, color=REF_COLOR, linestyle='--',
-               linewidth=0.6, zorder=0)
+    fig, ax1 = plt.subplots(figsize=(3.6, 2.6))
+    ax2 = ax1.twinx()
+    ax2.spines["top"].set_visible(False)
 
-    bs = sorted(eagle['b'].dropna().unique())
-    for i, b in enumerate(bs):
-        sub = eagle[eagle['b'] == b].sort_values('total_token')
-        n = len(sub)
-        me = _markevery(n, target=6)
-        ax.plot(sub['total_token'], sub['e2e_speedup'],
-                linestyle='-', marker='o', markevery=me,
-                color=TOL[i % len(TOL)], label=f'$b{{=}}{int(b)}$')
+    l1, = ax1.plot(
+        df["total_token"],
+        df["acceptance_rate"],
+        linestyle="-",
+        marker="o",
+        color=OURS_COLOR,
+        markersize=2.8,
+        linewidth=1.2,
+        label="Acceptance rate",
+    )
+    l2, = ax2.plot(
+        df["total_token"],
+        df["wall_ms"],
+        linestyle="--",
+        marker="s",
+        color=TOL[0],
+        markersize=2.8,
+        linewidth=1.1,
+        label="Wall time (ms)",
+    )
 
-    ax.set_xlabel(r'Total tokens per tree $tt$')
-    ax.set_ylabel(r'End-to-end speedup ($\times$)')
-    ax.legend(loc='upper left', ncol=2, columnspacing=1.0)
+    ax1.axvline(80, color=REF_COLOR, linestyle=":", linewidth=0.8)
+    ax1.text(80, ax1.get_ylim()[1] * 0.95, "~80", ha="center", va="top", fontsize=8, color=REF_COLOR)
+
+    ax1.set_xlabel("Total tokens per tree")
+    ax1.set_ylabel("Acceptance rate", color=OURS_COLOR)
+    ax2.set_ylabel("Wall time (ms)", color=TOL[0])
+    ax1.tick_params(axis="y", labelcolor=OURS_COLOR)
+    ax2.tick_params(axis="y", labelcolor=TOL[0])
+    ax1.legend(handles=[l1, l2], loc="upper left", handlelength=2.0, handletextpad=0.5)
+    ax1.set_title("EAGLE Scaling: Acceptance Rate vs Cost")
+    ax1.grid(True, which="both", ls="-", alpha=0.3)
     plt.tight_layout()
-    _save('fig6_e2e_eagle')
+    _save("fig5_eagle_acceptance_rate")
 
 
 if __name__ == "__main__":
     print("Loading data...")
-    micro, amdahl, sequoia, eagle = load_data()
+    micro = load_micro()
+    sequoia = load_sequoia()
+    eagle = load_eagle()
 
-    print("Generating Figure 1...");  plot_micro_fixed_b(micro)
-    print("Generating Figure 2...");  plot_micro_fixed_depth(micro)
-    print("Generating Figure 3...");  plot_micro_sweep_n(micro)
-    print("Generating Figure 4...");  plot_amdahl(amdahl)
-    print("Generating Figure 5...");  plot_sequoia(sequoia)
-    print("Generating Figure 6...");  plot_eagle(eagle)
+    print("Generating figures...")
+    plot_speedup_heatmap(micro)
+    plot_speedup_vs_nodes(micro)
+    plot_sequoia_e2e(sequoia)
+    plot_eagle_accepted_step(eagle)
+    plot_eagle_acceptance_rate(eagle)
 
-    print(f"All figures generated successfully in {FIG_DIR}")
+    print(f"\nAll experimental figures generated in {FIG_DIR}")
