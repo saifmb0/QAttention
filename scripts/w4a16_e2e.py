@@ -695,42 +695,8 @@ def load_eagle_model(
                 except: pass
     except: pass
 
-    # Patch GPTQModel's MarlinQuantLinear to accept native Marlin shapes
-    try:
-        import gptqmodel.nn_modules.qlinear.marlin as _gptq_marlin
-        _orig_marlin_init = _gptq_marlin.MarlinQuantLinear.__init__
-        _orig_marlin_post_init = _gptq_marlin.MarlinQuantLinear.post_init
-
-        def _patched_marlin_init(self, bits, group_size, desc_act, sym, in_features, out_features, *args, **kwargs):
-            _orig_marlin_init(self, bits, group_size, desc_act, sym, in_features, out_features, *args, **kwargs)
-            pack_dtype = kwargs.get("pack_dtype", torch.int32)
-            self.qweight = torch.nn.Parameter(
-                torch.zeros((in_features // 16, out_features * 2), dtype=pack_dtype),
-                requires_grad=False
-            )
-
-        def _patched_marlin_post_init(self):
-            device = self.qweight.device
-            self.is_k_full = _gptq_marlin.marlin_is_k_full(self.desc_act, is_row_parallel=False)
-            self.workspace = _gptq_marlin.marlin_make_workspace_new(device)
-            
-            if self.desc_act:
-                g_idx, g_idx_sort_indices = _gptq_marlin.marlin_sort_g_idx(getattr(self, "g_idx"))
-                _gptq_marlin._transform_param(self, "g_idx", lambda _: g_idx)
-                self.g_idx_sort_indices = g_idx_sort_indices
-            else:
-                setattr(self, "g_idx", _gptq_marlin.marlin_make_empty_g_idx(device))
-                self.g_idx_sort_indices = _gptq_marlin.marlin_make_empty_g_idx(device)
-
-            setattr(self, "qzeros", _gptq_marlin.marlin_make_empty_g_idx(device))
-
-            if hasattr(self, "bias") and self.bias is not None:
-                self.bias.data = _gptq_marlin.marlin_permute_bias(self.bias)
-
-        _gptq_marlin.MarlinQuantLinear.__init__ = _patched_marlin_init
-        _gptq_marlin.MarlinQuantLinear.post_init = _patched_marlin_post_init
-    except ImportError:
-        pass
+    # GPTQModel handles MarlinQuantLinear init/post_init correctly for
+    # standard checkpoint_format=marlin models — no patches needed here.
 
     from eagle.model.configs import EConfig
     _orig_econfig = EConfig.from_pretrained
@@ -763,11 +729,33 @@ def load_eagle_model(
     eagle.model.cnets.Model.__init__ = _make_safe_init(eagle.model.cnets.Model.__init__)
     if hasattr(eagle.model.cnets1, "Model"): eagle.model.cnets1.Model.__init__ = _make_safe_init(eagle.model.cnets1.Model.__init__)
 
-    class _PatchedLinear(torch.nn.Linear):
-        def __init__(self, inf, outf, *args, **kwargs):
-            if inf == 12288 and outf == 4096: inf = 8192
-            super().__init__(inf, outf, *args, **kwargs)
-    eagle.model.cnets.nn.Linear = _PatchedLinear
+    if not use_eagle3:
+        # EAGLE-2 only: fc layer in cnets.py is 8192-in but some checkpoints were
+        # saved with shape [4096, 12288] — redirect the Linear and skip that weight.
+        class _PatchedLinear(torch.nn.Linear):
+            def __init__(self, inf, outf, *args, **kwargs):
+                if inf == 12288 and outf == 4096: inf = 8192
+                super().__init__(inf, outf, *args, **kwargs)
+        eagle.model.cnets.nn.Linear = _PatchedLinear
+
+        try:
+            import torch.nn as _nn
+            _orig_module_load_sd = _nn.Module.load_state_dict
+            def _safe_module_load_sd(self, state_dict, **kwargs):
+                new_sd = {}
+                for k, v in state_dict.items():
+                    if k == "fc.weight" and v.shape == torch.Size([4096, 12288]):
+                        continue  # EAGLE-2 fc shape mismatch — skip
+                    if k == "qweight" and hasattr(self, "qweight"):
+                        target = self.qweight.shape
+                        if v.shape != target and v.numel() == self.qweight.numel():
+                            # Reshape SpecMQuant interleaved (in//16, out*2) → GPTQModel (in//8, out)
+                            v = v.reshape(target).contiguous()
+                    new_sd[k] = v
+                return _orig_module_load_sd(self, new_sd, **kwargs)
+            _nn.Module.load_state_dict = _safe_module_load_sd
+        except Exception:
+            pass
 
     import eagle.model.ea_model
     _orig_ea = eagle.model.ea_model.EaModel.__init__
@@ -783,19 +771,6 @@ def load_eagle_model(
                     if pr and not hasattr(pr, "weight"): pr.weight = pr.qweight
         return _orig_ea(self, *args, **kwargs)
     eagle.model.ea_model.EaModel.__init__ = _patched_ea
-
-    # Patch torch.nn.Module.load_state_dict to skip fc.weight shape mismatch
-    # (checkpoint has [4096, 12288] but model expects [4096, 8192])
-    try:
-        import torch.nn as _nn
-        _orig_module_load_sd = _nn.Module.load_state_dict
-        def _safe_module_load_sd(self, state_dict, **kwargs):
-            sd = {k: v for k, v in state_dict.items()
-                  if not (k == "fc.weight" and v.shape == torch.Size([4096, 12288]))}
-            return _orig_module_load_sd(self, sd, **kwargs)
-        _nn.Module.load_state_dict = _safe_module_load_sd
-    except Exception:
-        pass
 
     # EAGLE's cnets.py _init_rope only understands rope_scaling types "linear" and
     # "dynamic" and requires a "factor" key.  Llama-3.1 uses type "llama3" with a
