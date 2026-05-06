@@ -1,0 +1,4 @@
+context_length,depth,total_token,top_k,label,vanilla_tok_s,vanilla_acc,vanilla_verify,ragged_tok_s,ragged_acc,ragged_verify,e2e_speedup
+4096,20,343,20,b=20 d=20 tt=343,9.5,1.512,0.6089,12.6,1.52,0.4887,1.3263
+8192,20,343,20,b=20 d=20 tt=343,5.6,1.298,0.6708,8.7,1.299,0.4906,1.5536
+16384,20,343,20,b=20 d=20 tt=343,,,,,,,
