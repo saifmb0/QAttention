@@ -31,7 +31,7 @@
 \DeclareMathOperator*{\softmax}{softmax}
 \DeclareMathOperator{\parent}{parent}
 
-\graphicspath{{figures_new/}}
+\graphicspath{{figures/}}
 
 \title{QAttention: An Ancestor-Sparse Flash Attention Kernel\\
        for Speculative Decoding Beyond the Quadratic Wall}
@@ -517,7 +517,7 @@ re-emerge as the bottleneck once the rest of the pipeline is improved.
 \item {\bf Open access to data and code}
     \item[] Question: Does the paper provide open access to the data and code, with sufficient instructions to faithfully reproduce the main experimental results, as described in supplemental material?
     \item[] Answer: \answerYes{}
-    \item[] Justification: The Triton kernel source, benchmark scripts, and aggregate result CSVs are released as anonymised supplementary material. All figures in this paper are produced by a single script (\texttt{paper/generate\_figures\_new.py}) reading the included CSVs.
+    \item[] Justification: The Triton kernel source, benchmark scripts, and aggregate result CSVs are released as anonymised supplementary material. All figures in this paper are produced by a single script (\texttt{paper/generate\_figures.py}) reading the included CSVs.
     \item[] Guidelines:
     \begin{itemize}
         \item The answer \answerNA{} means that paper does not include experiments requiring code.
