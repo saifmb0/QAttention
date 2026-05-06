@@ -1,0 +1,124 @@
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.8.0+cu128).
+  [env] transformers=4.53.1  accelerate=0.34.2  OK
+  [prompts] loading ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json from anon8231489123/ShareGPT_Vicuna_unfiltered …
+  [prompts] loaded 10 prompts from ShareGPT_Vicuna_unfiltered (seed=42)
+
+========================================================================
+  Eagle-3 E2E Benchmark  ·  2D Sweep: depth × branching factor
+  Narrative (micro-benchmark validated on H100 SXM):
+    d=5–7  : LOSS regime   (N≈43–60, kernel overhead > savings)
+    d=9–12 : CROSSOVER     (N≈77–103, B-dependent win/loss)
+    d≥16   : WIN  regime   (N≥137, ancestor walk dominates)
+  L=0 crossovers: B=8→N≥103 | B=32→N≥51 | L≥1024→always wins
+========================================================================
+  Base:             meta-llama/Llama-3.1-8B-Instruct
+  Eagle:            yuhuili/EAGLE3-LLaMA3.1-Instruct-8B  (EAGLE-2)
+  Prompts:          10 per config (seed=42)
+  Depths:           [4, 8, 16, 32]
+  Branching (top_k):[4, 8, 16, 32]
+  Context lengths:  [0]
+  Total configs:    16  (4 depths × 4 b-factors × 1 ctx-lengths)
+  Token budget grid (total_token per (b, d))  — N≥103 → B=8 wins:
+              d= 4  d= 8  d=16  d=32
+  b= 4 (top_k)      30     30     55    110↑
+  b= 8 (top_k)      30     55    110↑   219↑
+  b=16 (top_k)      55    110↑   219↑   439↑
+  b=32 (top_k)     110↑   219↑   439↑   878↑
+  (★ = EAGLE-3 default  |  ↑ = above B=8 kernel crossover N≥103)
+  HF token:         hf_bOkHM…
+  GPU:              NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+========================================================================
+
+  KV cache max_length: 2048  (prefix=0 + prompt≤512 + new=256 + tree=878, rounded to 256)
+
+WARN  Python GIL is enabled: Multi-gpu quant acceleration for MoE models is sub-optimal and multi-core accelerated cpu packing is also disabled. We recommend Python >= 3.13.3t with Pytorch > 2.8 for mult-gpu quantization and multi-cpu packing with env `PYTHON_GIL=0`.
+INFO  ENV: Auto setting PYTORCH_ALLOC_CONF='expandable_segments:True,max_split_size_mb:256,garbage_collection_threshold:0.7' for memory saving.
+INFO  ENV: Auto setting CUDA_DEVICE_ORDER=PCI_BUS_ID for correctness.          
+INFO  
+
+┌─────────────┐    ┌────────────────────────┐    ┌────────────┐    ┌─────────┐
+│ GPT-QModel  │ -> │ ▓▓▓▓▓▓▓▓▓▓▓▓ 16bit     │ -> │ ▒▒▒▒ 8bit  │ -> │ ░░ 4bit │
+└─────────────┘    └────────────────────────┘    └────────────┘    └─────────┘
+GPT-QModel   : 6.0.3+15bcdbd
+Transformers : 4.53.1
+Torch        : 2.8.0+cu128
+Triton       : 3.4.0
+
+  Loading Eagle model:
+    Base:  meta-llama/Llama-3.1-8B-Instruct
+    Eagle: yuhuili/EAGLE3-LLaMA3.1-Instruct-8B
+    Mode:  EAGLE-2
+    Tree:  total_token=878, depth=32, top_k=32
+    dtype: float16 (EAGLE tested config)
+    KV cache max_length: 2048 tokens
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  1.73it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:01<00:01,  1.75it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  1.77it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.53it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.17it/s]
+    Loaded in 10.1s
+    LLM: H=32, H_kv=8, D=128, layers=32
+    GPU: NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+
+  [warmup]  Compiling Triton kernels for 4 depth configs: [4, 8, 16, 32] …
+  [diag] input_ids shape=(1, 63) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (3.3%)  7.9 tok/s  verify=88.8 ms/step (70% of time)  [hook=1056×]  → "This conversation has just begun. I'm happy to help you disc..."
+  [warmup d=4]  done (7.9 tok/s, accept=1.00/step)
+  [diag] input_ids shape=(1, 63) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (3.3%)  7.9 tok/s  verify=77.8 ms/step (61% of time)  [hook=1056×]  → "This conversation has just begun. I'm happy to help you disc..."
+  [warmup d=8]  done (7.9 tok/s, accept=1.00/step)
+  [diag] input_ids shape=(1, 63) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (1.8%)  5.9 tok/s  verify=79.6 ms/step (47% of time)  [hook=1056×]  → "This conversation has just begun. I'm happy to help you disc..."
+  [warmup d=16]  done (5.9 tok/s, accept=1.00/step)
+  [diag] input_ids shape=(1, 63) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (0.9%)  3.8 tok/s  verify=84.6 ms/step (33% of time)  [hook=1056×]  → "This conversation has just begun. I'm happy to help you disc..."
+  [warmup d=32]  done (3.8 tok/s, accept=1.00/step)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONFIG 1/16  —  b=4 d=4 tt=30
+    depth=4  total_token=30  top_k=4  context_length=0
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [vanilla]  depth=4  total_token=30
+  [diag] input_ids shape=(1, 63) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [1/10] 156 tok / 156 steps  accept=1.00/step (3.3%)  12.2 tok/s  verify=54.8 ms/step (67% of time)  → "This conversation has just begun. I'm happy to help you disc..."
+  [2/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.2 tok/s  verify=55.1 ms/step (67% of time)  → "Decentralized finance (DeFi) is a broader concept that encom..."
+  [3/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.2 tok/s  verify=55.4 ms/step (68% of time)  → "You can use the Librosa library in Python to visualize the a..."
+  [4/10] 80 tok / 80 steps  accept=1.00/step (3.3%)  12.2 tok/s  verify=54.5 ms/step (67% of time)  → "Welcome to "Page & Co.", the world's most enchanting booksto..."
+  [5/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.3 tok/s  verify=55.2 ms/step (68% of time)  → "To authenticate guest users for Firebase using Laravel, you ..."
+  [6/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.2 tok/s  verify=55.2 ms/step (67% of time)  → "If your Application Load Balancer (ALB) in AWS returns a 408..."
+  [7/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.2 tok/s  verify=55.1 ms/step (67% of time)  → "To estimate the man-hours required to supply the Boy Scouts ..."
+  [8/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.2 tok/s  verify=55.4 ms/step (68% of time)  → "To make `enum.IntFlag` compatible with both Python 2 and 3, ..."
+  [9/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.2 tok/s  verify=55.4 ms/step (68% of time)  → "Ao Lie carefully lifted his cup of tea from the table, the d..."
+  [10/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.2 tok/s  verify=55.2 ms/step (68% of time)  → "Here's a script for a YouTube video on hypnosis:
+
+**Title:**..."
+    → 12.2 tok/s   1.00 acc/step   verify=55.1 ms (67%)
+
+  [ragged]   depth=4  total_token=30
+  [diag] input_ids shape=(1, 63) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [1/10] 156 tok / 156 steps  accept=1.00/step (3.3%)  12.1 tok/s  verify=55.9 ms/step (68% of time)  [hook=4992×]  → "This conversation has just begun. I'm happy to help you disc..."
+  [2/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.1 tok/s  verify=56.0 ms/step (68% of time)  [hook=8224×]  → "Decentralized finance (DeFi) is a broader concept that encom..."
+  [3/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.1 tok/s  verify=56.1 ms/step (68% of time)  [hook=8224×]  → "You can use the Librosa library in Python to visualize the a..."
+  [4/10] 80 tok / 80 steps  accept=1.00/step (3.3%)  12.1 tok/s  verify=55.5 ms/step (67% of time)  [hook=2560×]  → "Welcome to "Page & Co.", the world's most enchanting booksto..."
+  [5/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.1 tok/s  verify=56.0 ms/step (68% of time)  [hook=8224×]  → "To authenticate guest users for Firebase using Laravel, you ..."
+  [6/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.0 tok/s  verify=56.2 ms/step (68% of time)  [hook=8224×]  → "If your Application Load Balancer (ALB) in AWS returns a 408..."
+  [7/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.1 tok/s  verify=56.0 ms/step (68% of time)  [hook=8224×]  → "To estimate the man-hours required to supply the Boy Scouts ..."
+  [8/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.1 tok/s  verify=56.1 ms/step (68% of time)  [hook=8224×]  → "To make `enum.IntFlag` compatible with both Python 2 and 3, ..."
+  [9/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.0 tok/s  verify=56.4 ms/step (68% of time)  [hook=8224×]  → "Ao Lie carefully lifted his cup of tea from the table, the d..."
+  [10/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  12.1 tok/s  verify=56.0 ms/step (68% of time)  [hook=8224×]  → "Here's a script for a YouTube video on hypnosis:
+
+**Title:**..."
+    → 12.1 tok/s   1.00 acc/step   verify=56.0 ms (68%)
+
+  ▸ E2E speedup at d=4:  0.988×  (12.2 → 12.1 tok/s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONFIG 2/16  —  b=4 d=8 tt=30
+    depth=8  total_token=30  top_k=4  context_length=0
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [vanilla]  depth=8  total_token=30
+  [diag] input_ids shape=(1, 63) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [1/10] 156 tok / 156 steps  accept=1.00/step (3.3%)  9.8 tok/s  verify=54.9 ms/step (54% of time)  → "This conversation has just begun. I'm happy to help you disc..."
+  [2/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.8 tok/s  verify=55.1 ms/step (54% of time)  → "Decentralized finance (DeFi) is a broader concept that encom..."
+  [3/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.8 tok/s  verify=55.2 ms/step (54% of time)  → "You can use the Librosa library in Python to visualize the a..."
+  [4/10] 80 tok / 80 steps  accept=1.00/step (3.3%)  9.8 tok/s  verify=54.6 ms/step (53% of time)  → "Welcome to "Page & Co.", the world's most enchanting booksto..."
+  [5/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.8 tok/s  verify=55.1 ms/step (54% of time)  → "To authenticate guest users for Firebase using Laravel, you ..."
+  [6/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.8 tok/s  verify=55.2 ms/step (54% of time)  → "If your Application Load Balancer (ALB) in AWS returns a 408..."

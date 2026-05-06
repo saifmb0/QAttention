@@ -1,0 +1,88 @@
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.8.0+cu128).
+  [env] transformers=4.53.1  accelerate=0.34.2  OK
+  [prompts] loading ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json from anon8231489123/ShareGPT_Vicuna_unfiltered …
+  [prompts] loaded 3 prompts from ShareGPT_Vicuna_unfiltered (seed=42)
+
+========================================================================
+  Eagle-3 E2E Benchmark  ·  2D Sweep: depth × branching factor
+  Narrative (micro-benchmark validated on H100 SXM):
+    d=5–7  : LOSS regime   (N≈43–60, kernel overhead > savings)
+    d=9–12 : CROSSOVER     (N≈77–103, B-dependent win/loss)
+    d≥16   : WIN  regime   (N≥137, ancestor walk dominates)
+  L=0 crossovers: B=8→N≥103 | B=32→N≥51 | L≥1024→always wins
+========================================================================
+  Base:             /home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-Rot
+  Eagle:            /home/202311016/models/EAGLE-LLaMA3-Instruct-8B-on-W4A16-Rot  (EAGLE-3)
+  Prompts:          3 per config (seed=42)
+  Depths:           [24, 28]
+  Branching (top_k):[24, 28]
+  Context lengths:  [4096]
+  Total configs:    4  (2 depths × 2 b-factors × 1 ctx-lengths)
+  Token budget grid (total_token per (b, d))  — N≥103 → B=8 wins:
+              d=24  d=28
+  b=24 (top_k)     494↑   576↑
+  b=28 (top_k)     576↑   672↑
+  (★ = EAGLE-3 default  |  ↑ = above B=8 kernel crossover N≥103)
+  HF token:         hf_bOkHM…
+  GPU:              NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+========================================================================
+
+  KV cache max_length: 5632  (prefix=4096 + prompt≤512 + new=256 + tree=672, rounded to 256)
+
+  Loading Eagle model:
+    Base:  /home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-Rot
+    Eagle: /home/202311016/models/EAGLE-LLaMA3-Instruct-8B-on-W4A16-Rot
+    Mode:  EAGLE-3
+    Tree:  total_token=672, depth=28, top_k=28
+    dtype: float16 (EAGLE tested config)
+    KV cache max_length: 5632 tokens
+
+WARN  Python GIL is enabled: Multi-gpu quant acceleration for MoE models is sub-optimal and multi-core accelerated cpu packing is also disabled. We recommend Python >= 3.13.3t with Pytorch > 2.8 for mult-gpu quantization and multi-cpu packing with env `PYTHON_GIL=0`.
+INFO  ENV: Auto setting PYTORCH_ALLOC_CONF='expandable_segments:True,max_split_size_mb:256,garbage_collection_threshold:0.7' for memory saving.
+INFO  ENV: Auto setting CUDA_DEVICE_ORDER=PCI_BUS_ID for correctness.          
+INFO  
+
+┌─────────────┐    ┌────────────────────────┐    ┌────────────┐    ┌─────────┐
+│ GPT-QModel  │ -> │ ▓▓▓▓▓▓▓▓▓▓▓▓ 16bit     │ -> │ ▒▒▒▒ 8bit  │ -> │ ░░ 4bit │
+└─────────────┘    └────────────────────────┘    └────────────┘    └─────────┘
+GPT-QModel   : 6.0.3+71b0fd0
+Transformers : 4.53.1
+Torch        : 2.8.0+cu128
+Triton       : 3.4.0
+WARN  QuantizeConfig: `desc_act=True` automatically disables `act_group_aware`. Set `act_group_aware=False` explicitly to silence this warning.
+INFO  Kernel: selected: `MarlinQuantLinear`                                    
+Traceback (most recent call last):
+  File "/home/202311016/sd-ragged/scripts/w4a16_e2e.py", line 2090, in <module>
+    main()
+  File "/home/202311016/sd-ragged/scripts/w4a16_e2e.py", line 1718, in main
+    model = load_eagle_model(
+            ^^^^^^^^^^^^^^^^^
+  File "/home/202311016/sd-ragged/scripts/w4a16_e2e.py", line 739, in load_eagle_model
+    model = EaModel.from_pretrained(
+            ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/eagle/model/ea_model.py", line 104, in from_pretrained
+    base_model = KVLlamaForCausalLM.from_pretrained(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/transformers/modeling_utils.py", line 311, in _wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/transformers/modeling_utils.py", line 4839, in from_pretrained
+    ) = cls._load_pretrained_model(
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/transformers/modeling_utils.py", line 5302, in _load_pretrained_model
+    _error_msgs, disk_offload_index, cpu_offload_index = load_shard_file(args)
+                                                         ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/transformers/modeling_utils.py", line 933, in load_shard_file
+    disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/transformers/modeling_utils.py", line 845, in _load_state_dict_into_meta_model
+    _load_parameter_into_model(model, param_name, param.to(param_device))
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/transformers/modeling_utils.py", line 733, in _load_parameter_into_model
+    module.load_state_dict({param_type: tensor}, strict=False, assign=True)
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/torch/nn/modules/module.py", line 2624, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for MarlinQuantLinear:
+	size mismatch for qweight: copying a param with shape torch.Size([896, 8192]) from checkpoint, the shape in current model is torch.Size([1792, 4096]).

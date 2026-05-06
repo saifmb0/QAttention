@@ -1,0 +1,105 @@
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.8.0+cu128).
+  [env] transformers=4.53.1  accelerate=0.34.2  OK
+  [prompts] loading ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json from anon8231489123/ShareGPT_Vicuna_unfiltered …
+  [prompts] loaded 3 prompts from ShareGPT_Vicuna_unfiltered (seed=42)
+
+========================================================================
+  Eagle-3 E2E Benchmark  ·  2D Sweep: depth × branching factor
+  Narrative (micro-benchmark validated on H100 SXM):
+    d=5–7  : LOSS regime   (N≈43–60, kernel overhead > savings)
+    d=9–12 : CROSSOVER     (N≈77–103, B-dependent win/loss)
+    d≥16   : WIN  regime   (N≥137, ancestor walk dominates)
+  L=0 crossovers: B=8→N≥103 | B=32→N≥51 | L≥1024→always wins
+========================================================================
+  Base:             /home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split-interleaved
+  Eagle:            /home/202311016/models/EAGLE-LLaMA3-Instruct-8B  (EAGLE-3)
+  Prompts:          3 per config (seed=42)
+  Depths:           [4, 8, 16, 32]
+  Branching (top_k):[4, 8, 16, 32]
+  Context lengths:  [4096]
+  Total configs:    16  (4 depths × 4 b-factors × 1 ctx-lengths)
+  Token budget grid (total_token per (b, d))  — N≥103 → B=8 wins:
+              d= 4  d= 8  d=16  d=32
+  b= 4 (top_k)      30     30     55    110↑
+  b= 8 (top_k)      30     55    110↑   219↑
+  b=16 (top_k)      55    110↑   219↑   439↑
+  b=32 (top_k)     110↑   219↑   439↑   878↑
+  (★ = EAGLE-3 default  |  ↑ = above B=8 kernel crossover N≥103)
+  HF token:         hf_bOkHM…
+  GPU:              NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+========================================================================
+
+  KV cache max_length: 5888  (prefix=4096 + prompt≤512 + new=256 + tree=878, rounded to 256)
+
+WARN  Python GIL is enabled: Multi-gpu quant acceleration for MoE models is sub-optimal and multi-core accelerated cpu packing is also disabled. We recommend Python >= 3.13.3t with Pytorch > 2.8 for mult-gpu quantization and multi-cpu packing with env `PYTHON_GIL=0`.
+INFO  ENV: Auto setting PYTORCH_ALLOC_CONF='expandable_segments:True,max_split_size_mb:256,garbage_collection_threshold:0.7' for memory saving.
+INFO  ENV: Auto setting CUDA_DEVICE_ORDER=PCI_BUS_ID for correctness.          
+INFO  
+
+┌─────────────┐    ┌────────────────────────┐    ┌────────────┐    ┌─────────┐
+│ GPT-QModel  │ -> │ ▓▓▓▓▓▓▓▓▓▓▓▓ 16bit     │ -> │ ▒▒▒▒ 8bit  │ -> │ ░░ 4bit │
+└─────────────┘    └────────────────────────┘    └────────────┘    └─────────┘
+GPT-QModel   : 6.0.3+92c36d1
+Transformers : 4.53.1
+Torch        : 2.8.0+cu128
+Triton       : 3.4.0
+
+  Loading Eagle model:
+    Base:  /home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split-interleaved
+    Eagle: /home/202311016/models/EAGLE-LLaMA3-Instruct-8B
+    Mode:  EAGLE-3
+    Tree:  total_token=878, depth=32, top_k=32
+    dtype: float16 (EAGLE tested config)
+    KV cache max_length: 5888 tokens
+WARN  QuantizeConfig: `desc_act=True` automatically disables `act_group_aware`. Set `act_group_aware=False` explicitly to silence this warning.
+INFO  Kernel: selected: `MarlinQuantLinear`                                    
+INFO  gc.collect() reclaimed 50 objects in 0.155s                              
+    Loaded in 12.9s
+    LLM: H=32, H_kv=8, D=128, layers=32
+    GPU: NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+
+  [warmup]  Compiling Triton kernels for 4 depth configs: [4, 8, 16, 32] …
+  [diag] input_ids shape=(1, 38) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nThanks. Based on this, can you go back to'
+Traceback (most recent call last):
+  File "/home/202311016/sd-ragged/scripts/w4a16_e2e.py", line 2179, in <module>
+    main()
+  File "/home/202311016/sd-ragged/scripts/w4a16_e2e.py", line 1832, in main
+    _warmup = run_generation(
+              ^^^^^^^^^^^^^^^
+  File "/home/202311016/sd-ragged/scripts/w4a16_e2e.py", line 1132, in run_generation
+    out_ids, new_token, n_steps_idx = model.eagenerate(
+                                      ^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/eagle/model/ea_model.py", line 246, in eagenerate
+    draft_tokens, retrieve_indices, tree_mask, tree_position_ids, logits, hidden_state, sample_token = initialize_tree(
+                                                                                                       ^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/eagle/model/utils.py", line 253, in initialize_tree
+    draft_tokens, retrieve_indices,tree_mask,tree_position_ids = model.ea_layer.topK_genrate(hidden_states, input_ids, model.base_model.lm_head,logits_processor)
+                                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/eagle/model/cnets.py", line 695, in topK_genrate
+    out_hidden, past_key_values = self(hidden_states, input_ids=input_ids, use_cache=True)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/eagle/model/cnets.py", line 640, in forward
+    hidden_states = self.fc(hidden_states)
+                    ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/202311016/.conda/envs/saif/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 125, in forward
+    return F.linear(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: mat1 and mat2 shapes cannot be multiplied (38x12288 and 8192x4096)

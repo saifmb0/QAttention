@@ -555,9 +555,8 @@ def benchmark_one(
                                 Q_TILE_SIZE=16, KV_TILE_SIZE=32,
                                 sm_scale=sm_d, mask_len=64)
 
-            deft_fn()  # validate / warmup
-            torch.cuda.synchronize()
-            t_deft = _cuda_median_ms(deft_fn, warmup, iters)
+            deft_g_fn, _ = _wrap_cuda_graph(deft_fn)
+            t_deft = _cuda_median_ms(deft_g_fn, warmup, iters)
         except Exception as exc:
             t_deft = nan
             print(f"    [SKIP] DeFT: {exc}")

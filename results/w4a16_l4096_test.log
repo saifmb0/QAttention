@@ -1,0 +1,207 @@
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.8.0+cu128).
+  [env] transformers=4.53.1  accelerate=0.34.2  OK
+  [prompts] loading ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json from anon8231489123/ShareGPT_Vicuna_unfiltered …
+  [prompts] loaded 3 prompts from ShareGPT_Vicuna_unfiltered (seed=42)
+
+========================================================================
+  Eagle-3 E2E Benchmark  ·  2D Sweep: depth × branching factor
+  Narrative (micro-benchmark validated on H100 SXM):
+    d=5–7  : LOSS regime   (N≈43–60, kernel overhead > savings)
+    d=9–12 : CROSSOVER     (N≈77–103, B-dependent win/loss)
+    d≥16   : WIN  regime   (N≥137, ancestor walk dominates)
+  L=0 crossovers: B=8→N≥103 | B=32→N≥51 | L≥1024→always wins
+========================================================================
+  Base:             /home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split-interleaved
+  Eagle:            /home/202311016/models/EAGLE-LLaMA3-Instruct-8B  (EAGLE-2)
+  Prompts:          3 per config (seed=42)
+  Depths:           [8, 16]
+  Branching (top_k):[8, 16]
+  Context lengths:  [4096]
+  Total configs:    4  (2 depths × 2 b-factors × 1 ctx-lengths)
+  Token budget grid (total_token per (b, d))  — N≥103 → B=8 wins:
+              d= 8  d=16
+  b= 8 (top_k)      55    110↑
+  b=16 (top_k)     110↑   219↑
+  (★ = EAGLE-3 default  |  ↑ = above B=8 kernel crossover N≥103)
+  HF token:         hf_bOkHM…
+  GPU:              NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+========================================================================
+
+  KV cache max_length: 5120  (prefix=4096 + prompt≤512 + new=128 + tree=219, rounded to 256)
+
+WARN  Python GIL is enabled: Multi-gpu quant acceleration for MoE models is sub-optimal and multi-core accelerated cpu packing is also disabled. We recommend Python >= 3.13.3t with Pytorch > 2.8 for mult-gpu quantization and multi-cpu packing with env `PYTHON_GIL=0`.
+INFO  ENV: Auto setting PYTORCH_ALLOC_CONF='expandable_segments:True,max_split_size_mb:256,garbage_collection_threshold:0.7' for memory saving.
+INFO  ENV: Auto setting CUDA_DEVICE_ORDER=PCI_BUS_ID for correctness.          
+INFO  
+
+┌─────────────┐    ┌────────────────────────┐    ┌────────────┐    ┌─────────┐
+│ GPT-QModel  │ -> │ ▓▓▓▓▓▓▓▓▓▓▓▓ 16bit     │ -> │ ▒▒▒▒ 8bit  │ -> │ ░░ 4bit │
+└─────────────┘    └────────────────────────┘    └────────────┘    └─────────┘
+GPT-QModel   : 6.0.3+15bcdbd
+Transformers : 4.53.1
+Torch        : 2.8.0+cu128
+Triton       : 3.4.0
+
+  Loading Eagle model:
+    Base:  /home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split-interleaved
+    Eagle: /home/202311016/models/EAGLE-LLaMA3-Instruct-8B
+    Mode:  EAGLE-2
+    Tree:  total_token=219, depth=16, top_k=16
+    dtype: float16 (EAGLE tested config)
+    KV cache max_length: 5120 tokens
+WARN  QuantizeConfig: `desc_act=True` automatically disables `act_group_aware`. Set `act_group_aware=False` explicitly to silence this warning.
+INFO  Kernel: selected: `MarlinQuantLinear`                                    
+INFO  gc.collect() reclaimed 50 objects in 0.159s                              
+    Loaded in 8.7s
+    LLM: H=32, H_kv=8, D=128, layers=32
+    GPU: NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+
+  [warmup]  Compiling Triton kernels for 2 depth configs: [8, 16] …
+  [diag] input_ids shape=(1, 38) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nThanks. Based on this, can you go back to'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (1.8%)  8.6 tok/s  verify=60.6 ms/step (52% of time)  [hook=1056×]  → "izzerizzerizzerizzerizzerizzerizzerizzerwiewiewiewiewiewiewi..."
+  [warmup d=8]  done (8.6 tok/s, accept=1.00/step)
+  [diag] input_ids shape=(1, 38) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nThanks. Based on this, can you go back to'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (0.9%)  6.4 tok/s  verify=64.5 ms/step (41% of time)  [hook=1056×]  → "izzerizzerizzerizzerizzerizzerizzerizzerwiewiewiewiewiewiewi..."
+  [warmup d=16]  done (6.4 tok/s, accept=1.00/step)
+  [ctx] Built prefix tensor: L=4096 tokens  (actual=4096, device=cuda:0)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONFIG 1/4  —  b=8 d=8 tt=55  L=4096
+    depth=8  total_token=55  top_k=8  context_length=4096
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [vanilla]  depth=8  total_token=55  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/3] 129 tok / 129 steps  accept=1.00/step (1.8%)  7.4 tok/s  verify=57.2 ms/step (43% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [2/3] 129 tok / 129 steps  accept=1.00/step (1.8%)  7.4 tok/s  verify=57.2 ms/step (43% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [3/3] 129 tok / 129 steps  accept=1.00/step (1.8%)  7.4 tok/s  verify=57.4 ms/step (42% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+    → 7.4 tok/s   1.00 acc/step   verify=57.3 ms (42%)
+
+  [ragged]   depth=8  total_token=55  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/3] 129 tok / 129 steps  accept=1.00/step (1.8%)  7.4 tok/s  verify=56.9 ms/step (42% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [2/3] 129 tok / 129 steps  accept=1.00/step (1.8%)  7.4 tok/s  verify=56.8 ms/step (42% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [3/3] 129 tok / 129 steps  accept=1.00/step (1.8%)  7.4 tok/s  verify=56.9 ms/step (42% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+    → 7.4 tok/s   1.00 acc/step   verify=56.9 ms (42%)
+
+  ▸ E2E speedup at d=8 L=4096:  1.001×  (7.4 → 7.4 tok/s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONFIG 2/4  —  b=8 d=16 tt=110  L=4096
+    depth=16  total_token=110  top_k=8  context_length=4096
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [vanilla]  depth=16  total_token=110  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  4.5 tok/s  verify=99.5 ms/step (44% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [2/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  4.5 tok/s  verify=99.2 ms/step (44% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [3/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  4.4 tok/s  verify=99.4 ms/step (44% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+    → 4.5 tok/s   1.00 acc/step   verify=99.4 ms (44%)
+
+  [ragged]   depth=16  total_token=110  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  5.1 tok/s  verify=72.3 ms/step (37% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [2/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  5.1 tok/s  verify=72.2 ms/step (37% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [3/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  5.1 tok/s  verify=72.2 ms/step (37% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+    → 5.1 tok/s   1.00 acc/step   verify=72.3 ms (37%)
+
+  ▸ E2E speedup at d=16 L=4096:  1.136×  (4.5 → 5.1 tok/s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONFIG 3/4  —  b=16 d=8 tt=110  L=4096
+    depth=8  total_token=110  top_k=16  context_length=4096
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [vanilla]  depth=8  total_token=110  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  5.6 tok/s  verify=99.6 ms/step (56% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [2/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  5.6 tok/s  verify=99.4 ms/step (56% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [3/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  5.6 tok/s  verify=99.6 ms/step (56% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+    → 5.6 tok/s   1.00 acc/step   verify=99.5 ms (56%)
+
+  [ragged]   depth=8  total_token=110  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  6.3 tok/s  verify=78.1 ms/step (50% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [2/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  6.6 tok/s  verify=72.1 ms/step (48% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [3/3] 129 tok / 129 steps  accept=1.00/step (0.9%)  6.6 tok/s  verify=72.1 ms/step (47% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+    → 6.5 tok/s   1.00 acc/step   verify=74.1 ms (48%)
+
+  ▸ E2E speedup at d=8 L=4096:  1.165×  (5.6 → 6.5 tok/s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONFIG 4/4  —  b=16 d=16 tt=219  L=4096
+    depth=16  total_token=219  top_k=16  context_length=4096
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [vanilla]  depth=16  total_token=219  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/3] 129 tok / 129 steps  accept=1.00/step (0.5%)  3.4 tok/s  verify=169.6 ms/step (57% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [2/3] 129 tok / 129 steps  accept=1.00/step (0.5%)  3.4 tok/s  verify=169.1 ms/step (57% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [3/3] 129 tok / 129 steps  accept=1.00/step (0.5%)  3.3 tok/s  verify=169.5 ms/step (57% of time)  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+    → 3.4 tok/s   1.00 acc/step   verify=169.4 ms (57%)
+
+  [ragged]   depth=16  total_token=219  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/3] 129 tok / 129 steps  accept=1.00/step (0.5%)  4.3 tok/s  verify=103.1 ms/step (44% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [2/3] 129 tok / 129 steps  accept=1.00/step (0.5%)  4.4 tok/s  verify=97.3 ms/step (43% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+  [3/3] 129 tok / 129 steps  accept=1.00/step (0.5%)  4.4 tok/s  verify=97.0 ms/step (43% of time)  [hook=4128×]  → "olloolloolloolloolloolloolloolloolloolloolloolloolloolloollo..."
+    → 4.4 tok/s   1.00 acc/step   verify=99.1 ms (43%)
+
+  ▸ E2E speedup at d=16 L=4096:  1.309×  (3.4 → 4.4 tok/s)
+
+  Saved: results/w4a16_e2e_l4096/w4a16_l4096_20260506_111807.csv
+  Saved: results/w4a16_e2e_l4096/w4a16_l4096.csv  (latest)
+  Saved: results/w4a16_e2e_l4096/e2e_summary_20260506_111807.csv
+  Saved: results/w4a16_e2e_l4096/e2e_summary.csv  (latest)
+
+========================================================================
+  E2E BENCHMARK COMPLETE  —  depth × branching factor × context-length
+========================================================================
+
+────────────────────────────────────────────────────────────────────────
+  CONTEXT LENGTH L=4096
+────────────────────────────────────────────────────────────────────────
+
+  E2E Speedup  (ragged / vanilla — >1 means ragged wins)  [L=4096]
+   b \ d       8      16
+  ──────────────────────
+     b=8 1.000×  1.133× 
+    b=16 1.161×  1.294× 
+
+  Vanilla Eagle-3  tok/s  [L=4096]
+   b \ d       8      16
+  ──────────────────────
+     b=8    7.4     4.5 
+    b=16    5.6     3.4 
+
+  Ragged-kernel Eagle-3  tok/s  [L=4096]
+   b \ d       8      16
+  ──────────────────────
+     b=8    7.4     5.1 
+    b=16    6.5     4.4 
+
+  Mean accepted tokens/step  (vanilla)  [L=4096]
+   b \ d       8      16
+  ──────────────────────
+     b=8   1.00    1.00 
+    b=16   1.00    1.00 
+
+  ──────────────────────────────────────────────────────────────────
+  Crossover analysis  [L=4096]  (min depth where ragged beats vanilla)
+  ──────────────────────────────────────────────────────────────────
+  Overall best: 1.294× at b=16, d=16
+
+  b=8:  ragged wins at d ≥ 16  (best 1.133× at d=16)
+  b=16:  ragged wins at d ≥ 8  (best 1.294× at d=16)
+
+  Reference: micro-benchmark crossover thresholds (H100 SXM, L=0):
+    b= 8 d= 8  N≈ 55  [CROSS]
+    b= 8 d=16  N≈110  [WIN ↑ ]
+
+    b=16 d= 8  N≈110  [WIN ↑ ]
+    b=16 d=16  N≈219  [WIN ↑ ]
+
+  Kernel microbenchmarks (SDPA vs FlashInfer vs DeFT): benchmark_sota.py
+  Paper-figure micro-bench (BS×b×d×L):                 benchmark_micro.py
+========================================================================
+

@@ -2203,6 +2203,12 @@ def main() -> None:
     p = torch.cuda.get_device_properties(0)
     print(f"  GPU:              {p.name}  SM {p.major}.{p.minor}  "
           f"{p.total_memory // 1024**3} GB")
+    if args.load_in_4bit:
+        print(f"  Precision:        w4a16 (NF4 bitsandbytes, compute=fp16)")
+    elif args.fp8:
+        print(f"  Precision:        fp8")
+    else:
+        print(f"  Precision:        fp16")
     if args.profile:
         print(f"  PROFILE MODE:     ON  (per-component timing in ragged path)")
     print("=" * 72)

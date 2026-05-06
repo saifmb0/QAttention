@@ -1,0 +1,123 @@
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.8.0+cu128).
+  [env] transformers=4.53.1  accelerate=0.34.2  OK
+  [prompts] loading ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json from anon8231489123/ShareGPT_Vicuna_unfiltered …
+  [prompts] loaded 10 prompts from ShareGPT_Vicuna_unfiltered (seed=42)
+
+========================================================================
+  Eagle-3 E2E Benchmark  ·  2D Sweep: depth × branching factor
+  Narrative (micro-benchmark validated on H100 SXM):
+    d=5–7  : LOSS regime   (N≈43–60, kernel overhead > savings)
+    d=9–12 : CROSSOVER     (N≈77–103, B-dependent win/loss)
+    d≥16   : WIN  regime   (N≥137, ancestor walk dominates)
+  L=0 crossovers: B=8→N≥103 | B=32→N≥51 | L≥1024→always wins
+========================================================================
+  Base:             /home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split-interleaved
+  Eagle:            /home/202311016/models/EAGLE-LLaMA3-Instruct-8B  (EAGLE-2)
+  Prompts:          10 per config (seed=42)
+  Depths:           [4, 8, 16, 32]
+  Branching (top_k):[4, 8, 16, 32]
+  Context lengths:  [4096]
+  Total configs:    16  (4 depths × 4 b-factors × 1 ctx-lengths)
+  Token budget grid (total_token per (b, d))  — N≥103 → B=8 wins:
+              d= 4  d= 8  d=16  d=32
+  b= 4 (top_k)      30     30     55    110↑
+  b= 8 (top_k)      30     55    110↑   219↑
+  b=16 (top_k)      55    110↑   219↑   439↑
+  b=32 (top_k)     110↑   219↑   439↑   878↑
+  (★ = EAGLE-3 default  |  ↑ = above B=8 kernel crossover N≥103)
+  HF token:         hf_bOkHM…
+  GPU:              NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+========================================================================
+
+  KV cache max_length: 5888  (prefix=4096 + prompt≤512 + new=256 + tree=878, rounded to 256)
+
+WARN  Python GIL is enabled: Multi-gpu quant acceleration for MoE models is sub-optimal and multi-core accelerated cpu packing is also disabled. We recommend Python >= 3.13.3t with Pytorch > 2.8 for mult-gpu quantization and multi-cpu packing with env `PYTHON_GIL=0`.
+INFO  ENV: Auto setting PYTORCH_ALLOC_CONF='expandable_segments:True,max_split_size_mb:256,garbage_collection_threshold:0.7' for memory saving.
+INFO  ENV: Auto setting CUDA_DEVICE_ORDER=PCI_BUS_ID for correctness.          
+INFO  
+
+┌─────────────┐    ┌────────────────────────┐    ┌────────────┐    ┌─────────┐
+│ GPT-QModel  │ -> │ ▓▓▓▓▓▓▓▓▓▓▓▓ 16bit     │ -> │ ▒▒▒▒ 8bit  │ -> │ ░░ 4bit │
+└─────────────┘    └────────────────────────┘    └────────────┘    └─────────┘
+GPT-QModel   : 6.0.3+15bcdbd
+Transformers : 4.53.1
+Torch        : 2.8.0+cu128
+Triton       : 3.4.0
+
+  Loading Eagle model:
+    Base:  /home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split-interleaved
+    Eagle: /home/202311016/models/EAGLE-LLaMA3-Instruct-8B
+    Mode:  EAGLE-2
+    Tree:  total_token=878, depth=32, top_k=32
+    dtype: float16 (EAGLE tested config)
+    KV cache max_length: 5888 tokens
+WARN  QuantizeConfig: `desc_act=True` automatically disables `act_group_aware`. Set `act_group_aware=False` explicitly to silence this warning.
+INFO  Kernel: selected: `MarlinQuantLinear`                                    
+INFO  gc.collect() reclaimed 50 objects in 0.148s                              
+    Loaded in 8.7s
+    LLM: H=32, H_kv=8, D=128, layers=32
+    GPU: NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+
+  [warmup]  Compiling Triton kernels for 4 depth configs: [4, 8, 16, 32] …
+  [diag] input_ids shape=(1, 38) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nThanks. Based on this, can you go back to'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (3.3%)  10.8 tok/s  verify=58.7 ms/step (63% of time)  [hook=1056×]  → "quinquinquinquinquinquinquinquinquinquinquinquinquinquinquin..."
+  [warmup d=4]  done (10.8 tok/s, accept=1.00/step)
+  [diag] input_ids shape=(1, 38) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nThanks. Based on this, can you go back to'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (3.3%)  10.3 tok/s  verify=48.6 ms/step (50% of time)  [hook=1056×]  → "quinquinquinquinquinquinquinquinquinquinquinquinquinquinquin..."
+  [warmup d=8]  done (10.3 tok/s, accept=1.00/step)
+  [diag] input_ids shape=(1, 38) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nThanks. Based on this, can you go back to'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (1.8%)  7.1 tok/s  verify=49.8 ms/step (35% of time)  [hook=1056×]  → "quinquinquinquinquinquinquinquinquinquinquinquinquinquinquin..."
+  [warmup d=16]  done (7.1 tok/s, accept=1.00/step)
+  [diag] input_ids shape=(1, 38) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nThanks. Based on this, can you go back to'
+  [1/1] 33 tok / 33 steps  accept=1.00/step (0.9%)  4.1 tok/s  verify=66.0 ms/step (27% of time)  [hook=1056×]  → "quinquinquinquinquinquinquinquinquinquinquinquinquinquinquin..."
+  [warmup d=32]  done (4.1 tok/s, accept=1.00/step)
+  [ctx] Built prefix tensor: L=4096 tokens  (actual=4096, device=cuda:0)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONFIG 1/16  —  b=4 d=4 tt=30  L=4096
+    depth=4  total_token=30  top_k=4  context_length=4096
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [vanilla]  depth=4  total_token=30  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.6 tok/s  verify=44.7 ms/step (52% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [2/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.5 tok/s  verify=44.8 ms/step (52% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [3/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.4 tok/s  verify=44.8 ms/step (51% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [4/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.5 tok/s  verify=44.8 ms/step (52% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [5/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.5 tok/s  verify=44.7 ms/step (52% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [6/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.4 tok/s  verify=45.4 ms/step (52% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [7/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.4 tok/s  verify=45.3 ms/step (52% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [8/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.5 tok/s  verify=44.9 ms/step (51% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [9/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.3 tok/s  verify=45.0 ms/step (51% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [10/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  11.5 tok/s  verify=44.8 ms/step (52% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+    → 11.5 tok/s   1.00 acc/step   verify=44.9 ms (52%)
+
+  [ragged]   depth=4  total_token=30  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.4 tok/s  verify=53.8 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [2/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.5 tok/s  verify=53.6 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [3/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.5 tok/s  verify=53.4 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [4/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.5 tok/s  verify=53.4 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [5/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.5 tok/s  verify=53.5 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [6/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.5 tok/s  verify=53.6 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [7/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.5 tok/s  verify=53.8 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [8/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.4 tok/s  verify=53.8 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [9/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.3 tok/s  verify=54.1 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [10/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  10.4 tok/s  verify=53.7 ms/step (56% of time)  [hook=8224×]  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+    → 10.4 tok/s   1.00 acc/step   verify=53.7 ms (56%)
+
+  ▸ E2E speedup at d=4 L=4096:  0.910×  (11.5 → 10.4 tok/s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONFIG 2/16  —  b=4 d=8 tt=30  L=4096
+    depth=8  total_token=30  top_k=4  context_length=4096
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [vanilla]  depth=8  total_token=30  L=4096
+  [diag] input_ids shape=(1, 4134) device=cuda:0  prefix=4096 + head tokens: 'Large language models such as LLaMA, GPT, and Gemini have demonstrated'
+  [1/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.0 tok/s  verify=45.0 ms/step (41% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [2/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.0 tok/s  verify=45.5 ms/step (41% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [3/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.0 tok/s  verify=44.9 ms/step (41% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [4/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.1 tok/s  verify=44.9 ms/step (41% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [5/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.1 tok/s  verify=44.8 ms/step (41% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."
+  [6/10] 257 tok / 257 steps  accept=1.00/step (3.3%)  9.1 tok/s  verify=44.9 ms/step (41% of time)  → " tslint tslint tslint tslint tslint tslint tslint tslint tsl..."

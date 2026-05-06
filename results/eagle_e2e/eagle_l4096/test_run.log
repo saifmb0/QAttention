@@ -1,0 +1,108 @@
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.8.0+cu128).
+  [env] transformers=4.53.1  accelerate=0.34.2  OK
+  [prompts] loading ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json from anon8231489123/ShareGPT_Vicuna_unfiltered …
+  [prompts] loaded 2 prompts from ShareGPT_Vicuna_unfiltered (seed=42)
+
+========================================================================
+  Eagle-3 E2E Benchmark  ·  2D Sweep: depth × branching factor
+  Narrative (micro-benchmark validated on H100 SXM):
+    d=5–7  : LOSS regime   (N≈43–60, kernel overhead > savings)
+    d=9–12 : CROSSOVER     (N≈77–103, B-dependent win/loss)
+    d≥16   : WIN  regime   (N≥137, ancestor walk dominates)
+  L=0 crossovers: B=8→N≥103 | B=32→N≥51 | L≥1024→always wins
+========================================================================
+  Base:             meta-llama/Llama-3.1-8B-Instruct
+  Eagle:            yuhuili/EAGLE3-LLaMA3.1-Instruct-8B  (EAGLE-3)
+  Prompts:          2 per config (seed=42)
+  Depths:           [24]
+  Branching (top_k):[8]
+  Context lengths:  [4096]
+  Total configs:    1  (1 depths × 1 b-factors × 1 ctx-lengths)
+  Token budget grid (total_token per (b, d))  — N≥103 → B=8 wins:
+              d=24
+  b= 8 (top_k)     165↑
+  (★ = EAGLE-3 default  |  ↑ = above B=8 kernel crossover N≥103)
+  HF token:         hf_bOkHM…
+  GPU:              NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+  Precision:        fp16
+========================================================================
+  [prefix] Loaded arXiv 1706.03762 from cache (44,182 chars)
+
+════════════════════════════════════════════════════════════════════════
+  CONTEXT LENGTH  L=4096  —  KV cache max_length=5120  (4096 + 512 + 256 + 165)
+════════════════════════════════════════════════════════════════════════
+
+  Loading Eagle model:
+    Base:  meta-llama/Llama-3.1-8B-Instruct
+    Eagle: yuhuili/EAGLE3-LLaMA3.1-Instruct-8B
+    Mode:  EAGLE-3
+    Tree:  total_token=165, depth=24, top_k=8
+    dtype: float16 (EAGLE tested config)
+    KV cache max_length: 5120 tokens
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  1.56it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:01<00:01,  1.66it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  1.72it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.47it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.10it/s]
+    Loaded in 9.2s
+    LLM: H=32, H_kv=8, D=128, layers=32
+    GPU: NVIDIA RTX 4000 Ada Generation  SM 8.9  19 GB
+
+  [warmup]  Compiling Triton kernels: depths=[24] …
+  [diag] input_ids shape=(1, 63) device=cuda:0  head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [1/1] 34 tok / 5 steps  accept=6.80/step (4.1%)  15.3 tok/s  verify=293.8 ms/step (66% of time)  [hook=160×]  → "This conversation has just begun. I'm happy to help you disc..."
+  [warmup d=24]  done (15.3 tok/s, accept=6.80/step)
+  [ctx] Built prefix tensor: L=4096 tokens  (actual=4096, device=cuda:0)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONFIG 1/1  —  b=8 d=24 tt=165  L=4096
+    depth=24  total_token=165  top_k=8  context_length=4096
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [vanilla]  depth=24  total_token=165  L=4096
+  [diag] input_ids shape=(1, 4158) device=cuda:0  prefix=4096 + head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [OOM] vanilla skipped — CUDA out of memory. Tried to allocate 1.03 GiB. GPU 0 has a total capacity of 19.54 GiB of which 608.31 MiB is free. Including non-PyTorch memory, this process has 17.95 GiB memory in use. Of the allocated memory 17.59 GiB is allocated by PyTorch, and 163.88 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+  [ragged]   depth=24  total_token=165  L=4096
+  [diag] input_ids shape=(1, 4158) device=cuda:0  prefix=4096 + head tokens: '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday'
+  [OOM] ragged skipped — CUDA out of memory. Tried to allocate 1.03 GiB. GPU 0 has a total capacity of 19.54 GiB of which 674.31 MiB is free. Including non-PyTorch memory, this process has 17.88 GiB memory in use. Of the allocated memory 17.59 GiB is allocated by PyTorch, and 98.55 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+  [ctx=4096] Model freed, VRAM released for next group.
+  Saved: results/eagle_e2e/eagle_l4096/e2e_summary_20260505_151526.csv
+  Saved: results/eagle_e2e/eagle_l4096/e2e_summary.csv  (latest)
+
+========================================================================
+  E2E BENCHMARK COMPLETE  —  depth × branching factor × context-length
+========================================================================
+
+────────────────────────────────────────────────────────────────────────
+  CONTEXT LENGTH L=4096
+────────────────────────────────────────────────────────────────────────
+
+  E2E Speedup  (ragged / vanilla — >1 means ragged wins)  [L=4096]
+   b \ d      24
+  ──────────────
+     b=8       —
+
+  Vanilla Eagle-3  tok/s  [L=4096]
+   b \ d      24
+  ──────────────
+     b=8       —
+
+  Ragged-kernel Eagle-3  tok/s  [L=4096]
+   b \ d      24
+  ──────────────
+     b=8       —
+
+  Mean accepted tokens/step  (vanilla)  [L=4096]
+   b \ d      24
+  ──────────────
+     b=8       —
+
+  ──────────────────────────────────────────────────────────────────
+  Crossover analysis  [L=4096]  (min depth where ragged beats vanilla)
+  ──────────────────────────────────────────────────────────────────
+
+  Reference: micro-benchmark crossover thresholds (H100 SXM, L=0):
+    b= 8 d=24  N≈165  [WIN ↑ ]
+
+  Kernel microbenchmarks (SDPA vs FlashInfer vs DeFT): benchmark_sota.py
+  Paper-figure micro-bench (BS×b×d×L):                 benchmark_micro.py
+========================================================================
+
