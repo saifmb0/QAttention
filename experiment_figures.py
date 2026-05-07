@@ -157,8 +157,10 @@ def load_eagle_e2e():
 
     paired["e2e_speedup"] = paired["wall_ms_vanilla"] / paired["wall_ms_ragged"]
     paired["verify_drop"] = (
-        paired["verify_fraction_vanilla"] - paired["verify_fraction_ragged"]
-    ) / paired["verify_fraction_vanilla"]
+        (paired["verify_fraction_vanilla"] - paired["verify_fraction_ragged"])
+        / paired["verify_fraction_vanilla"]
+        * 100.0
+    )
 
     return (
         paired.groupby("total_token", as_index=False)
@@ -168,6 +170,174 @@ def load_eagle_e2e():
         )
         .sort_values("total_token")
     )
+
+
+def _load_multi_section_detail_csv(path, detail_header):
+    """Load the detail section from a multi-section aggregate CSV."""
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read().strip()
+
+    sections = {}
+    current_header = None
+    current_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped == detail_header:
+            if current_header is not None and current_lines:
+                sections[current_header] = pd.read_csv(StringIO("\n".join(current_lines)))
+            current_header = stripped
+            current_lines = [stripped]
+        else:
+            current_lines.append(stripped)
+
+    if current_header is not None and current_lines:
+        sections[current_header] = pd.read_csv(StringIO("\n".join(current_lines)))
+
+    if detail_header not in sections:
+        raise ValueError(f"Could not parse {path}")
+
+    return sections[detail_header]
+
+
+def _summarize_sweep(detail, x_col):
+    """Compute throughput speedup and verification-cost drop for a sweep."""
+    paired = detail.pivot_table(
+        index=[x_col],
+        columns="mode",
+        values=["tok_per_sec", "verify_fraction"],
+        aggfunc="mean",
+    )
+    paired.columns = [f"{metric}_{mode}" for metric, mode in paired.columns]
+    paired = paired.reset_index()
+
+    required = [
+        "tok_per_sec_vanilla",
+        "tok_per_sec_ragged",
+        "verify_fraction_vanilla",
+        "verify_fraction_ragged",
+    ]
+    paired = paired.dropna(subset=required)
+
+    paired["throughput_speedup"] = paired["tok_per_sec_ragged"] / paired["tok_per_sec_vanilla"]
+    paired["verify_drop_pct"] = (
+        (paired["verify_fraction_vanilla"] - paired["verify_fraction_ragged"])
+        / paired["verify_fraction_vanilla"]
+        * 100.0
+    )
+
+    return paired.sort_values(x_col)
+
+
+def load_a100_ctx_sweep():
+    """Load the A100 context-length sweep.
+
+    The intended slice is the fixed d=20, b=20 run family with varying
+    context lengths (roughly 2k–10k tokens).
+    """
+    path = os.path.join(REPO_ROOT, "results", "A100-ctx-sweep", "aggregate.csv")
+    detail_header = (
+        "context_length,depth,total_token,top_k,config_label,mode,model,"
+        "eagle_model,prompt,num_tokens,num_steps,wall_ms,tok_per_sec,"
+        "mean_accepted_per_step,acceptance_rate,mean_verify_ms,verify_fraction"
+    )
+    detail = _load_multi_section_detail_csv(path, detail_header).copy()
+
+    numeric_cols = [
+        "context_length",
+        "depth",
+        "total_token",
+        "top_k",
+        "num_tokens",
+        "num_steps",
+        "wall_ms",
+        "tok_per_sec",
+        "mean_accepted_per_step",
+        "acceptance_rate",
+        "mean_verify_ms",
+        "verify_fraction",
+    ]
+    for col in numeric_cols:
+        if col in detail.columns:
+            detail[col] = pd.to_numeric(detail[col], errors="coerce")
+
+    # Keep the intended fixed-tree slice only.
+    detail = detail[(detail["depth"] == 20) & (detail["top_k"] == 20)].copy()
+    detail = detail[(detail["context_length"] >= 2048) & (detail["context_length"] <= 10240)].copy()
+    return _summarize_sweep(detail, "context_length")
+
+
+def load_a100_n_sweep():
+    """Load the A100 tree-size sweep."""
+    path = os.path.join(REPO_ROOT, "results", "A100-n-sweep", "aggregate.csv")
+    detail_header = (
+        "context_length,depth,total_token,top_k,config_label,mode,model,"
+        "eagle_model,prompt,num_tokens,num_steps,wall_ms,tok_per_sec,"
+        "mean_accepted_per_step,acceptance_rate,mean_verify_ms,verify_fraction"
+    )
+    detail = _load_multi_section_detail_csv(path, detail_header).copy()
+
+    numeric_cols = [
+        "context_length",
+        "depth",
+        "total_token",
+        "top_k",
+        "num_tokens",
+        "num_steps",
+        "wall_ms",
+        "tok_per_sec",
+        "mean_accepted_per_step",
+        "acceptance_rate",
+        "mean_verify_ms",
+        "verify_fraction",
+    ]
+    for col in numeric_cols:
+        if col in detail.columns:
+            detail[col] = pd.to_numeric(detail[col], errors="coerce")
+
+    return _summarize_sweep(detail, "total_token")
+
+
+def plot_a100_sweep(df, x_col, x_label, title, out_name):
+    fig, ax1 = plt.subplots(figsize=(3.7, 2.6))
+    ax2 = ax1.twinx()
+    ax2.spines["top"].set_visible(False)
+
+    ax1.axhline(y=1.0, color=REF_COLOR, linestyle="--", linewidth=0.6, zorder=0)
+    ax2.axhline(y=0.0, color=REF_COLOR, linestyle=":", linewidth=0.6, zorder=0)
+
+    l1, = ax1.plot(
+        df[x_col],
+        df["throughput_speedup"],
+        linestyle="-",
+        marker="o",
+        markersize=3.3,
+        linewidth=1.25,
+        color=OURS_COLOR,
+        label="Throughput",
+    )
+    l2, = ax2.plot(
+        df[x_col],
+        df["verify_drop_pct"],
+        linestyle="--",
+        marker="s",
+        markersize=3.0,
+        linewidth=1.1,
+        color=TOL[0],
+        label=r"$\Delta$ Cost (%)",
+    )
+
+    ax1.set_xlabel(x_label)
+    ax1.set_ylabel(r"Throughput ($\times$)", color=OURS_COLOR)
+    ax2.set_ylabel(r"$\Delta$ Relative verify cost (%)", color=TOL[0])
+    ax1.tick_params(axis="y", labelcolor=OURS_COLOR)
+    ax2.tick_params(axis="y", labelcolor=TOL[0])
+    ax1.set_title(title)
+    ax1.legend(handles=[l1, l2], fontsize=8, loc="upper left", frameon=False, handlelength=0.5, handletextpad=0.5)
+    ax1.grid(True, which="both", ls="-", alpha=0.3)
+    plt.tight_layout()
+    _save(out_name)
 
 
 def plot_speedup_heatmap(micro):
@@ -193,7 +363,7 @@ def plot_speedup_heatmap(micro):
     ax.set_title("Tree-Attention Speedup: Depth vs Branching Factor\n(Batch Size=1, Prefix=0)")
     ax.set_xlabel("Branching Factor (b)")
     ax.set_ylabel("Tree Depth (d)")
-    _save("speedup_heatmap_d_vs_b")
+    _save("fig1_heatmap_d_vs_b")
 
 
 def plot_balanced_speedup_heatmap(micro):
@@ -219,7 +389,7 @@ def plot_balanced_speedup_heatmap(micro):
     ax.set_title("Balanced Tree-Attention Speedup over DeFT: Depth vs Branching Factor\n(Batch Size=1, Prefix=0)")
     ax.set_xlabel("Branching Factor (b)")
     ax.set_ylabel("Tree Depth (d)")
-    _save("speedup_heatmap_DeFT_d_vs_b")
+    _save("fig2_heatmap_DeFT")
 
 
 def plot_speedup_vs_nodes(micro):
@@ -317,7 +487,7 @@ def plot_speedup_vs_nodes(micro):
     )
     ax_bottom.grid(True, which="both", ls="-", alpha=0.3)
     ax_top.grid(True, which="both", ls="-", alpha=0.3)
-    _save("speedup_vs_nodes")
+    _save("fig3_kernel_latency_vs_tree_size")
 
 
 def plot_sequoia_e2e(sequoia):
@@ -360,7 +530,7 @@ def plot_sequoia_e2e(sequoia):
     
     ax1.legend(handles=[l1, l2], loc="upper left", fontsize=6, handlelength=0.35)
     plt.tight_layout()
-    _save("fig6_e2e_sequoia")
+    _save("fig9_Sequoia_speedup")
 
 
 def plot_eagle_e2e(eagle_e2e):
@@ -381,7 +551,7 @@ def plot_eagle_e2e(eagle_e2e):
         markersize=3.4,
         linewidth=1.3,
         color=OURS_COLOR,
-        label="E2E speedup",
+        label=r"Throughput ($\times$)",
     )
     l2, = ax2.plot(
         df["total_token"],
@@ -391,17 +561,21 @@ def plot_eagle_e2e(eagle_e2e):
         markersize=3.0,
         linewidth=1.1,
         color=TOL[0],
-        label="Relative drop in verification fraction",
+        label="$\Delta$ Cost (%)",
     )
 
-    ax.set_xlabel(r"Tree size ($tt$)")
-    ax.set_ylabel(r"End-to-end speedup ($\times$)")
-    ax2.set_ylabel("Relative drop in verification fraction")
-    ax.set_title("EAGLE E2E Speedup vs Tree Size")
-    ax.legend(handles=[l1, l2], loc="upper left", frameon=False)
+    ax.set_xlabel(r"Tree size (total tokens)")
+    ax.set_ylabel(r"Throughput ($\times$)")
+    ax2.set_ylabel(r"$\Delta$ Relative verify cost (%)")
+    ax.set_title("EAGLE-3 Tree Size Sweep (L=0)")
+    ax.legend(handles=[l1, l2], loc="upper left", frameon=False,
+              fontsize=8,
+                handlelength=0.5,
+                handletextpad=0.5
+              )
     ax.grid(True, which="both", ls="-", alpha=0.3)
     plt.tight_layout()
-    _save("fig6_e2e_eagle")
+    _save("fig6_eagle-3_speedup_vs_tree_size")
 
 
 def plot_eagle_accepted_step(eagle):
@@ -453,7 +627,7 @@ def plot_eagle_accepted_step(eagle):
     ax.legend(loc="upper left", handlelength=0.5, fontsize=8, handletextpad=0.5)
     ax.grid(True, which="both", ls="-", alpha=0.3)
     plt.tight_layout()
-    _save("fig4_eagle_accepted_step")
+    _save("fig5_accepted_tokens_vs_cost")
 
 
 def plot_eagle_acceptance_rate(eagle):
@@ -505,24 +679,40 @@ def plot_eagle_acceptance_rate(eagle):
     ax1.set_title("Acceptance Rate vs Cost")
     ax1.grid(True, which="both", ls="-", alpha=0.3)
     plt.tight_layout()
-    _save("fig5_eagle_acceptance_rate")
+    _save("fig4_acceptance_rate_vs_cost")
 
 
 if __name__ == "__main__":
     print("Loading data...")
     micro = load_micro()
     balanced_micro = load_balanced_micro()
-    # sequoia = load_sequoia()
+    sequoia = load_sequoia()
     eagle = load_eagle()
     eagle_e2e = load_eagle_e2e()
+    a100_ctx = load_a100_ctx_sweep()
+    a100_n = load_a100_n_sweep()
 
     print("Generating figures...")
     plot_speedup_heatmap(micro)
     plot_balanced_speedup_heatmap(balanced_micro)
-    # plot_speedup_vs_nodes(micro)
-    # plot_sequoia_e2e(sequoia)
-    # plot_eagle_accepted_step(eagle)
-    # plot_eagle_acceptance_rate(eagle)
+    plot_speedup_vs_nodes(micro)
+    plot_sequoia_e2e(sequoia)
+    plot_eagle_accepted_step(eagle)
+    plot_eagle_acceptance_rate(eagle)
     plot_eagle_e2e(eagle_e2e)
+    plot_a100_sweep(
+        a100_ctx,
+        "context_length",
+        "Prefix (tokens)",
+        "A100 Prefix Sweep (d=20, b=20)",
+        "fig7_a100_ctx_sweep",
+    )
+    plot_a100_sweep(
+        a100_n,
+        "total_token",
+        "Tree size (total tokens)",
+        "A100 Tree Size Sweep (L=4096)",
+        "fig8_a100_n_sweep",
+    )
     
     print(f"\nAll experimental figures generated in {FIG_DIR}")
