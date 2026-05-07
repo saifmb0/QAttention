@@ -211,8 +211,7 @@ kernels are timed identically. End-to-end results aggregate three
 independent runs over a fixed prompt set; we report mean speedup over
 the FlashInfer-backed pipeline (\emph{vanilla}) versus the same
 pipeline with our kernel substituted in (\emph{ragged}). Prompts
-that trigger early stopping (\textless 200 toks) are filtered out to avoid skewing the
-throughput metric.
+that trigger early stopping (\textless 200 toks) are filtered out to avoid skewing the metrics.
 
 \paragraph{Correctness.}
 We compare \method{}'s per-token output tensors against a padded
@@ -226,58 +225,7 @@ absolute error is $8.2 \times 10^{-8}$.
 Both figures are consistent with fp16 online-softmax accumulation
 rounding (fp16 unit-roundoff is $\approx 4.9 \times 10^{-4}$, and
 accumulating $O(\depth)$ terms produces proportional drift).
-No configuration produces a different top-1 logit under \method{}
-versus the reference, confirming that the ancestor-walk
-simplification introduces no approximation error.
-
-\subsection{Kernel-level: \method{} scales linearly}
-\label{sec:eval-kernel}
-
-Tables~\ref{tab:micro-flashinfer}--\ref{tab:micro-deft} sweep
-$(\branching,\depth)$ at $\batchsize{=}1$ and no prefix length
-to measure pure tree attention cost.
-
-\paragraph{Near-parity at small trees (top-left corner).}
-At $(\depth{\le}5,\branching{\le}8)$, both kernels report
-speedups within $\approx\!0.97\times$ of each other.
-This is expected: at small tree sizes the attention computation
-itself is so brief (sub-microsecond) that kernel launch overhead,
-cuDNN/Triton dispatch, and memory-subsystem latency dominate on
-both sides equally. Neither kernel is limited by its FMA count;
-both are limited by the cost of starting a CUDA kernel in the
-first place. This is the regime production optimisers currently
-target, and the result is reassuring: \method{} does not
-regress the common case.
-
-\paragraph{Super-linear growth in FlashInfer.}
-As depth and branching factor increase, FlashInfer must iterate
-over progressively more KV-cache blocks per query. In a
-$\branching$-ary tree of depth $\depth$, each query's row of
-the attention matrix is $\numtokens$-wide; FlashInfer processes
-all $\numtokens$ key-value pairs and masks out the non-ancestors.
-Both the FMA count and the HBM traffic therefore scale as
-$\bigO{\numtokens^2}$ over the batch. \method{}, by contrast,
-walks only the $\depth{+}1$ ancestor positions and processes
-no others, so its cost scales as $\bigO{\numtokens\!\cdot\!(\depth{+}1)}$.
-Since $\numtokens$ itself grows exponentially in $\depth$ for
-fixed $\branching$ (and polynomially in $\branching$ for fixed
-$\depth$), the ratio diverges rapidly in both axes --- exactly
-what the tables show.
-
-\paragraph{Peak gap at the deep/wide extreme.}
-The deepest, widest configuration
-$(\branching,\depth){=}(28,28)$ reaches $7.75\times$ over FlashInfer
-and $16.99\times$ over DeFT. DeFT's larger gap arises because
-it restricts itself to strictly balanced trees and uses a
-different tree-factorisation strategy that, while asymptotically
-similar to FlashInfer, incurs higher constant-factor overhead on
-the GPU --- our measurements confirm DeFT is slower than
-FlashInfer at every configuration both support
-(Table~\ref{tab:micro-deft}).
-Fig.~\ref{fig:kernel-scaling} plots latency directly against
-$\numtokens$: the FlashInfer curves bend upward super-linearly
-while \method{}'s curves remain nearly flat, confirming the
-asymptotic analysis at the hardware level.
+No configuration produces a different top-1 logit under \method{}.
 
 \begin{table}[!htbp]
 \centering
@@ -286,9 +234,8 @@ asymptotic analysis at the hardware level.
 Rows: tree depth $\depth$; columns: branching factor $\branching$.
 Both baselines scale as $\bigO{\numtokens^2}$; \method{} scales as
 $\bigO{\numtokens\!\cdot\!\depth}$, so speedups grow monotonically with
-both axes. DeFT's gaps are larger because its tree-factorisation
-strategy incurs higher constant-factor overhead than FlashInfer; it is
-slower than FlashInfer at every configuration tested.}
+both axes. DeFT is strictly slower than FlashInfer at every
+ configuration tested.}
 \label{tab:micro-combined}
 \vspace{4pt}
 \begin{subtable}[t]{0.56\linewidth}
@@ -328,6 +275,53 @@ $\depth \backslash \branching$ & 7 & 14 & 21 & 28 \\
 \end{tabular}
 \end{subtable}
 \end{table}
+\subsection{Kernel-level: \method{} scales linearly}
+\label{sec:eval-kernel}
+
+Tables~\ref{tab:micro-flashinfer}--\ref{tab:micro-deft} sweep
+$(\branching,\depth)$ at $\batchsize{=}1$ and no prefix length
+to measure pure tree attention cost.
+
+\paragraph{Near-parity at small trees (top-left corner).}
+At $(\depth{\le}5,\branching{\le}8)$, both kernels report
+speedups within $\approx\!0.97\times$ of each other.
+This is expected: at small tree sizes the attention computation
+itself is so brief (sub-microsecond) that kernel launch overhead,
+cuDNN/Triton dispatch, and memory-subsystem latency dominate on
+both sides equally. Neither kernel is limited by its FMA count;
+both are limited by the cost of starting a CUDA kernel in the
+first place. This is the regime production optimisers currently
+target, and the result is reassuring: \method{} does not
+regress the common case.
+
+\paragraph{Super-linear growth in FlashInfer.}
+As depth and branching factor increase, FlashInfer must iterate
+over progressively more KV-cache blocks per query. In a
+$\branching$-ary tree of depth $\depth$, each query's row of
+the attention matrix is $\numtokens$-wide; FlashInfer processes
+all $\numtokens$ key-value pairs and masks out the non-ancestors.
+Both the FMA count and the HBM traffic therefore scale as
+$\bigO{\numtokens^2}$ over the batch. \method{}, by contrast,
+walks only the $\depth{+}1$ ancestor positions and processes
+no others, so its cost scales as $\bigO{\numtokens\!\cdot\!(\depth{+}1)}$.
+Since $\numtokens$ itself grows exponentially in $\depth$ for
+fixed $\branching$ (and polynomially in $\branching$ for fixed
+$\depth$), the ratio diverges rapidly in both axes --- exactly
+what the tables show.
+
+\paragraph{Peak gap at the deep/wide extreme.}
+The deepest, widest configuration
+$(\branching,\depth){=}(28,28)$ reaches $7.75\times$ over FlashInfer
+and $16.99\times$ over DeFT. DeFT's larger gap arises because it uses a
+different tree-factorisation strategy that, while asymptotically
+similar to FlashInfer, incurs higher constant-factor overhead on
+the GPU --- our measurements confirm DeFT is slower than
+FlashInfer at every measured configuration
+(Table~\ref{tab:micro-deft}).
+Fig.~\ref{fig:kernel-scaling} plots latency directly against
+$\numtokens$: the FlashInfer curves bend upward super-linearly
+while \method{}'s curves remain nearly flat.
+
 
 \begin{figure}[!htbp]
 \centering
@@ -335,8 +329,7 @@ $\depth \backslash \branching$ & 7 & 14 & 21 & 28 \\
 \caption{Kernel latency vs.\ tree size for \method{} (solid) and
 FlashInfer (dashed) at $\batchsize{=}1$ and $\batchsize{=}4$
 ($\prefixlen{=}0$). FlashInfer bends up super-linearly; \method{}
-remains nearly flat once $\depth$ stops growing because per-query work
-is $\bigO{\depth}$, not $\bigO{\numtokens}$.}
+remains nearly flat once $\depth$ stops growing.}
 \label{fig:kernel-scaling}
 \end{figure}
 
@@ -360,23 +353,16 @@ construction and sampling overhead. The attention sub-step that
 time. This is shown by the ~2\% relative drop in verify cost.
 
 This is the expected consequence of optimising a non-bottleneck,
-and we report
-it precisely because the field sometimes cites kernel speedups
-without accounting for the step fractions. The value of \method{}
-at short context is the guarantee shown in
-Tables~\ref{tab:micro-flashinfer}--\ref{tab:micro-deft}: no
-regression at the small-tree sizes that current systems actually
-use. The end-to-end upside arrives at long context, as the next
-section shows.
+we report it strictly for ablation. The value of \method{}
+at short context is the result shown in
+Tables~\ref{tab:micro-flashinfer}--\ref{tab:micro-deft}: parity at current configs.
 
 \begin{figure}[!htbp]
 \centering
 \includegraphics[width=0.55\linewidth]{fig6_eagle-3_speedup_vs_tree_size.pdf}
 \caption{EAGLE-3 end-to-end throughput speedup and relative verify-cost
 reduction at zero prefix length, sweeping total tokens per tree.
-At $tt{\approx}330$ the kernel-level $3$--$4\times$ collapses to
-$\approx\!2\%$ verify-cost reduction and $\approx\!1.04\times$ E2E
-because attention is a small share of step time at this $\prefixlen$.}
+}
 \label{fig:eagle-l0}
 \end{figure}
 
@@ -692,6 +678,15 @@ removed as the systematic blocker, draft-model fidelity is the next
 frontier; the design space the field had closed for systems reasons is
 once again open on its statistical merits.
 
+\paragraph{Limitations.}
+Our empirical evaluation restricts the target model (Llama-3.1-8B) and
+hardware (RTX 4000 Ada and A100) for ablation and comparison.
+While the $\bigO{\numtokens\!\cdot\!\depth}$ algorithm itself relies purely on
+the causal independence of tree branches and is strictly model-agnostic,
+constants in our Triton implementation may shift under different GPU
+architectures (e.g., AMD instinct, Nvidia H100) or under extreme
+head-dimension scaling, which we leave to future profiling.
+
 \bibliographystyle{plain}
 \begin{thebibliography}{99}\small
 \bibitem{leviathan2023fast} Y.\ Leviathan, M.\ Kalman, Y.\ Matias.
@@ -762,7 +757,7 @@ once again open on its statistical merits.
 \item {\bf Limitations}
     \item[] Question: Does the paper discuss the limitations of the work performed by the authors?
     \item[] Answer: \answerYes{}
-    \item[] Justification: Sec.~\ref{sec:eval-honest} explicitly explains why short-context EAGLE-3 E2E gain is only $\approx\!1.04\times$ (attention is a small fraction of step time at this regime), and Sec.~\ref{sec:eval-acceptance} names the remaining ceiling as acceptance-rate decay --- a draft-model property our kernel does not address. Hardware scope is restricted to RTX 4000 Ada (kernel-level) and A100 (long-context end-to-end); behaviour on other architectures is not validated in this paper.
+    \item[] Justification: Sec.~\ref{sec:eval-honest} explicitly explains why short-context EAGLE-3 E2E gain is only $\approx\!1.04\times$ (attention is a small fraction of step time at this regime), and Sec.~\ref{sec:eval-acceptance} names the remaining ceiling as acceptance-rate decay --- a draft-model property our kernel does not address. Furthermore, the evaluation is limited in hardware and model generalisability (RTX 4000 Ada and A100; Llama-3.1-8B), though the kernel algorithm is inherently model-agnostic and its Triton implementation makes it easily portable.
     \item[] Guidelines:
     \begin{itemize}
         \item The answer \answerNA{} means that the paper has no limitation while the answer \answerNo{} means that the paper has limitations, but those are not discussed in the paper.
