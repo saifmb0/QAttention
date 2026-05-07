@@ -1,4 +1,0 @@
-context_length,depth,total_token,top_k,config_label,mode,model,eagle_model,prompt,num_tokens,num_steps,wall_ms,tok_per_sec,mean_accepted_per_step,acceptance_rate,mean_verify_ms,verify_fraction
-4096,8,55,8,b=8 d=8 tt=55,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",257,256,104652.6,2.5,1.004,0.0183,345.959,0.8463
-4096,8,55,8,b=8 d=8 tt=55,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,is decentralized finance just a group of people coming together and pooling thei,257,254,104038.8,2.5,1.012,0.0184,346.491,0.8459
-4096,8,55,8,b=8 d=8 tt=55,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,How do I visualize the audio waveform and spectrogram of an audio file using Pyt,257,257,105409.7,2.4,1.0,0.0182,347.064,0.8462
