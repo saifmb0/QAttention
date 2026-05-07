@@ -36,7 +36,7 @@
 \graphicspath{{figures/}}
 
 \title{QAttention: Linear Tree-Sparse Attention\\
-       and Acceptance-Rate in Speculative Decoding}
+       and Acceptance Decay in Speculative Decoding}
 
 \author{%
   Anonymous Author(s)
@@ -47,8 +47,8 @@
 
 \begin{abstract}
 Tree-based speculative decoding accelerates LLM inference by verifying
-draft tokens in parallel. Attention is not bottleneck-prone in the
-abstract --- but in practice, the kernels that production systems use
+draft tokens in parallel. Attention doesn't always dominate verifier cost
+--- but in practice, the kernels that production systems use
 (FlashInfer, DeFT) scale \emph{quadratically} in tree size, so attention
 is precisely what blocks the deeper trees that would amortise the static
 cost of the target-model forward pass.
@@ -58,13 +58,13 @@ $\bigO{\numtokens^2}$. \method{} delivers up to
 $\boldsymbol{7.75\!\times}$ kernel speedup over FlashInfer and
 $\boldsymbol{16.99\!\times}$ over DeFT in the deep/wide regime.
 With attention removed as the bottleneck, the end-to-end picture
-sharpens: at short context attention is a small share of the verifier
-step (an $\approx\!1.04\times$ honest baseline), but as context grows
-the share rises and \method{} delivers up to
+sharpens: at short context, attention is a small fraction of step time
+and the end-to-end gain is a modest $\approx\!1.04\times$ (Amdahl-limited),
+but as context grows the share rises and \method{} delivers up to
 $\boldsymbol{1.61\!\times}$ end-to-end on a $\branching{=}20,\depth{=}20$
 EAGLE-3 workload at $\prefixlen{=}10\,$k, and
-$\boldsymbol{1.40\!\times}$ on Sequoia at tree size $1024$. The kernel
-no longer steers tree-construction policies into a local minimum.
+$\boldsymbol{1.40\!\times}$ on Sequoia at tree size $1024$. This removes
+the systems barrier that has kept tree optimisers in a shallow-tree regime.
 The remaining ceiling is acceptance-rate decay: under current draft
 models accepted tokens per step plateau as trees grow. We argue this
 makes draft-model fidelity, not attention, the next frontier.
