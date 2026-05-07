@@ -3,7 +3,7 @@ from transformers import AutoConfig, LlamaForCausalLM
 import os
 from safetensors.torch import load_file
 
-base_model_path = "/home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-Rot"
+base_model_path = "/home/user/models/Meta-Llama-3-8B-Instruct-W4A16-g128-Rot"
 
 class MarlinToGPTQConverter:
     def __init__(self, config):

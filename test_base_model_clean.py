@@ -50,7 +50,7 @@ _gptq_marlin.MarlinQuantLinear.post_init = _patched_marlin_post_init
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-base_model_path = "/home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split"
+base_model_path = "/home/user/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split"
 print(f"Loading {base_model_path}")
 model = AutoModelForCausalLM.from_pretrained(
     base_model_path,

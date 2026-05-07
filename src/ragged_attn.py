@@ -4,7 +4,7 @@ ragged_attn.py
 Triton ragged attention — ancestor-sparse Flash Attention for tree-structured
 speculative decoding.
 
-Target hardware : SM75  (NVIDIA T4, Kaggle 2×T4) — original
+Target hardware : SM80  (NVIDIA A100) — primary
                   SM120 (NVIDIA RTX PRO 6000 Blackwell Server Edition 94 GB) — "blackwell" branch
 Precision       : float16 or bfloat16 input/output, float32 accumulation
 
@@ -16,18 +16,18 @@ Target hardware
   Architecture  : Blackwell (GB202)
   CUDA SM       : 12.0
   VRAM          : 94 GB GDDR7
-  Shared mem/SM : up to 232 KB per block  (3.6× Turing T4)
+  Shared mem/SM : up to 232 KB per block  (3.6× A100)
   Regs/SM       : 65 536
   Warp size     : 32
 
-Key improvements over SM75 (T4)
+Key improvements over SM80 (A100)
   1. BLOCK_M up to 512 — Blackwell's 232 KB shared mem/SM removes the spill
-     cliff that caps T4 at BLOCK_M=128.
+     cliff that caps A100 at BLOCK_M=128.
   2. num_stages=1 throughout — the ancestor walk has data-dependent addresses,
      so Triton's software pipelining cannot help and in fact causes
      CompilationError on SM 12.0 for certain autotune-key combos.
   3. BF16 natively accelerated on Blackwell tensor cores; added bfloat16
-     precision path with dtype-aware store (auto-cast to fp16 on SM75).
+     precision path with dtype-aware store.
   4. int64 pointer offsets — at B≥64, b=4, d=8 (5.6 M tokens) the byte
      offsets exceed INT32_MAX (2 GB), causing wrap-around on SM 12.0.
   5. Large L2 cache keeps K/V ancestor positions L2-resident across all
@@ -35,7 +35,7 @@ Key improvements over SM75 (T4)
 ─────────────────────────────────────────────────────────────────────────────
 
 ─────────────────────────────────────────────────────────────────────────────
-Bottleneck analysis  (profile_kernel.py on T4, commit a9fa79b)
+Bottleneck analysis
 ─────────────────────────────────────────────────────────────────────────────
 
 The profiling data showed util% ≈ 3 000–574 000% across all configurations.
@@ -81,7 +81,7 @@ Complexity comparison (B=4, b=4, d=5 → N=1 365, D=64, H=8, BLOCK_M=64):
                        = 6 × 64 × 64 × 2 × 2         = 96 KB
 
   Reduction: 470× fewer FMAs, 3.6× less HBM traffic per Q-tile.
-  With L2 reuse (all N unique K/V positions = 341 KB — fits in T4 L2):
+  With L2 reuse (all N unique K/V positions = 341 KB — fits in L2):
   effective HBM fills ≈ once per unique K/V position across all Q-tiles.
 
 ─────────────────────────────────────────────────────────────────────────────
@@ -1101,7 +1101,7 @@ def ragged_attention(
     ----------
     Q, K, V          : packed fp16 **or bf16** tensors  [Σ L_i, H, D]  on CUDA.
                        bf16 is natively accelerated on SM 8.9+ (Ada/Blackwell);
-                       on SM75 (T4) bf16 inputs are auto-cast to fp16.
+                       on SM < 8.0 bf16 inputs are auto-cast to fp16.
     cu_seqlens       : [B+1]  int32  cumulative sequence start offsets
     branching_factor : b — fan-out of the BFS-ordered complete b-ary tree
     max_depth        : d — maximum tree depth in this batch

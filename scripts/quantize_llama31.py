@@ -32,7 +32,7 @@ from datasets import load_dataset
 from gptqmodel import GPTQModel, QuantizeConfig
 
 MODEL_ID  = "meta-llama/Llama-3.1-8B-Instruct"
-OUT_PATH  = "/home/202311016/models/Meta-Llama-3.1-8B-Instruct-W4A16-g128-gptq"
+OUT_PATH  = "/home/user/models/Meta-Llama-3.1-8B-Instruct-W4A16-g128-gptq"
 os.makedirs(OUT_PATH, exist_ok=True)
 
 print(f"GPU: {torch.cuda.get_device_name(0)}")

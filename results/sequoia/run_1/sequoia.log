@@ -1,117 +1,0 @@
-Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.8.0+cu128).
-  draft=JackFram/llama-68m  target=meta-llama/Llama-2-7b-hf  M=512
-
-════════════════════════════════════════════════════════════════════════
-  growmap: A100-CNN-68m-13b-stochastic-S4.pt  label=4 tree_size=4  max_length=512
-────────────────────────────────────────────────────────────────────────
-
-  Loading models…
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.09it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.77it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.62it/s]
-  [vanilla]     48.1 tok/s   6115 tok / 2667 steps   acc/step=2.29   
-  [ragged ]     50.1 tok/s   6112 tok / 2490 steps   acc/step=2.45   kernel_fires=78080
-
-  ▸ Speedup: 1.043×  (48.1 → 50.1 tok/s)  acc/step: vanilla=2.29  ragged=2.45
-
-════════════════════════════════════════════════════════════════════════
-  growmap: A100-CNN-68m-13b-stochastic-S8.pt  label=8 tree_size=8  max_length=512
-────────────────────────────────────────────────────────────────────────
-
-  Loading models…
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.11it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.80it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.64it/s]
-  [vanilla]     57.1 tok/s   6126 tok / 2204 steps   acc/step=2.78   
-  [ragged ]     54.7 tok/s   6113 tok / 2232 steps   acc/step=2.74   kernel_fires=69824
-
-  ▸ Speedup: 0.959×  (57.1 → 54.7 tok/s)  acc/step: vanilla=2.78  ragged=2.74
-
-════════════════════════════════════════════════════════════════════════
-  growmap: A100-CNN-68m-13b-stochastic-S16.pt  label=16 tree_size=16  max_length=512
-────────────────────────────────────────────────────────────────────────
-
-  Loading models…
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.11it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.81it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.65it/s]
-  [vanilla]     67.1 tok/s   6136 tok / 1821 steps   acc/step=3.37   
-  [ragged ]     59.6 tok/s   6062 tok / 1971 steps   acc/step=3.08   kernel_fires=61472
-
-  ▸ Speedup: 0.888×  (67.1 → 59.6 tok/s)  acc/step: vanilla=3.37  ragged=3.08
-
-════════════════════════════════════════════════════════════════════════
-  growmap: A100-CNN-68m-13b-stochastic-S32.pt  label=32 tree_size=32  max_length=512
-────────────────────────────────────────────────────────────────────────
-
-  Loading models…
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.14it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.84it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.69it/s]
-  [vanilla]     60.7 tok/s   6155 tok / 1901 steps   acc/step=3.24   
-  [ragged ]     59.4 tok/s   6059 tok / 1855 steps   acc/step=3.27   kernel_fires=57760
-
-  ▸ Speedup: 0.979×  (60.7 → 59.4 tok/s)  acc/step: vanilla=3.24  ragged=3.27
-
-════════════════════════════════════════════════════════════════════════
-  growmap: A100-CNN-68m-13b-stochastic-S64.pt  label=64 tree_size=64  max_length=512
-────────────────────────────────────────────────────────────────────────
-
-  Loading models…
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.10it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.79it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.63it/s]
-  [vanilla]     62.5 tok/s   6167 tok / 1729 steps   acc/step=3.57   
-  [ragged ]     62.4 tok/s   6158 tok / 1681 steps   acc/step=3.66   kernel_fires=52192
-
-  ▸ Speedup: 0.998×  (62.5 → 62.4 tok/s)  acc/step: vanilla=3.57  ragged=3.66
-
-════════════════════════════════════════════════════════════════════════
-  growmap: A100-CNN-68m-13b-stochastic-S128.pt  label=128 tree_size=128  max_length=512
-────────────────────────────────────────────────────────────────────────
-
-  Loading models…
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.09it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.78it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.63it/s]
-  [vanilla]     59.2 tok/s   6175 tok / 1590 steps   acc/step=3.88   
-  [ragged ]     61.0 tok/s   6164 tok / 1508 steps   acc/step=4.09   kernel_fires=46656
-
-  ▸ Speedup: 1.029×  (59.2 → 61.0 tok/s)  acc/step: vanilla=3.88  ragged=4.09
-
-════════════════════════════════════════════════════════════════════════
-  growmap: A100-CNN-68m-13b-stochastic-S256.pt  label=256 tree_size=256  max_length=512
-────────────────────────────────────────────────────────────────────────
-
-  Loading models…
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.13it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.82it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.67it/s]
-  [vanilla]     51.1 tok/s   6231 tok / 1375 steps   acc/step=4.53   
-  [ragged ]     50.9 tok/s   6083 tok / 1339 steps   acc/step=4.54   kernel_fires=41248
-
-  ▸ Speedup: 0.995×  (51.1 → 50.9 tok/s)  acc/step: vanilla=4.53  ragged=4.54
-
-════════════════════════════════════════════════════════════════════════
-  growmap: A100-CNN-68m-13b-stochastic-S512.pt  label=512 tree_size=512  max_length=768
-────────────────────────────────────────────────────────────────────────
-
-  Loading models…
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.11it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.76it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.62it/s]
-  [vanilla]     26.1 tok/s   6184 tok / 1444 steps   acc/step=4.28   
-  [ragged ]     29.7 tok/s   6207 tok / 1346 steps   acc/step=4.61   kernel_fires=41472
-
-  ▸ Speedup: 1.139×  (26.1 → 29.7 tok/s)  acc/step: vanilla=4.28  ragged=4.61
-
-════════════════════════════════════════════════════════════════════════
-  growmap: A100-CNN-68m-13b-stochastic-S1024.pt  label=1024 tree_size=1024  max_length=1280
-────────────────────────────────────────────────────────────────────────
-
-  Loading models…
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.12it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.82it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.66it/s]
-  [vanilla]     11.6 tok/s   6212 tok / 1313 steps   acc/step=4.73   
-  [ragged ]     15.7 tok/s   6051 tok / 1286 steps   acc/step=4.71   kernel_fires=39552
-
-  ▸ Speedup: 1.350×  (11.6 → 15.7 tok/s)  acc/step: vanilla=4.73  ragged=4.71
-
-════════════════════════════════════════════════════════════════════════
-  E2E sweep summary  (50 prompts, M=512)
-────────────────────────────────────────────────────────────────────────
-       label   tree_size   vanilla tok/s   ragged tok/s    speedup   v acc/step   r acc/step
-           4           4           48.06          50.12     1.043×         2.29         2.45
-           8           8           57.07          54.73     0.959×         2.78         2.74
-          16          16           67.07          59.56     0.888×         3.37         3.08
-          32          32           60.66          59.41     0.979×         3.24         3.27
-          64          64           62.55          62.42     0.998×         3.57         3.66
-         128         128           59.25          60.96     1.029×         3.88         4.09
-         256         256           51.11          50.87     0.995×         4.53         4.54
-         512         512           26.08          29.69     1.139×         4.28         4.61
-        1024        1024           11.64          15.72     1.350×         4.73         4.71
-
-Saved: results/sequoia/run_1/sequoia_size_20260504_120350.csv

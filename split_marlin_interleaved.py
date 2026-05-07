@@ -5,8 +5,8 @@ import shutil
 from safetensors.torch import load_file, save_file
 from transformers import AutoConfig
 
-base_model_path = "/home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128"
-new_model_path = "/home/202311016/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split-interleaved"
+base_model_path = "/home/user/models/Meta-Llama-3-8B-Instruct-W4A16-g128"
+new_model_path = "/home/user/models/Meta-Llama-3-8B-Instruct-W4A16-g128-split-interleaved"
 
 if not os.path.exists(new_model_path):
     os.makedirs(new_model_path)

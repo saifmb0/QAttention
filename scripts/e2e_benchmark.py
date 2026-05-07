@@ -922,9 +922,7 @@ def load_eagle_model(
     t0 = time.perf_counter()
     # EAGLE was authored and tested at float16.  EAGLE's own README notes
     # bf16 as a special case only for Qwen2 (numerical overflow).  For LLaMA
-    # models the default is fp16 regardless of GPU capability.  On SM < 8.0
-    # (Turing / T4) bf16 compute falls back to fp16 anyway, so fp16 is always
-    # the right choice here.
+    # models the default is fp16 regardless of GPU capability.
     _dtype = torch.float16
     print(f"    dtype: float16 (EAGLE tested config)")
     print(f"    KV cache max_length: {max_length} tokens")

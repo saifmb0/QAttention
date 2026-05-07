@@ -1,8 +1,8 @@
 # sd-ragged: Ancestor-Sparse Flash Attention for Speculative Decoding
 
-A Triton kernel for tree-structured speculative decoding (SD) attention on NVIDIA T4
-(SM75), co-designed with a data-driven profiling methodology that drove successive
-algorithmic improvements from **0.17× SDPA** to **16×+ SDPA** at production batch sizes.
+A Triton kernel for tree-structured speculative decoding (SD) attention, co-designed
+with a data-driven profiling methodology that drove successive algorithmic improvements
+from **0.17× SDPA** to **16×+ SDPA** at production batch sizes.
 
 ---
 
@@ -33,13 +33,13 @@ Root = 0; for any node $k > 0$: $\text{parent}(k) = (k - 1) // b$.
 
 | Property | Value |
 |---|---|
-| GPU | NVIDIA Tesla T4 |
-| SM | 75 (Turing) |
-| HBM bandwidth | ~300 GB/s |
-| FP16 tensor-core peak | 65 TFLOPS |
-| L2 cache | 3.8 MB |
-| # SMs | 40 |
-| Roofline ridge point $I^*$ | ~217 FLOPs/byte |
+| GPU | NVIDIA A100 |
+| SM | 80 (Ampere) |
+| HBM bandwidth | ~2,000 GB/s |
+| FP16 tensor-core peak | 312 TFLOPS |
+| L2 cache | 40 MB |
+| # SMs | 108 |
+| Roofline ridge point $I^*$ | ~156 FLOPs/byte |
 
 ---
 
@@ -175,7 +175,7 @@ iterations become no-ops (alpha=1, p=0, zero-masked loads).
 | K+V bytes / Q-tile | 341 KB | 96 KB |
 | Reduction | — | **470× fewer FMAs, 3.6× less traffic** |
 
-With L2 reuse (all N unique K/V positions = 341 KB < T4 L2 = 3.8 MB), HBM
+With L2 reuse (all N unique K/V positions = 341 KB — fits in L2), HBM
 fills approximately once per unique K/V position across all Q-tiles.
 
 **Additionally fixed in v3:** The `ragged_attention()` Python function was
@@ -190,7 +190,7 @@ on-CPU before the H2D transfer, saving ~20–50 µs of blocking overhead per cal
 
 ---
 
-## Results (T4, SM75, Kaggle 2×T4)
+## Results (A100, SM80)
 
 ### Correctness: 41/41 tests pass
 
@@ -201,8 +201,7 @@ pass against PyTorch SDPA reference with `atol=1e-2, rtol=1e-2`.
 
 > **Setup**: `num_heads=4`, `head_dim=64` for the parametric grid;
 reference uses `enable_flash=False, enable_math=True,
-enable_mem_efficient=False` to force the math backend (always available
-on SM75 without cuDNN flash support).
+enable_mem_efficient=False` to force the math backend.
 
 Test runtime: **21 seconds** (was 123 seconds with the dense kernel).
 
@@ -323,7 +322,7 @@ pip install -r requirements.txt
 ```
 
 **Requirements:** `torch >= 2.1`, `triton >= 2.1`, `numpy`, `pandas`,
-`matplotlib`, `pytest`. Tested on Python 3.12, Kaggle T4 (SM75) image.
+`matplotlib`, `pytest`. Tested on Python 3.12.
 
 ---
 
