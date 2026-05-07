@@ -16,3 +16,4 @@ third_party/
 claude.sessions
 nohup.out
 *.pid
+.claude
