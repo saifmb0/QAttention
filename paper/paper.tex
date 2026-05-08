@@ -2,7 +2,7 @@
 % Compile with: pdflatex paper.tex   (run twice for refs)
 \documentclass{article}
 
-\usepackage[nonatbib]{neurips_2026}  % default = anonymous double-blind; nonatbib lets us use a plain numerical bibliography
+\usepackage[preprint,nonatbib]{neurips_2026}  % preprint for arXiv; nonatbib lets us use a plain numerical bibliography
 
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
@@ -38,9 +38,11 @@
 \title{QAttention: Linear Tree-Sparse Attention\\
        and Acceptance Decay in Speculative Decoding}
 
-\author{%
-  Anonymous Author(s)
-}
+\author{
+  Seifeldin Abdellatif\\
+  Al Ain University\\
+  \texttt{contact@saifmb.com}
+  }
 
 \begin{document}
 \maketitle
@@ -687,6 +689,8 @@ constants in our Triton implementation may shift under different GPU
 architectures (e.g., AMD instinct, Nvidia H100) or under extreme
 head-dimension scaling, which we leave to future profiling.
 
+All code, experiments and full results are available at \url{https://github.com/saifmb0/QAttention}.
+
 \bibliographystyle{plain}
 \begin{thebibliography}{99}\small
 \bibitem{leviathan2023fast} Y.\ Leviathan, M.\ Kalman, Y.\ Matias.
@@ -736,224 +740,4 @@ head-dimension scaling, which we leave to future profiling.
   SeerAttention: Learning Intrinsic Sparse Attention in Your LLMs.
   \emph{arXiv:2410.13276}, 2024.
 \end{thebibliography}
-
-\newpage
-\section*{NeurIPS Paper Checklist}
-
-\begin{enumerate}
-
-\item {\bf Claims}
-    \item[] Question: Do the main claims made in the abstract and introduction accurately reflect the paper's contributions and scope?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: The abstract and Sec.~\ref{sec:intro} state (i) an $\bigO{\numtokens\!\cdot\!\depth}$ ancestor-sparse Flash Attention kernel, (ii) up to $7.75\times$ over FlashInfer and $16.99\times$ over DeFT in micro-benchmarks, (iii) up to $1.61\times$ EAGLE-3 E2E at long context and $1.40\times$ Sequoia E2E at $\numtokens{=}1024$, and (iv) an honest $\approx\!1.04\times$ at short context. All four numbers are reproduced in Sec.~\ref{sec:eval} and follow directly from the released CSVs.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the abstract and introduction do not include the claims made in the paper.
-        \item The abstract and/or introduction should clearly state the claims made, including the contributions made in the paper and important assumptions and limitations. A \answerNo{} or \answerNA{} answer to this question will not be perceived well by the reviewers.
-        \item The claims made should match theoretical and experimental results, and reflect how much the results can be expected to generalize to other settings.
-        \item It is fine to include aspirational goals as motivation as long as it is clear that these goals are not attained by the paper.
-    \end{itemize}
-
-\item {\bf Limitations}
-    \item[] Question: Does the paper discuss the limitations of the work performed by the authors?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: Sec.~\ref{sec:eval-honest} explicitly explains why short-context EAGLE-3 E2E gain is only $\approx\!1.04\times$ (attention is a small fraction of step time at this regime), and Sec.~\ref{sec:eval-acceptance} names the remaining ceiling as acceptance-rate decay --- a draft-model property our kernel does not address. Furthermore, the evaluation is limited in hardware and model generalisability (RTX 4000 Ada and A100; Llama-3.1-8B), though the kernel algorithm is inherently model-agnostic and its Triton implementation makes it easily portable.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper has no limitation while the answer \answerNo{} means that the paper has limitations, but those are not discussed in the paper.
-        \item The authors are encouraged to create a separate ``Limitations'' section in their paper.
-        \item The paper should point out any strong assumptions and how robust the results are to violations of these assumptions.
-        \item The authors should reflect on the scope of the claims made.
-        \item The authors should reflect on the factors that influence the performance of the approach.
-        \item The authors should discuss the computational efficiency of the proposed algorithms and how they scale with dataset size.
-        \item If applicable, the authors should discuss possible limitations of their approach to address problems of privacy and fairness.
-        \item While the authors might fear that complete honesty about limitations might be used by reviewers as grounds for rejection, a worse outcome might be that reviewers discover limitations that aren't acknowledged in the paper.
-    \end{itemize}
-
-\item {\bf Theory assumptions and proofs}
-    \item[] Question: For each theoretical result, does the paper provide the full set of assumptions and a complete (and correct) proof?
-    \item[] Answer: \answerNA{}
-    \item[] Justification: The paper makes no formal theorem-style claims. Complexity statements in Sec.~\ref{sec:method} are direct FMA / byte counts under explicitly stated parameter values.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper does not include theoretical results.
-        \item All the theorems, formulas, and proofs in the paper should be numbered and cross-referenced.
-        \item All assumptions should be clearly stated or referenced in the statement of any theorems.
-        \item The proofs can either appear in the main paper or the supplemental material.
-        \item Inversely, any informal proof provided in the core of the paper should be complemented by formal proofs provided in appendix or supplemental material.
-        \item Theorems and Lemmas that the proof relies upon should be properly referenced.
-    \end{itemize}
-
-    \item {\bf Experimental result reproducibility}
-    \item[] Question: Does the paper fully disclose all the information needed to reproduce the main experimental results of the paper to the extent that it affects the main claims and/or conclusions of the paper (regardless of whether the code and data are provided or not)?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: Sec.~\ref{sec:eval-setup} specifies hardware (RTX 4000 Ada for kernel; A100 for long-context E2E), models (Llama-3.1-8B-Instruct, EAGLE3-LLaMA3.1-8B), precision (fp16), the FlashInfer baseline, the timing protocol (50-call median, 10-call warmup, CUDA event timing), and the swept parameter ranges. Algorithm~\ref{alg:kernel} fully specifies the kernel.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper does not include experiments.
-        \item If the paper includes experiments, a \answerNo{} answer to this question will not be perceived well by the reviewers.
-        \item If the contribution is a dataset and\slash or model, the authors should describe the steps taken to make their results reproducible or verifiable.
-        \item Depending on the contribution, reproducibility can be accomplished in various ways.
-        \item While NeurIPS does not require releasing code, the conference does require all submissions to provide some reasonable avenue for reproducibility.
-    \end{itemize}
-
-
-\item {\bf Open access to data and code}
-    \item[] Question: Does the paper provide open access to the data and code, with sufficient instructions to faithfully reproduce the main experimental results, as described in supplemental material?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: The Triton kernel source, benchmark scripts, and aggregate result CSVs are released as anonymised supplementary material. All figures and tables in this paper are produced from a single set of CSVs (\texttt{paper/generate\_figures.py} and \texttt{results/*/aggregate.csv}).
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that paper does not include experiments requiring code.
-        \item Please see the NeurIPS code and data submission guidelines (\url{https://neurips.cc/public/guides/CodeSubmissionPolicy}) for more details.
-        \item While we encourage the release of code and data, we understand that this might not be possible.
-        \item The instructions should contain the exact command and environment needed to run to reproduce the results.
-        \item The authors should provide instructions on data access and preparation.
-        \item The authors should provide scripts to reproduce all experimental results for the new proposed method and baselines.
-        \item At submission time, to preserve anonymity, the authors should release anonymized versions (if applicable).
-        \item Providing as much information as possible in supplemental material (appended to the paper) is recommended.
-    \end{itemize}
-
-
-\item {\bf Experimental setting/details}
-    \item[] Question: Does the paper specify all the training and test details (e.g., data splits, hyperparameters, how they were chosen, type of optimizer) necessary to understand the results?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: The contribution is a kernel; there is no training. Inference settings (model, precision, batch size, baseline kernel, sweep ranges, timing methodology) are stated in Sec.~\ref{sec:eval-setup}, and per-figure data filters are documented in the figure-generation script.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper does not include experiments.
-        \item The experimental setting should be presented in the core of the paper to a level of detail that is necessary to appreciate the results and make sense of them.
-        \item The full details can be provided either with the code, in appendix, or as supplemental material.
-    \end{itemize}
-
-\item {\bf Experiment statistical significance}
-    \item[] Question: Does the paper report error bars suitably and correctly defined or other appropriate information about the statistical significance of the experiments?
-    \item[] Answer: \answerNo{}
-    \item[] Justification: Each kernel measurement is the median of 50 CUDA-event-timed calls after 10 warmup calls. End-to-end results aggregate three independent runs; we observe stochastic-sampling-induced divergence of $\pm 0.08$ accepted tokens per step between kernels (Sec.~\ref{sec:eval-acceptance}, Fig.~\ref{fig:sequoia} right axis), which is small relative to the throughput effects we report. Raw per-run data are released with the supplementary CSVs and confidence intervals can be recomputed by readers.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper does not include experiments.
-        \item The authors should answer \answerYes{} if the results are accompanied by error bars, confidence intervals, or statistical significance tests.
-        \item The factors of variability that the error bars are capturing should be clearly stated.
-        \item The method for calculating the error bars should be explained.
-        \item The assumptions made should be given.
-        \item It should be clear whether the error bar is the standard deviation or the standard error of the mean.
-        \item It is OK to report 1-sigma error bars, but one should state it.
-        \item For asymmetric distributions, the authors should be careful not to show in tables or figures symmetric error bars that would yield results that are out of range.
-        \item If error bars are reported in tables or plots, the authors should explain in the text how they were calculated and reference the corresponding figures or tables in the text.
-    \end{itemize}
-
-\item {\bf Experiments compute resources}
-    \item[] Question: For each experiment, does the paper provide sufficient information on the computer resources (type of compute workers, memory, time of execution) needed to reproduce the experiments?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: Kernel-level micro-benchmarks run on a single RTX 4000 Ada (20\,GB HBM); long-context end-to-end runs on a single A100, as stated in Sec.~\ref{sec:eval-setup}. Total compute is on the order of single-GPU-hours per benchmark sweep; no preliminary or unreported runs required substantially more compute than what is reported.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper does not include experiments.
-        \item The paper should indicate the type of compute workers CPU or GPU, internal cluster, or cloud provider, including relevant memory and storage.
-        \item The paper should provide the amount of compute required for each of the individual experimental runs as well as estimate the total compute.
-        \item The paper should disclose whether the full research project required more compute than the experiments reported in the paper.
-    \end{itemize}
-
-\item {\bf Code of ethics}
-    \item[] Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS Code of Ethics \url{https://neurips.cc/public/EthicsGuidelines}?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: The contribution is a CUDA / Triton kernel; no human subjects, no new datasets, no personally identifiable information, and no model training. Authors have reviewed the NeurIPS Code of Ethics.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the authors have not reviewed the NeurIPS Code of Ethics.
-        \item If the authors answer \answerNo, they should explain the special circumstances that require a deviation from the Code of Ethics.
-        \item The authors should make sure to preserve anonymity.
-    \end{itemize}
-
-
-\item {\bf Broader impacts}
-    \item[] Question: Does the paper discuss both potential positive societal impacts and negative societal impacts of the work performed?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: Faster LLM inference reduces serving cost and energy per token (positive); the same speedup also lowers the marginal cost of low-quality or malicious generation (the standard dual-use concern for inference acceleration). The artifact is a kernel and does not change model capabilities; it offers no novel attack surface beyond what existing FlashInfer / FlashAttention deployments already provide.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that there is no societal impact of the work performed.
-        \item If the authors answer \answerNA{} or \answerNo, they should explain why their work has no societal impact or why the paper does not address societal impact.
-        \item Examples of negative societal impacts include potential malicious or unintended uses, fairness considerations, privacy considerations, and security considerations.
-        \item The conference expects that many papers will be foundational research and not tied to particular applications.
-        \item The authors should consider possible harms that could arise when the technology is being used as intended and functioning correctly, harms that could arise when the technology is being used as intended but gives incorrect results, and harms following from misuse of the technology.
-        \item If there are negative societal impacts, the authors could also discuss possible mitigation strategies.
-    \end{itemize}
-
-\item {\bf Safeguards}
-    \item[] Question: Does the paper describe safeguards that have been put in place for responsible release of data or models that have a high risk for misuse (e.g., pre-trained language models, image generators, or scraped datasets)?
-    \item[] Answer: \answerNA{}
-    \item[] Justification: The released artifact is an attention kernel. It does not include a model, dataset, or generative system that would carry safeguard-relevant misuse risk.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper poses no such risks.
-        \item Released models that have a high risk for misuse or dual-use should be released with necessary safeguards.
-        \item Datasets that have been scraped from the Internet could pose safety risks.
-        \item We recognize that providing effective safeguards is challenging.
-    \end{itemize}
-
-\item {\bf Licenses for existing assets}
-    \item[] Question: Are the creators or original owners of assets (e.g., code, data, models), used in the paper, properly credited and are the license and terms of use explicitly mentioned and properly respected?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: Llama-3.1-8B-Instruct is used under the Llama 3 Community Licence; the EAGLE3-LLaMA3.1-8B draft weights under their published licence; FlashInfer as released by its authors. All works on which we build are cited in Sec.~\ref{sec:related}.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper does not use existing assets.
-        \item The authors should cite the original paper that produced the code package or dataset.
-        \item The authors should state which version of the asset is used.
-        \item The name of the license should be included for each asset.
-        \item For scraped data from a particular source, the copyright and terms of service of that source should be provided.
-        \item If assets are released, the license, copyright information, and terms of use in the package should be provided.
-        \item For existing datasets that are re-packaged, both the original license and the license of the derived asset should be provided.
-        \item If this information is not available online, the authors are encouraged to reach out to the asset's creators.
-    \end{itemize}
-
-\item {\bf New assets}
-    \item[] Question: Are new assets introduced in the paper well documented and is the documentation provided alongside the assets?
-    \item[] Answer: \answerYes{}
-    \item[] Justification: The Triton kernel and benchmark scripts ship with an extensive README documenting the algorithm, expected inputs/outputs, hardware target, autotune keys, and run instructions. The supplementary submission is anonymised.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper does not release new assets.
-        \item Researchers should communicate the details of the dataset\slash code\slash model as part of their submissions via structured templates.
-        \item The paper should discuss whether and how consent was obtained from people whose asset is used.
-        \item At submission time, remember to anonymize your assets (if applicable).
-    \end{itemize}
-
-\item {\bf Crowdsourcing and research with human subjects}
-    \item[] Question: For crowdsourcing experiments and research with human subjects, does the paper include the full text of instructions given to participants and screenshots, if applicable, as well as details about compensation (if any)?
-    \item[] Answer: \answerNA{}
-    \item[] Justification: No crowdsourcing or human-subjects research is involved.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper does not involve crowdsourcing nor research with human subjects.
-        \item Including this information in the supplemental material is fine.
-        \item According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or other labor should be paid at least the minimum wage in the country of the data collector.
-    \end{itemize}
-
-\item {\bf Institutional review board (IRB) approvals or equivalent for research with human subjects}
-    \item[] Question: Does the paper describe potential risks incurred by study participants, whether such risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals (or an equivalent approval/review based on the requirements of your country or institution) were obtained?
-    \item[] Answer: \answerNA{}
-    \item[] Justification: No human-subjects research is involved.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the paper does not involve crowdsourcing nor research with human subjects.
-        \item Depending on the country in which research is conducted, IRB approval (or equivalent) may be required for any human subjects research.
-        \item We recognize that the procedures for this may vary significantly between institutions and locations.
-        \item For initial submissions, do not include any information that would break anonymity.
-    \end{itemize}
-
-\item {\bf Declaration of LLM usage}
-    \item[] Question: Does the paper describe the usage of LLMs if it is an important, original, or non-standard component of the core methods in this research? Note that if the LLM is used only for writing, editing, or formatting purposes and does \emph{not} impact the core methodology, scientific rigor, or originality of the research, declaration is not required.
-    \item[] Answer: \answerNA{}
-    \item[] Justification: LLMs are not a component of the core method (a Triton attention kernel). They were used only for incidental writing assistance, which the policy excludes from required declaration.
-    \item[] Guidelines:
-    \begin{itemize}
-        \item The answer \answerNA{} means that the core method development in this research does not involve LLMs as any important, original, or non-standard components.
-        \item Please refer to our LLM policy in the NeurIPS handbook for what should or should not be described.
-    \end{itemize}
-
-\end{enumerate}
-
 \end{document}
