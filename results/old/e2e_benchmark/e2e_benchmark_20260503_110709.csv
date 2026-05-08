@@ -1,2 +1,0 @@
-context_length,depth,total_token,top_k,config_label,mode,model,eagle_model,prompt,num_tokens,num_steps,wall_ms,tok_per_sec,mean_accepted_per_step,acceptance_rate,mean_verify_ms,verify_fraction
-0,6,31,6,b=6 d=6 tt=31,vanilla,meta-llama/Llama-3.1-8B-Instruct,yuhuili/EAGLE3-LLaMA3.1-Instruct-8B,"Thanks. Based on this, can you go back to the initial hires again? Which roles d",156,25,2149.9,72.6,6.24,0.2013,54.162,0.6298

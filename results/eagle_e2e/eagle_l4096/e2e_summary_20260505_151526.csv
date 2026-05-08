@@ -1,2 +1,0 @@
-context_length,depth,total_token,top_k,label
-4096,24,165,8,b=8 d=24 tt=165
