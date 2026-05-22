@@ -470,20 +470,32 @@ def _run_ncu_for_kernel(
             timeout=600,  # 10 min timeout per profile
         )
         if result.returncode != 0:
-            stderr_tail = "\n".join(result.stderr.strip().split("\n")[-5:]) if result.stderr else ""
             print(f"FAIL (exit {result.returncode})")
-            if stderr_tail:
-                for line in stderr_tail.split("\n"):
-                    print(f"        {line}")
+            if result.stderr and result.stderr.strip():
+                print("    [stderr]")
+                for line in result.stderr.strip().split("\n")[-15:]:
+                    print(f"      {line}")
+            if result.stdout and result.stdout.strip():
+                print("    [stdout]")
+                for line in result.stdout.strip().split("\n")[-15:]:
+                    print(f"      {line}")
             return None
 
         parsed = _parse_ncu_csv(result.stdout)
         if not parsed:
-            # Check stderr for clues
-            if "permission" in (result.stderr or "").lower():
-                print("FAIL (permission denied — try --sudo)")
+            err_msg = (result.stderr or "") + (result.stdout or "")
+            if "permission" in err_msg.lower() or "err_nvgpuctrperm" in err_msg.lower():
+                print("FAIL (permission denied — check GPU profiling permissions or run container with --privileged)")
             else:
                 print("FAIL (no ncu CSV output)")
+                if result.stderr and result.stderr.strip():
+                    print("    [stderr]")
+                    for line in result.stderr.strip().split("\n")[-10:]:
+                        print(f"      {line}")
+                if result.stdout and result.stdout.strip():
+                    print("    [stdout]")
+                    for line in result.stdout.strip().split("\n")[-10:]:
+                        print(f"      {line}")
             return None
         return parsed
 
