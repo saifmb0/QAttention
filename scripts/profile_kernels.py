@@ -92,7 +92,7 @@ NCU_METRICS = [
 # Defaults — small grid because ncu is slow (~10-30s per kernel invocation)
 # ─────────────────────────────────────────────────────────────────────────────
 DEFAULT_BATCH_SIZES       = [1, 8]
-DEFAULT_BRANCHING_FACTORS = [10]
+DEFAULT_BRANCHING_FACTORS = [3, 7, 14, 30, 60]
 DEFAULT_DEPTHS            = [3, 7, 14, 30, 60]
 DEFAULT_NUM_HEADS         = 32
 DEFAULT_HEAD_DIM          = 128
@@ -856,11 +856,24 @@ def orchestrate(args):
         print("ERROR: All kernels skipped. Nothing to profile.")
         sys.exit(1)
 
-    total_runs = len(batch_sizes) * len(bfs) * len(depths) * len(kernels_to_profile)
+    # Build (b, d) pairs
+    use_pairwise = args.pairwise or (len(bfs) == len(depths) and not args.cartesian)
+    if use_pairwise:
+        if len(bfs) != len(depths):
+            print(f"ERROR: Pairwise sweep requires same number of branching factors and depths (got {len(bfs)} and {len(depths)}).")
+            sys.exit(1)
+        b_d_pairs = list(zip(bfs, depths))
+    else:
+        b_d_pairs = [(b, d) for b in bfs for d in depths]
+
+    total_runs = len(batch_sizes) * len(b_d_pairs) * len(kernels_to_profile)
 
     print(f"Profiling  : {total_runs} ncu invocations")
-    print(f"             ({len(kernels_to_profile)} kernels × "
-          f"{len(batch_sizes)} batch × {len(bfs)} branching × {len(depths)} depths)")
+    if use_pairwise:
+        print(f"             ({len(kernels_to_profile)} kernels x {len(batch_sizes)} batch x {len(b_d_pairs)} b-d pairs)")
+    else:
+        print(f"             ({len(kernels_to_profile)} kernels x "
+              f"{len(batch_sizes)} batch x {len(bfs)} branching x {len(depths)} depths)")
     print(f"Model dims : H={H}, D={D} (LLaMA-3.1-8B)")
     print(f"sudo       : {'yes' if args.sudo else 'no'}")
     if args.dry_run:
@@ -871,106 +884,105 @@ def orchestrate(args):
     idx = 0
 
     for B in batch_sizes:
-        for b in bfs:
-            for d in depths:
-                N = _tree_n_budgeted(b, d)
-                actual_d = _compute_actual_depth(N, b)
+        for b, d in b_d_pairs:
+            N = _tree_n_budgeted(b, d)
+            actual_d = _compute_actual_depth(N, b)
 
-                for kernel in kernels_to_profile:
-                    idx += 1
-                    tag = f"[{idx:3d}/{total_runs}]"
-                    print(f"  {tag} {kernel:12s}  B={B:<3d}  b={b:<2d}  d={d:<2d}  N={N:<4d} ... ",
-                          end="", flush=True)
+            for kernel in kernels_to_profile:
+                idx += 1
+                tag = f"[{idx:3d}/{total_runs}]"
+                print(f"  {tag} {kernel:12s}  B={B:<3d}  b={b:<2d}  d={d:<2d}  N={N:<4d} ... ",
+                      end="", flush=True)
 
-                    # Dry run — just show the command
-                    if args.dry_run:
-                        cmd_parts = []
-                        if args.sudo:
-                            cmd_parts.append("sudo")
-                        cmd_parts += [
-                            ncu_path or "ncu",
-                            "--profile-from-start off",
-                            "--csv --print-units base",
-                            f"--metrics {','.join(NCU_METRICS)}",
-                            sys.executable,
-                            script_path,
-                            f"--run-kernel {kernel}",
-                            f"--B {B} --b {b} --d {d} --H {H} --D {D}",
-                        ]
-                        print("\n    " + " \\\n      ".join(cmd_parts))
-                        continue
+                # Dry run — just show the command
+                if args.dry_run:
+                    cmd_parts = []
+                    if args.sudo:
+                        cmd_parts.append("sudo")
+                    cmd_parts += [
+                        ncu_path or "ncu",
+                        "--profile-from-start off",
+                        "--csv --print-units base",
+                        f"--metrics {','.join(NCU_METRICS)}",
+                        sys.executable,
+                        script_path,
+                        f"--run-kernel {kernel}",
+                        f"--B {B} --b {b} --d {d} --H {H} --D {D}",
+                    ]
+                    print("\n    " + " \\\n      ".join(cmd_parts))
+                    continue
 
-                    # Real invocation
-                    parsed = _run_ncu_for_kernel(
-                        ncu_path, kernel, B, b, d, H, D,
-                        script_path, use_sudo=args.sudo,
-                        timing_only=fallback_timing_only,
-                    )
+                # Real invocation
+                parsed = _run_ncu_for_kernel(
+                    ncu_path, kernel, B, b, d, H, D,
+                    script_path, use_sudo=args.sudo,
+                    timing_only=fallback_timing_only,
+                )
 
-                    theo_read = _theoretical_min_read_bytes(kernel, B, N, actual_d, H, D)
+                theo_read = _theoretical_min_read_bytes(kernel, B, N, actual_d, H, D)
+
+                if parsed is None or len(parsed) == 0:
+                    if not fallback_timing_only:
+                        print(" -> falling back to timing-only mode")
+                        fallback_timing_only = True
+                        # Retry this config with timing-only
+                        parsed = _run_ncu_for_kernel(
+                            ncu_path, kernel, B, b, d, H, D,
+                            script_path, use_sudo=args.sudo,
+                            timing_only=True,
+                        )
 
                     if parsed is None or len(parsed) == 0:
-                        if not fallback_timing_only:
-                            print(" -> falling back to timing-only mode")
-                            fallback_timing_only = True
-                            # Retry this config with timing-only
-                            parsed = _run_ncu_for_kernel(
-                                ncu_path, kernel, B, b, d, H, D,
-                                script_path, use_sudo=args.sudo,
-                                timing_only=True,
-                            )
+                        results.append(ProfileResult(
+                            kernel=kernel, batch_size=B,
+                            branching_factor=b, depth=d,
+                            num_nodes=N, actual_depth=actual_d,
+                            theoretical_read_bytes=theo_read,
+                            theoretical_read_gb=theo_read / 1e9,
+                            status="SKIP",
+                        ))
+                        continue
 
-                        if parsed is None or len(parsed) == 0:
-                            results.append(ProfileResult(
-                                kernel=kernel, batch_size=B,
-                                branching_factor=b, depth=d,
-                                num_nodes=N, actual_depth=actual_d,
-                                theoretical_read_bytes=theo_read,
-                                theoretical_read_gb=theo_read / 1e9,
-                                status="SKIP",
-                            ))
-                            continue
+                agg = _aggregate_kernel_metrics(parsed)
 
-                    agg = _aggregate_kernel_metrics(parsed)
+                read_amp = (agg["hbm_read_bytes"] / theo_read) if (theo_read > 0 and agg["hbm_read_bytes"] > 0) else float("nan")
 
-                    read_amp = (agg["hbm_read_bytes"] / theo_read) if (theo_read > 0 and agg["hbm_read_bytes"] > 0) else float("nan")
+                pr = ProfileResult(
+                    kernel=kernel,
+                    batch_size=B,
+                    branching_factor=b,
+                    depth=d,
+                    num_nodes=N,
+                    actual_depth=actual_d,
+                    hbm_read_bytes=agg["hbm_read_bytes"],
+                    hbm_write_bytes=agg["hbm_write_bytes"],
+                    hbm_read_gb=agg["hbm_read_bytes"] / 1e9,
+                    hbm_write_gb=agg["hbm_write_bytes"] / 1e9,
+                    l2_hit_rate_pct=agg["l2_hit_rate_pct"],
+                    l1_hit_rate_pct=agg["l1_hit_rate_pct"],
+                    occupancy_pct=agg["occupancy_pct"],
+                    occupancy_limit_regs_pct=agg["occupancy_limit_regs_pct"],
+                    duration_ns=agg["duration_ns"],
+                    duration_us=agg["duration_ns"] / 1000.0,
+                    registers_per_thread=agg["registers_per_thread"],
+                    sm_throughput_pct=agg["sm_throughput_pct"],
+                    theoretical_read_bytes=theo_read,
+                    theoretical_read_gb=theo_read / 1e9,
+                    hbm_read_amplification=read_amp,
+                    status="OK",
+                )
+                results.append(pr)
 
-                    pr = ProfileResult(
-                        kernel=kernel,
-                        batch_size=B,
-                        branching_factor=b,
-                        depth=d,
-                        num_nodes=N,
-                        actual_depth=actual_d,
-                        hbm_read_bytes=agg["hbm_read_bytes"],
-                        hbm_write_bytes=agg["hbm_write_bytes"],
-                        hbm_read_gb=agg["hbm_read_bytes"] / 1e9,
-                        hbm_write_gb=agg["hbm_write_bytes"] / 1e9,
-                        l2_hit_rate_pct=agg["l2_hit_rate_pct"],
-                        l1_hit_rate_pct=agg["l1_hit_rate_pct"],
-                        occupancy_pct=agg["occupancy_pct"],
-                        occupancy_limit_regs_pct=agg["occupancy_limit_regs_pct"],
-                        duration_ns=agg["duration_ns"],
-                        duration_us=agg["duration_ns"] / 1000.0,
-                        registers_per_thread=agg["registers_per_thread"],
-                        sm_throughput_pct=agg["sm_throughput_pct"],
-                        theoretical_read_bytes=theo_read,
-                        theoretical_read_gb=theo_read / 1e9,
-                        hbm_read_amplification=read_amp,
-                        status="OK",
-                    )
-                    results.append(pr)
-
-                    # One-line summary
-                    hbm_r_str = f"{pr.hbm_read_gb:.4f}GB" if pr.hbm_read_bytes > 0 else "n/a"
-                    amp_str = f"{read_amp:.2f}×" if not math.isnan(read_amp) else "n/a"
-                    print(f"OK  "
-                          f"HBM_R={hbm_r_str:<8s}  "
-                          f"L2={_fv1(pr.l2_hit_rate_pct, 4)}%  "
-                          f"Occ={_fv1(pr.occupancy_pct, 4)}%  "
-                          f"Regs={_fv1(pr.registers_per_thread, 3)}  "
-                          f"{pr.duration_us:.1f}µs  "
-                          f"Amp={amp_str}")
+                # One-line summary
+                hbm_r_str = f"{pr.hbm_read_gb:.4f}GB" if pr.hbm_read_bytes > 0 else "n/a"
+                amp_str = f"{read_amp:.2f}×" if not math.isnan(read_amp) else "n/a"
+                print(f"OK  "
+                      f"HBM_R={hbm_r_str:<8s}  "
+                      f"L2={_fv1(pr.l2_hit_rate_pct, 4)}%  "
+                      f"Occ={_fv1(pr.occupancy_pct, 4)}%  "
+                      f"Regs={_fv1(pr.registers_per_thread, 3)}  "
+                      f"{pr.duration_us:.1f}µs  "
+                      f"Amp={amp_str}")
 
     if args.dry_run:
         print("\n  Dry run complete. No profiling performed.")
@@ -1065,6 +1077,10 @@ def main():
                         help="Path to ncu executable (overrides auto-detection)")
     parser.add_argument("--timing-only", action="store_true",
                         help="Only measure GPU execution latency and skip NCU hardware counters")
+    parser.add_argument("--pairwise", action="store_true",
+                        help="Sweep branching-factors and depths pairwise (default if lists have same length)")
+    parser.add_argument("--cartesian", action="store_true",
+                        help="Force Cartesian product sweep of branching-factors and depths")
 
     args = parser.parse_args()
 
