@@ -174,7 +174,7 @@ def _profiler_stop():
             pass
 
 
-def _worker_qattention(B, b, d, H, D):
+def _worker_qattention(B, b, d, H, D, timing_only=False):
     """Worker: profile QAttention ragged kernel."""
     import torch
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -182,19 +182,34 @@ def _worker_qattention(B, b, d, H, D):
 
     Q, K, V, cu, mask_np, N, actual_d, scale, device = _worker_setup_tensors(B, b, d, H, D)
 
+    def run_fn():
+        ragged_attention(Q, K, V, cu, b, actual_d, max_seqlen=N)
+
     # Warmup — JIT compile Triton kernel + stabilise caches
     for _ in range(WARMUP_ITERS):
-        ragged_attention(Q, K, V, cu, b, actual_d, max_seqlen=N)
+        run_fn()
     torch.cuda.synchronize()
 
-    # Profiled region — exactly one kernel launch
-    _profiler_start()
-    ragged_attention(Q, K, V, cu, b, actual_d, max_seqlen=N)
-    torch.cuda.synchronize()
-    _profiler_stop()
+    if timing_only:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        iters = 50
+        start_event.record()
+        for _ in range(iters):
+            run_fn()
+        end_event.record()
+        torch.cuda.synchronize()
+        duration_ns = (start_event.elapsed_time(end_event) / iters) * 1_000_000
+        print(f"TIMING: duration_ns={duration_ns:.3f}")
+    else:
+        # Profiled region — exactly one kernel launch
+        _profiler_start()
+        run_fn()
+        torch.cuda.synchronize()
+        _profiler_stop()
 
 
-def _worker_flashinfer(B, b, d, H, D):
+def _worker_flashinfer(B, b, d, H, D, timing_only=False):
     """Worker: profile FlashInfer BatchPrefillWithRaggedKVCache (tree mask)."""
     import torch
     import flashinfer
@@ -219,19 +234,34 @@ def _worker_flashinfer(B, b, d, H, D):
         sm_scale=scale, q_data_type=Q.dtype,
     )
 
+    def run_fn():
+        wrapper.run(Q, K, V)
+
     # Warmup
     for _ in range(WARMUP_ITERS):
-        wrapper.run(Q, K, V)
+        run_fn()
     torch.cuda.synchronize()
 
-    # Profiled region
-    _profiler_start()
-    wrapper.run(Q, K, V)
-    torch.cuda.synchronize()
-    _profiler_stop()
+    if timing_only:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        iters = 50
+        start_event.record()
+        for _ in range(iters):
+            run_fn()
+        end_event.record()
+        torch.cuda.synchronize()
+        duration_ns = (start_event.elapsed_time(end_event) / iters) * 1_000_000
+        print(f"TIMING: duration_ns={duration_ns:.3f}")
+    else:
+        # Profiled region
+        _profiler_start()
+        run_fn()
+        torch.cuda.synchronize()
+        _profiler_stop()
 
 
-def _worker_deft(B, b, d, H, D):
+def _worker_deft(B, b, d, H, D, timing_only=False):
     """Worker: profile DeFT Triton kernel."""
     import torch
 
@@ -307,7 +337,7 @@ def _worker_deft(B, b, d, H, D):
         Kc_d.append(Kb[idx_d.view(-1)].view(N, max_pl, H, D).contiguous().view(-1, H, D))
         Vc_d.append(Vb[idx_d.view(-1)].view(N, max_pl, H, D).contiguous().view(-1, H, D))
 
-    def deft_fn():
+    def run_fn():
         for bi in range(B):
             DeFT_decode(Qs_d[bi], Kc_d[bi], Vc_d[bi], Out_d, *DeFT_aux,
                         Q_TILE_SIZE=16, KV_TILE_SIZE=32,
@@ -315,14 +345,26 @@ def _worker_deft(B, b, d, H, D):
 
     # Warmup
     for _ in range(WARMUP_ITERS):
-        deft_fn()
+        run_fn()
     torch.cuda.synchronize()
 
-    # Profiled region
-    _profiler_start()
-    deft_fn()
-    torch.cuda.synchronize()
-    _profiler_stop()
+    if timing_only:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        iters = 50
+        start_event.record()
+        for _ in range(iters):
+            run_fn()
+        end_event.record()
+        torch.cuda.synchronize()
+        duration_ns = (start_event.elapsed_time(end_event) / iters) * 1_000_000
+        print(f"TIMING: duration_ns={duration_ns:.3f}")
+    else:
+        # Profiled region
+        _profiler_start()
+        run_fn()
+        torch.cuda.synchronize()
+        _profiler_stop()
 
 
 _WORKER_DISPATCH = {
@@ -333,12 +375,12 @@ _WORKER_DISPATCH = {
 
 
 def worker_main(args):
-    """Worker entry point — invoked under ncu."""
+    """Worker entry point — invoked under ncu or directly for timing."""
     runner = _WORKER_DISPATCH.get(args.run_kernel)
     if runner is None:
         print(f"[ERROR] Unknown kernel: {args.run_kernel}", file=sys.stderr)
         sys.exit(1)
-    runner(args.B, args.b, args.d, args.H, args.D)
+    runner(args.B, args.b, args.d, args.H, args.D, timing_only=args.timing_only)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -436,31 +478,45 @@ def _safe_float(d: dict, key: str, default: float = 0.0) -> float:
 
 
 def _run_ncu_for_kernel(
-    ncu_path: str,
+    ncu_path: Optional[str],
     kernel_name: str,
     B: int, b: int, d: int, H: int, D: int,
     script_path: str,
     use_sudo: bool = False,
+    timing_only: bool = False,
 ) -> Optional[List[Dict[str, str]]]:
     """Invoke ncu for one (kernel, config), return parsed per-CUDA-kernel metrics."""
-    cmd = []
-    if use_sudo:
-        cmd.append("sudo")
-    cmd += [
-        ncu_path,
-        "--profile-from-start", "off",
-        "--csv",
-        "--print-units", "base",
-        "--metrics", ",".join(NCU_METRICS),
-        sys.executable,
-        script_path,
-        "--run-kernel", kernel_name,
-        "--B", str(B),
-        "--b", str(b),
-        "--d", str(d),
-        "--H", str(H),
-        "--D", str(D),
-    ]
+    if timing_only:
+        cmd = [
+            sys.executable,
+            script_path,
+            "--run-kernel", kernel_name,
+            "--B", str(B),
+            "--b", str(b),
+            "--d", str(d),
+            "--H", str(H),
+            "--D", str(D),
+            "--timing-only",
+        ]
+    else:
+        cmd = []
+        if use_sudo:
+            cmd.append("sudo")
+        cmd += [
+            ncu_path or "ncu",
+            "--profile-from-start", "off",
+            "--csv",
+            "--print-units", "base",
+            "--metrics", ",".join(NCU_METRICS),
+            sys.executable,
+            script_path,
+            "--run-kernel", kernel_name,
+            "--B", str(B),
+            "--b", str(b),
+            "--d", str(d),
+            "--H", str(H),
+            "--D", str(D),
+        ]
 
     try:
         result = subprocess.run(
@@ -480,6 +536,28 @@ def _run_ncu_for_kernel(
                 for line in result.stdout.strip().split("\n")[-15:]:
                     print(f"      {line}")
             return None
+
+        if timing_only:
+            duration_ns = None
+            for line in result.stdout.split("\n"):
+                if line.startswith("TIMING: duration_ns="):
+                    try:
+                        duration_ns = float(line.split("=")[1])
+                        break
+                    except (ValueError, IndexError):
+                        pass
+            if duration_ns is None:
+                print("FAIL (could not parse duration_ns)")
+                if result.stderr and result.stderr.strip():
+                    print("    [stderr]")
+                    for line in result.stderr.strip().split("\n")[-10:]:
+                        print(f"      {line}")
+                if result.stdout and result.stdout.strip():
+                    print("    [stdout]")
+                    for line in result.stdout.strip().split("\n")[-10:]:
+                        print(f"      {line}")
+                return None
+            return [{"gpu__time_duration.sum": f"{duration_ns:.3f}"}]
 
         parsed = _parse_ncu_csv(result.stdout)
         if not parsed:
@@ -740,19 +818,25 @@ def _print_comparison(results: List[ProfileResult]):
 
 def orchestrate(args):
     """Orchestrator: loop over configs × kernels, invoke ncu, aggregate."""
-    ncu_path = args.ncu_path or _find_ncu()
-    if ncu_path is None:
-        print("=" * 70)
-        print("ERROR: ncu (NVIDIA Nsight Compute) not found.")
-        print()
-        print("Install options:")
-        print("  Ubuntu/Debian : sudo apt install nsight-compute")
-        print("  CUDA Toolkit  : ncu ships with cuda-toolkit-12.x")
-        print("  Standalone    : https://developer.nvidia.com/nsight-compute")
-        print("=" * 70)
-        sys.exit(1)
+    fallback_timing_only = args.timing_only
+    ncu_path = None
+    if not fallback_timing_only:
+        ncu_path = args.ncu_path or _find_ncu()
+        if ncu_path is None:
+            print("=" * 70)
+            print("ERROR: ncu (NVIDIA Nsight Compute) not found.")
+            print()
+            print("Install options:")
+            print("  Ubuntu/Debian : sudo apt install nsight-compute")
+            print("  CUDA Toolkit  : ncu ships with cuda-toolkit-12.x")
+            print("  Standalone    : https://developer.nvidia.com/nsight-compute")
+            print("=" * 70)
+            sys.exit(1)
 
-    print(f"ncu binary : {ncu_path}")
+    if fallback_timing_only:
+        print("ncu binary : n/a (timing-only mode)")
+    else:
+        print(f"ncu binary : {ncu_path}")
     script_path = os.path.abspath(__file__)
 
     batch_sizes = [int(x) for x in args.batch_sizes.split(",")]
@@ -804,7 +888,7 @@ def orchestrate(args):
                         if args.sudo:
                             cmd_parts.append("sudo")
                         cmd_parts += [
-                            ncu_path,
+                            ncu_path or "ncu",
                             "--profile-from-start off",
                             "--csv --print-units base",
                             f"--metrics {','.join(NCU_METRICS)}",
@@ -816,28 +900,40 @@ def orchestrate(args):
                         print("\n    " + " \\\n      ".join(cmd_parts))
                         continue
 
-                    # Real ncu invocation
+                    # Real invocation
                     parsed = _run_ncu_for_kernel(
                         ncu_path, kernel, B, b, d, H, D,
                         script_path, use_sudo=args.sudo,
+                        timing_only=fallback_timing_only,
                     )
 
                     theo_read = _theoretical_min_read_bytes(kernel, B, N, actual_d, H, D)
 
                     if parsed is None or len(parsed) == 0:
-                        results.append(ProfileResult(
-                            kernel=kernel, batch_size=B,
-                            branching_factor=b, depth=d,
-                            num_nodes=N, actual_depth=actual_d,
-                            theoretical_read_bytes=theo_read,
-                            theoretical_read_gb=theo_read / 1e9,
-                            status="SKIP",
-                        ))
-                        continue
+                        if not fallback_timing_only:
+                            print(" -> falling back to timing-only mode")
+                            fallback_timing_only = True
+                            # Retry this config with timing-only
+                            parsed = _run_ncu_for_kernel(
+                                ncu_path, kernel, B, b, d, H, D,
+                                script_path, use_sudo=args.sudo,
+                                timing_only=True,
+                            )
+
+                        if parsed is None or len(parsed) == 0:
+                            results.append(ProfileResult(
+                                kernel=kernel, batch_size=B,
+                                branching_factor=b, depth=d,
+                                num_nodes=N, actual_depth=actual_d,
+                                theoretical_read_bytes=theo_read,
+                                theoretical_read_gb=theo_read / 1e9,
+                                status="SKIP",
+                            ))
+                            continue
 
                     agg = _aggregate_kernel_metrics(parsed)
 
-                    read_amp = (agg["hbm_read_bytes"] / theo_read) if theo_read > 0 else float("nan")
+                    read_amp = (agg["hbm_read_bytes"] / theo_read) if (theo_read > 0 and agg["hbm_read_bytes"] > 0) else float("nan")
 
                     pr = ProfileResult(
                         kernel=kernel,
@@ -866,13 +962,15 @@ def orchestrate(args):
                     results.append(pr)
 
                     # One-line summary
+                    hbm_r_str = f"{pr.hbm_read_gb:.4f}GB" if pr.hbm_read_bytes > 0 else "n/a"
+                    amp_str = f"{read_amp:.2f}×" if not math.isnan(read_amp) else "n/a"
                     print(f"OK  "
-                          f"HBM_R={pr.hbm_read_gb:.4f}GB  "
+                          f"HBM_R={hbm_r_str:<8s}  "
                           f"L2={_fv1(pr.l2_hit_rate_pct, 4)}%  "
                           f"Occ={_fv1(pr.occupancy_pct, 4)}%  "
                           f"Regs={_fv1(pr.registers_per_thread, 3)}  "
                           f"{pr.duration_us:.1f}µs  "
-                          f"Amp={read_amp:.2f}×")
+                          f"Amp={amp_str}")
 
     if args.dry_run:
         print("\n  Dry run complete. No profiling performed.")
@@ -965,6 +1063,8 @@ def main():
                         help="Print ncu commands without executing")
     parser.add_argument("--ncu-path", type=str, default=None,
                         help="Path to ncu executable (overrides auto-detection)")
+    parser.add_argument("--timing-only", action="store_true",
+                        help="Only measure GPU execution latency and skip NCU hardware counters")
 
     args = parser.parse_args()
 
