@@ -450,7 +450,7 @@ def _run_ncu_for_kernel(
         ncu_path,
         "--profile-from-start", "off",
         "--csv",
-        "--units", "base",
+        "--print-units", "base",
         "--metrics", ",".join(NCU_METRICS),
         sys.executable,
         script_path,
@@ -806,7 +806,7 @@ def orchestrate(args):
                         cmd_parts += [
                             ncu_path,
                             "--profile-from-start off",
-                            "--csv --units base",
+                            "--csv --print-units base",
                             f"--metrics {','.join(NCU_METRICS)}",
                             sys.executable,
                             script_path,
