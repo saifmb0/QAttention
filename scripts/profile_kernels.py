@@ -93,7 +93,7 @@ NCU_METRICS = [
 # ─────────────────────────────────────────────────────────────────────────────
 DEFAULT_BATCH_SIZES       = [1, 8]
 DEFAULT_BRANCHING_FACTORS = [10]
-DEFAULT_DEPTHS            = [3, 7, 14]
+DEFAULT_DEPTHS            = [3, 7, 14, 30, 60]
 DEFAULT_NUM_HEADS         = 32
 DEFAULT_HEAD_DIM          = 128
 WARMUP_ITERS              = 5  # enough for Triton JIT + FlashInfer JIT
