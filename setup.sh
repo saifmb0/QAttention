@@ -62,8 +62,8 @@ fi
 # ── 1. System packages ────────────────────────────────────────────────────────
 info "Updating system packages …"
 if command -v apt-get &>/dev/null; then
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl wget build-essential python3-pip python3-venv
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl wget build-essential python3-pip python3-venv
 fi
 
 # ── 2. Python environment ─────────────────────────────────────────────────────
