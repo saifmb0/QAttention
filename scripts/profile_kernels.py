@@ -740,7 +740,7 @@ def _print_comparison(results: List[ProfileResult]):
 
 def orchestrate(args):
     """Orchestrator: loop over configs × kernels, invoke ncu, aggregate."""
-    ncu_path = _find_ncu()
+    ncu_path = args.ncu_path or _find_ncu()
     if ncu_path is None:
         print("=" * 70)
         print("ERROR: ncu (NVIDIA Nsight Compute) not found.")
@@ -963,6 +963,8 @@ def main():
                         help="Skip DeFT kernel")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print ncu commands without executing")
+    parser.add_argument("--ncu-path", type=str, default=None,
+                        help="Path to ncu executable (overrides auto-detection)")
 
     args = parser.parse_args()
 
