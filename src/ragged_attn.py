@@ -1654,6 +1654,241 @@ def fused_lse_merge(
 
 
 # ---------------------------------------------------------------------------
+# Hybrid kernel autotune configs (Ours -> Hybrid tensor + ALU compute)
+# ---------------------------------------------------------------------------
+_HYBRID_SM75_CONFIGS = [
+    triton.Config({"BLOCK_M": 32, "BLOCK_N": 32}, num_warps=4, num_stages=1),
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
+]
+
+_HYBRID_SM89_CONFIGS = [
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 32}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=1),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 256, "BLOCK_N": 32}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 256, "BLOCK_N": 64}, num_warps=8, num_stages=3),
+]
+
+_HYBRID_SM90_CONFIGS = [
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 32}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=1),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 256, "BLOCK_N": 32}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 256, "BLOCK_N": 64}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 512, "BLOCK_N": 64}, num_warps=16, num_stages=3),
+]
+
+_HYBRID_SM120_CONFIGS = [
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 32}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=1),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 256, "BLOCK_N": 32}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 256, "BLOCK_N": 64}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 512, "BLOCK_N": 64}, num_warps=16, num_stages=3),
+]
+
+
+
+def _get_hybrid_autotune_configs() -> list:
+    if not torch.cuda.is_available():
+        return _HYBRID_SM75_CONFIGS
+    props = torch.cuda.get_device_properties(torch.cuda.current_device())
+    sm = (props.major, props.minor)
+    if sm >= (12, 0):
+        return _HYBRID_SM120_CONFIGS
+    if sm >= (9, 0):
+        return _HYBRID_SM90_CONFIGS
+    if sm >= (8, 9):
+        return _HYBRID_SM89_CONFIGS
+    return _HYBRID_SM75_CONFIGS
+
+
+@triton.autotune(
+    configs=_get_hybrid_autotune_configs(),
+    key=["HEAD_DIM", "BRANCHING_FACTOR", "MAX_DEPTH", "L", "N"],
+)
+@triton.jit
+def _ragged_attn_hybrid_kernel(
+    Q_ptr, K_ptr, V_ptr, O_ptr,
+    stride_qt, stride_qh, stride_qd,
+    stride_kt, stride_kh, stride_kd,
+    stride_vt, stride_vh, stride_vd,
+    stride_ot, stride_oh, stride_od,
+    scale,
+    L: tl.constexpr,
+    N: tl.constexpr,
+    H: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    BRANCHING_FACTOR: tl.constexpr,
+    MAX_DEPTH: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    # ── CTA identification ──────────────────────────────────────────────────
+    pid0   = tl.program_id(0)   # seq_idx * H + head_idx
+    m_tile = tl.program_id(1)   # tile index along Q axis (N tokens)
+
+    seq_idx  = pid0 // H
+    head_idx = pid0  % H
+
+    q_off = m_tile * BLOCK_M
+    if q_off >= N:
+        return
+
+    m_range  = tl.arange(0, BLOCK_M)
+    d_range  = tl.arange(0, HEAD_DIM)
+    valid_q  = (m_range + q_off) < N       # [BLOCK_M]
+
+    # Q is shape [B * N, H, D]
+    q_global = (seq_idx * N + q_off + m_range).to(tl.int64)
+
+    # ── Load Q tile  [BLOCK_M, HEAD_DIM] ─────────────────────────────
+    q_ptrs = (Q_ptr
+              + q_global[:, None] * stride_qt
+              + head_idx          * stride_qh
+              + d_range  [None,:] * stride_qd)
+    q = tl.load(q_ptrs, mask=valid_q[:, None], other=0.0)
+    _out_dtype = q.dtype
+
+    # ── Flash-Attention-2 online softmax state ──────────────────────────────
+    m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M],              dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, HEAD_DIM],    dtype=tl.float32)
+
+    # ── Part 1: Dense loop over prefix (L tokens) using tl.dot ──────────────
+    if L > 0:
+        n_blocks = (L + BLOCK_N - 1) // BLOCK_N
+        for n in range(n_blocks):
+            n_off = n * BLOCK_N
+            # Load K block of size [BLOCK_N, HEAD_DIM]
+            kv_global = (seq_idx * (L + N) + n_off + tl.arange(0, BLOCK_N)).to(tl.int64)
+            kv_mask = (n_off + tl.arange(0, BLOCK_N)) < L
+            
+            k_ptrs = (K_ptr
+                      + kv_global[:, None] * stride_kt
+                      + head_idx          * stride_kh
+                      + d_range  [None,:] * stride_kd)
+            k = tl.load(k_ptrs, mask=kv_mask[:, None], other=0.0)
+            
+            # Compute QK^T [BLOCK_M, BLOCK_N]
+            s = tl.dot(q, tl.trans(k)) * scale
+            s = tl.where(kv_mask[None, :], s, float("-inf"))
+            
+            # Online softmax update
+            blk_max = tl.max(s, axis=1)
+            m_new = tl.maximum(m_i, blk_max)
+            alpha = tl.exp(m_i - m_new)
+            p = tl.exp(s - m_new[:, None])
+            p = tl.where(kv_mask[None, :], p, 0.0)
+            
+            l_i = l_i * alpha + tl.sum(p, axis=1)
+            acc = acc * alpha[:, None]
+            
+            # Load V tile
+            v_ptrs = (V_ptr
+                      + kv_global[:, None] * stride_vt
+                      + head_idx          * stride_vh
+                      + d_range  [None,:] * stride_vd)
+            v = tl.load(v_ptrs, mask=kv_mask[:, None], other=0.0)
+            
+            acc += tl.dot(p.to(_out_dtype), v)
+            m_i = m_new
+
+    # ── Part 2: Sparse walk over tree ancestors (ALU compute) ──────────────
+    cur  = (m_range + q_off).to(tl.int32)
+    prev = tl.full([BLOCK_M], -1, dtype=tl.int32)
+
+    for _step in range(MAX_DEPTH + 1):
+        is_new = (cur != prev) & valid_q
+        # Absolute index of ancestor in K/V: seq_idx * (L + N) + L + cur
+        kv_abs = (seq_idx * (L + N) + L + cur).to(tl.int64)
+
+        # Scattered load K
+        k_ptrs = (K_ptr
+                  + kv_abs[:, None] * stride_kt
+                  + head_idx        * stride_kh
+                  + d_range [None,:] * stride_kd)
+        k_anc = tl.load(k_ptrs, mask=is_new[:, None], other=0.0)
+
+        # Element-wise dot: raw = Σ_d q[m,d] × k_anc[m,d]
+        raw   = (tl.sum(q.to(tl.float32) * k_anc.to(tl.float32), axis=1) * scale).to(tl.float32)
+        s     = tl.where(is_new, raw, float("-inf"))
+
+        # Online softmax update
+        m_new = tl.maximum(m_i, s)
+        alpha = tl.exp(m_i - m_new)
+        p     = tl.exp(s   - m_new)
+        p_pos = tl.where(is_new, p, 0.0)
+
+        # Scattered load V
+        v_ptrs = (V_ptr
+                  + kv_abs[:, None] * stride_vt
+                  + head_idx        * stride_vh
+                  + d_range [None,:] * stride_vd)
+        v_anc = tl.load(v_ptrs, mask=is_new[:, None], other=0.0)
+
+        l_i = l_i * alpha + p_pos
+        acc = acc * alpha[:, None] + p_pos[:, None] * v_anc.to(tl.float32)
+        m_i = m_new
+
+        prev = cur
+        cur  = tl.maximum(cur - 1, tl.zeros_like(cur)) // BRANCHING_FACTOR
+
+    # ── Normalize and write output ──────────────────────────────────────────
+    l_safe = tl.where(l_i == 0.0, 1.0, l_i)
+    acc    = acc / l_safe[:, None]
+
+    o_ptrs = (O_ptr
+              + q_global[:, None] * stride_ot
+              + head_idx          * stride_oh
+              + d_range  [None,:] * stride_od)
+    tl.store(o_ptrs, acc.to(_out_dtype), mask=valid_q[:, None])
+
+
+def ragged_attention_hybrid(
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    prefix_length: int,
+    tree_size: int,
+    branching_factor: int,
+    max_depth: int,
+) -> torch.Tensor:
+    """
+    Ours -> Hybrid tensor + ALU compute.
+    Uses tensor cores (tl.dot) for the shared prefix (L) and ALU compute for the tree (N).
+    """
+    total_tokens, H, D = Q.shape
+    device = Q.device
+    B = total_tokens // tree_size
+    scale = 1.0 / math.sqrt(D)
+
+    O = torch.empty_like(Q)
+
+    grid = lambda meta: (B * H, triton.cdiv(tree_size, meta["BLOCK_M"]))
+
+    _ragged_attn_hybrid_kernel[grid](
+        Q, K, V, O,
+        Q.stride(0), Q.stride(1), Q.stride(2),
+        K.stride(0), K.stride(1), K.stride(2),
+        V.stride(0), V.stride(1), V.stride(2),
+        O.stride(0), O.stride(1), O.stride(2),
+        scale,
+        L=prefix_length,
+        N=tree_size,
+        H=H,
+        HEAD_DIM=D,
+        BRANCHING_FACTOR=branching_factor,
+        MAX_DEPTH=max_depth,
+    )
+
+    return O
+
+
+# ---------------------------------------------------------------------------
 # Smoke test  (python -m src.ragged_attn)
 # ---------------------------------------------------------------------------
 
@@ -1680,8 +1915,32 @@ if __name__ == "__main__":
         Q, K, V, cu_sl = pack_inputs(qs, ks, vs)
         O = ragged_attention(Q, K, V, cu_sl, branching_factor=b, max_depth=d)
         O_sib = ragged_attention_sibling(Q, K, V, cu_sl, branching_factor=b, max_depth=d)
+        
+        # Test hybrid kernel at L=0
+        # For L=0, K/V layout is B*N, shape matches K, V
+        O_hyb = ragged_attention_hybrid(Q, K, V, prefix_length=0, tree_size=N, branching_factor=b, max_depth=d)
+        
         max_diff = (O.float() - O_sib.float()).abs().max().item()
-        print(f"Smoke test passed — dtype={dtype}  shape {O.shape}  "
-              f"sibling-vs-base max|diff|={max_diff:.4e}")
+        max_diff_hyb = (O.float() - O_hyb.float()).abs().max().item()
+        print(f"Smoke test passed — dtype={dtype}  shape {O.shape}")
+        print(f"  sibling-vs-base max|diff|={max_diff:.4e}")
+        print(f"  hybrid-vs-base max|diff|={max_diff_hyb:.4e}")
+
+        # Test hybrid kernel at L > 0
+        L = 32
+        K_prefix = torch.randn(B, H, L, D, device=device, dtype=dtype)
+        V_prefix = torch.randn(B, H, L, D, device=device, dtype=dtype)
+        
+        # Prepare concatenated K/V for hybrid kernel
+        K_p = K_prefix.permute(0, 2, 1, 3) # [B, L, H, D]
+        K_t = K.view(B, N, H, D)
+        K_hybrid = torch.cat([K_p, K_t], dim=1).reshape(B * (L + N), H, D).contiguous()
+        
+        V_p = V_prefix.permute(0, 2, 1, 3) # [B, L, H, D]
+        V_t = V.view(B, N, H, D)
+        V_hybrid = torch.cat([V_p, V_t], dim=1).reshape(B * (L + N), H, D).contiguous()
+        
+        O_hyb_L = ragged_attention_hybrid(Q, K_hybrid, V_hybrid, prefix_length=L, tree_size=N, branching_factor=b, max_depth=d)
+        print(f"  hybrid L={L} shape check: {O_hyb_L.shape}")
 
     print("All smoke tests passed.")

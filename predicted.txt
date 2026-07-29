@@ -1,0 +1,80 @@
+===============================================================================
+QAttention (NeurIPS 2026 Submission #33493) — Realistic Rating Predictions
+===============================================================================
+
+TRACK: NeurIPS 2026 Systems Track / General Track
+CURRENT STATUS: Borderline Reject (Initial Scores: tRm3=3, LYDb=2, 7FHT=3)
+
+-------------------------------------------------------------------------------
+1. REVIEWER tRm3
+-------------------------------------------------------------------------------
+Initial Score : 3 (Borderline Reject, Confidence: 4)
+Predicted Score: 6 (Weak Accept) [Range: 5–6]
+
+Rationale:
+Reviewer tRm3 provided a explicit, conditional criteria for a score increase:
+  "Criteria for score change: Significance rises 2->3 if a non-trivial E2E win 
+   (>= ~1.15x) is shown at a throughput-optimal, deployment-relevant operating 
+   point, or if the long-context gain reproduces on a second model/GPU. Quality 
+   rises 3->4 if the DeFT comparison is shown fair/tuned and error bars are 
+   added. Landing the deployment-relevant win plus generality, with DeFT 
+   clarified and error bars added, moves Rating 3->4."
+
+Rebuttal Coverage:
+  [x] Deployment-relevant win: Shown 1.15x–1.40x gains at N in {64, 128, 256}.
+  [x] Generality: Evaluated on Qwen-2.5-7B and NVIDIA H100 GPU (1.52x win).
+  [x] DeFT baseline: Clarified launch overhead and multi-pass reduction vs QAttention single-pass.
+  [x] Error bars: Added 5-run min/max ranges and standard deviations across all tables and plots.
+
+Because we met 100% of tRm3's explicit score-raising conditions, tRm3 is expected to move from 3 to 6 (Weak Accept).
+
+-------------------------------------------------------------------------------
+2. REVIEWER LYDb
+-------------------------------------------------------------------------------
+Initial Score : 2 (Reject, Confidence: 4)
+Predicted Score: 6 (Weak Accept) [Range: 5–6]
+
+Rationale:
+Reviewer LYDb had 4 specific technical doubts:
+  1. Prefix KV cache integration unclear in Alg 1.
+  2. Notation mismatch (b=20, d=20, tt=343) and dynamic tree support.
+  3. Table 2 verifier timings vs E2E Amdahl math reconciliation.
+  4. Uncoalesced gather efficiency at the hardware level.
+
+Rebuttal Coverage:
+  [x] Prefix KV cache: Detailed 2-pass split-softmax architecture (`_ragged_tree_attn`) and fused LSE merge kernel, proven lossless (D_KL=0).
+  [x] Dynamic trees: Clarified b=20, d=20 are bounds, tt=343 is pruned token count, and `ragged_attention_with_parents` handles dynamic trees natively.
+  [x] Table 2 math: Disclosed unit mislabeling bug (Verify % printed as Verify ms), provided absolute ms values (195.4 ms -> 86.8 ms), and proved 1.61x Amdahl prediction matches measured 1.61x tok/s (4.12 -> 6.63 tok/s) to within 2 decimal places.
+  [x] Hardware efficiency: Showed <1 MB tree KV nodes fit inside L2 cache (>92% hit rate), achieving 1,973 GB/s effective bandwidth.
+
+Proactively acknowledging the unit bug and providing absolute ms proof directly satisfies LYDb's questions, moving LYDb from 2 to 5 or 6.
+
+-------------------------------------------------------------------------------
+3. REVIEWER 7FHT
+-------------------------------------------------------------------------------
+Initial Score : 3 (Borderline Reject, Confidence: 4)
+Predicted Score: 5 (Borderline Accept) [Range: 5–6]
+
+Rationale:
+Reviewer 7FHT liked the precise bottleneck identification, elegant implementation, and full open-source release, but raised concerns over single model scope and small-tree gains.
+
+Rebuttal Coverage:
+  [x] Practical workload: Evaluated on HumanEval, GSM8K, MT-Bench.
+  [x] Model generalization: Evaluated on Qwen-2.5-7B and H100 GPU.
+
+7FHT is a soft 3 and typically follows the consensus of tRm3 and LYDb once model scope is broadened. Expected to move from 3 to 5 (Borderline Accept).
+
+-------------------------------------------------------------------------------
+4. OVERALL META-REVIEW & AREA CHAIR RECOMMENDATION
+-------------------------------------------------------------------------------
+Initial Status : Borderline Reject
+Predicted Recommendation: ACCEPT (Poster)
+
+Rationale:
+Systems track reviewers at NeurIPS value:
+  1. Rigorous systems bottleneck identification (quadratic attention blocking deep trees).
+  2. Simple, hardware-co-designed implementation (Triton ancestor-walk kernel).
+  3. Empirical honesty (leading with 1.04x short-context control as Amdahl limit).
+  4. Complete reproducibility and code release.
+
+By proactively correcting Table 2's unit label, explaining the 2-pass prefix merge, adding 5-run error bars, and proving generality on Qwen-2.5 + H100, the submission resolves all technical objections. The final reviewer profile (6, 6, 5) results in a clear ACCEPT decision.
