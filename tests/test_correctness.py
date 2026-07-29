@@ -40,7 +40,7 @@ import torch
 import torch.nn.functional as F
 
 from src.tree_mask import tree_attention_mask, num_tree_nodes
-from src.ragged_attn import pack_inputs, ragged_attention, ragged_attention_sibling
+from src.ragged_attn import pack_inputs, ragged_attention, ragged_attention_sibling, ragged_attention_hybrid
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +397,77 @@ def test_sibling_parity_with_base(batch_size: int, branching_factor: int, depth:
         f"B={batch_size} b={branching_factor} d={depth}  "
         f"peak_abs={(O_base.float() - O_sib.float()).abs().max().item():.6e}"
     )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("batch_size,branching_factor,depth", _SIBLING_PARITY_CONFIGS)
+def test_hybrid_parity_with_base(batch_size: int, branching_factor: int, depth: int):
+    """ragged_attention_hybrid must match ragged_attention numerically at L=0 and L>0."""
+    device = torch.device("cuda")
+    torch.manual_seed(batch_size * 100 + branching_factor * 10 + depth)
+
+    N = num_tree_nodes(branching_factor, depth)
+    H, D = 4, 64
+    qs = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(batch_size)]
+    ks = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(batch_size)]
+    vs = [torch.randn(N, H, D, device=device, dtype=torch.float16) for _ in range(batch_size)]
+    Q, K, V, cu_sl = pack_inputs(qs, ks, vs)
+    Q, K, V = Q.to(device), K.to(device), V.to(device)
+
+    O_base = ragged_attention(Q, K, V, cu_sl,
+                              branching_factor=branching_factor, max_depth=depth)
+    
+    # Test L=0
+    O_hyb_0 = ragged_attention_hybrid(Q, K, V, prefix_length=0, tree_size=N,
+                                     branching_factor=branching_factor, max_depth=depth)
+    assert torch.allclose(O_base.float(), O_hyb_0.float(), atol=1e-2, rtol=1e-2), (
+        f"Hybrid L=0 kernel diverges from base kernel: "
+        f"B={batch_size} b={branching_factor} d={depth}"
+    )
+
+    # Test L>0
+    L = 32
+    K_prefix = torch.randn(batch_size, H, L, D, device=device, dtype=torch.float16)
+    V_prefix = torch.randn(batch_size, H, L, D, device=device, dtype=torch.float16)
+    
+    K_p = K_prefix.permute(0, 2, 1, 3)
+    K_t = K.view(batch_size, N, H, D)
+    K_hybrid = torch.cat([K_p, K_t], dim=1).reshape(batch_size * (L + N), H, D).contiguous()
+    
+    V_p = V_prefix.permute(0, 2, 1, 3)
+    V_t = V.view(batch_size, N, H, D)
+    V_hybrid = torch.cat([V_p, V_t], dim=1).reshape(batch_size * (L + N), H, D).contiguous()
+    
+    O_hyb_L = ragged_attention_hybrid(Q, K_hybrid, V_hybrid, prefix_length=L, tree_size=N,
+                                      branching_factor=branching_factor, max_depth=depth)
+    
+    # Check values against PyTorch SDPA reference
+    Q_ref = Q.view(batch_size, N, H, D).permute(0, 2, 1, 3).float()
+    K_ref = torch.cat([K_prefix.float(), K_t.permute(0, 2, 1, 3).float()], dim=2)
+    V_ref = torch.cat([V_prefix.float(), V_t.permute(0, 2, 1, 3).float()], dim=2)
+
+    tree_mask = tree_attention_mask(branching_factor, depth)
+    tree_mask_t = torch.from_numpy(tree_mask).to(device)
+    prefix_mask = torch.ones(N, L, dtype=torch.bool, device=device)
+    hybrid_mask = torch.cat([prefix_mask, tree_mask_t], dim=1)
+    hybrid_mask = hybrid_mask.unsqueeze(0).unsqueeze(1).expand(batch_size, H, N, L + N)
+
+    NEG_INF = torch.finfo(torch.float32).min / 2
+    attn_bias = torch.where(hybrid_mask, torch.zeros_like(hybrid_mask, dtype=torch.float32), torch.full_like(hybrid_mask, NEG_INF, dtype=torch.float32))
+
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        O_ref = F.scaled_dot_product_attention(
+            Q_ref, K_ref, V_ref,
+            attn_mask=attn_bias,
+            scale=1.0 / math.sqrt(D)
+        )
+    O_ref_flat = O_ref.permute(0, 2, 1, 3).reshape(batch_size * N, H, D).half()
+
+    assert torch.allclose(O_hyb_L.float(), O_ref_flat.float(), atol=1e-2, rtol=1e-2), (
+        f"Hybrid L>0 kernel diverges from SDPA reference: "
+        f"B={batch_size} b={branching_factor} d={depth}"
+    )
+
 
 
 # ---------------------------------------------------------------------------
