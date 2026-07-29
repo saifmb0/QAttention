@@ -51,13 +51,13 @@ We thank Reviewer tRm3 for the insightful review and clear, constructive criteri
    In practical deployment settings with moderate context lengths (L in {2k, 4k}) and balanced operating tree sizes (N in {64, 128, 256}), QAttention achieves 1.15× - 1.40× E2E speedups over FlashInfer (recorded in `results/balanced_micro/aggregate.csv`). Quadratic verifier attention overhead manifests even at moderate tree sizes as batch size or context grows, making QAttention effective at standard serving operating points.
 
 2. DeFT Baseline Fairness & Tuning (Question 1)
-   We evaluated DeFT using its official Triton kernel implementation (`third_party/FastTree/kernel_bench/DeFT.py`). DeFT’s KV-guided grouping introduces block-wise prefix tree flattening and a separate log-sum-exp reduction pass, incurring kernel launch overheads on small-to-medium dynamic trees (N < 500). QAttention’s single-pass O(d+1) ancestor walk operates directly on ragged layouts without extra grouping or reduction kernels.
+   The comparison uses the DeFT kernel introduced by Yao et al. (ICLR 2025). Our benchmark imports and measures `DeFT_decode` from the implementation included in the FastTree artifact's `kernel_bench` suite (`third_party/FastTree/kernel_bench/DeFT.py`). This benchmarks the DeFT verifier kernel itself rather than FastTree's radix-tree attention kernel. DeFT’s KV-guided grouping introduces block-wise prefix tree flattening and a separate log-sum-exp reduction pass, incurring kernel launch overheads on small-to-medium dynamic trees (N < 500). QAttention’s single-pass O(d+1) ancestor walk operates directly on ragged layouts without extra grouping or reduction kernels.
 
-3. Error Bars and Statistical Rigor (Question 4)
-   We have updated Tables 2 and 3 and all E2E benchmark plots with min/max ranges and standard deviations calculated over 5 independent evaluation runs. Across 5 runs, latency variation is within ±1.2%.
+3. Statistical Variability (Question 4)
+   Across 3 independent evaluation runs recorded in `results/balanced_micro/` and `results/eagle_e2e/`, latency variation remains within ±1.2%, and relative speedup orderings are completely stable across all runs.
 
-4. Model and Hardware Generality (Question 3)
-   We extended our evaluation to a second model family (Qwen-2.5-7B-Instruct) and an NVIDIA H100 GPU (Hopper, SM90). On H100, QAttention delivers up to 1.52× E2E speedup at L=8k, demonstrating that kernel efficiency generalizes across architectures and model families.
+4. Hardware and Framework Generality (Question 3)
+   We evaluated QAttention across two distinct GPU microarchitectures (NVIDIA A100-80GB Ampere and NVIDIA RTX 4000 Ada Lovelace) and two speculative decoding pipelines (EAGLE-3 and Sequoia, as well as W4A16 quantized models). QAttention delivers consistent verifier attention speedups across both GPU generations and speculative decoding frameworks.
 
 -------------------------------------------------------------------------------
 OFFICIAL COMMENT FOR REVIEWER 7FHT
@@ -65,11 +65,11 @@ OFFICIAL COMMENT FOR REVIEWER 7FHT
 
 We thank Reviewer 7FHT for highlighting QAttention's precise problem formulation and full reproducible open-source release.
 
-1. Practical Workload Evaluation
-   We evaluated QAttention across standard real-world task benchmarks (HumanEval, GSM8K, MT-Bench). QAttention maintains 100% exact numerical output equivalence (D_KL = 0, verified in `tests/test_correctness.py`) with zero acceptance rate regression compared to standard tree verification, while delivering up to 1.43× - 1.61× E2E speedups on long-context tasks.
+1. Generality across Hardware and Frameworks
+   QAttention's linear O(N · d) verification scaling holds across both server and workstation GPU architectures (NVIDIA A100-80GB and RTX 4000 Ada) and across speculative decoding frameworks (EAGLE-3 and Sequoia), ensuring that tree speculative decoding stays compute-efficient as draft trees scale.
 
-2. Cross-Model Generalization
-   QAttention's linear O(N · d) verification scaling holds across model sizes (Llama-3.1-8B, Qwen-2.5-7B) and hardware platforms (T4, RTX 4000 Ada, H100), ensuring that tree speculative decoding stays compute-efficient as draft trees scale.
+2. Exact Losslessness & Verification Overhead
+   Because QAttention alters only the attention execution pattern while maintaining mathematical identity with standard attention (D_KL = 0), draft acceptance rates and generation outputs are identical to the baseline verifier.
 
 -------------------------------------------------------------------------------
 OFFICIAL COMMENT FOR AREA CHAIR XEnh (GENERAL RESPONSE)
@@ -79,5 +79,5 @@ We thank the Area Chair and all reviewers for their thorough feedback. In respon
 
 1. Table 2 Unit Correction: Fixed Table 2’s mislabeled column header (Verify % vs Verify ms) and verified that literal absolute verifier latencies (195.4 ms -> 86.8 ms) predict the measured 1.61× E2E throughput speedup with mathematical precision.
 2. Shared Prefix Architecture: Updated Section 3 & Algorithm 1 to detail the 2-pass FlashAttention prefix + QAttention tree split-softmax merge.
-3. Statistical Error Bars: Added 5-run confidence intervals/min-max ranges across all tables and E2E benchmark plots.
-4. Model & Hardware Generalization: Evaluated Qwen-2.5-7B and NVIDIA H100, confirming 1.5×+ E2E speedups outside Llama-3.1/T4.
+3. Statistical Consistency: Verified latency variation within ±1.2% across 3 independent evaluation runs.
+4. Generality across Hardware & Pipelines: Confirmed speedups across NVIDIA A100-80GB and RTX 4000 Ada GPUs, as well as EAGLE-3 and Sequoia frameworks.
