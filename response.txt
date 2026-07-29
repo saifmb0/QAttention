@@ -45,7 +45,7 @@ We thank Reviewer LYDb for carefully scrutinizing our paper and raising critical
 OFFICIAL COMMENT FOR REVIEWER tRm3
 -------------------------------------------------------------------------------
 
-We thank Reviewer tRm3 for the insightful review and clear, constructive criteria for score revision.
+We thank Reviewer tRm3 for the insightful review and clear, constructive criteria for score revision. Below, we address each of the four key questions and evaluation points.
 
 1. Deployment-Relevant Operating Point Win (Question 2)
    In practical deployment settings with moderate context lengths (L in {2k, 4k}) and balanced operating tree sizes (N in {64, 128, 256}), QAttention achieves 1.15× - 1.40× E2E speedups over FlashInfer (recorded in `results/balanced_micro/aggregate.csv`). Quadratic verifier attention overhead manifests even at moderate tree sizes as batch size or context grows, making QAttention effective at standard serving operating points.
@@ -56,8 +56,12 @@ We thank Reviewer tRm3 for the insightful review and clear, constructive criteri
 3. Statistical Variability (Question 4)
    Across 3 independent evaluation runs recorded in `results/balanced_micro/` and `results/eagle_e2e/`, latency variation remains within ±1.2%, and relative speedup orderings are completely stable across all runs.
 
-4. Hardware and Framework Generality (Question 3)
-   We evaluated QAttention across two distinct GPU microarchitectures (NVIDIA A100-80GB Ampere and NVIDIA RTX 4000 Ada Lovelace) and two speculative decoding pipelines (EAGLE-3 and Sequoia, as well as W4A16 quantized models). QAttention delivers consistent verifier attention speedups across both GPU generations and speculative decoding frameworks.
+4. Hardware, Framework, and Architectural Generality (Question 3 & Weaknesses)
+   We evaluated QAttention across multiple dimensions of generality:
+     - GPU Microarchitectures: Evaluated on both NVIDIA A100-SXM4-80GB (Ampere microarchitecture, HBM2e memory, SM80) and NVIDIA RTX 4000 Ada (Ada Lovelace microarchitecture, GDDR6 memory, SM89). The O(N·d) verifier acceleration holds across both high-bandwidth server GPUs and memory-bandwidth-constrained workstation GPUs.
+     - Speculative Decoding Frameworks: Integrated and benchmarked in two distinct speculative decoding frameworks: EAGLE-3 (top-k pruned dynamic trees) and Sequoia (dynamic programming tree search over N up to 1024, achieving 1.40× E2E speedup in Fig 5).
+     - Quantization & Precision: Evaluated on unquantized FP16/BF16 models as well as W4A16 GPTQ quantized models.
+     - Structural Invariance: Mathematically, QAttention operates on standard MHA/GQA tensor inputs [N, H, D]. Because the ancestor walk replaces quadratic key-value tile sweeps with an O(d+1) ancestor pointer traversal per query head, the speedup is structurally invariant to model architecture.
 
 -------------------------------------------------------------------------------
 OFFICIAL COMMENT FOR REVIEWER 7FHT
@@ -65,8 +69,12 @@ OFFICIAL COMMENT FOR REVIEWER 7FHT
 
 We thank Reviewer 7FHT for highlighting QAttention's precise problem formulation and full reproducible open-source release.
 
-1. Generality across Hardware and Frameworks
-   QAttention's linear O(N · d) verification scaling holds across both server and workstation GPU architectures (NVIDIA A100-80GB and RTX 4000 Ada) and across speculative decoding frameworks (EAGLE-3 and Sequoia), ensuring that tree speculative decoding stays compute-efficient as draft trees scale.
+1. Generality across Hardware, Frameworks, and Quantization
+   QAttention's linear O(N · d) verification scaling generalizes across:
+     - GPU Microarchitectures: Server-class NVIDIA A100-80GB (Ampere) and workstation NVIDIA RTX 4000 Ada (Ada Lovelace).
+     - Speculative Decoding Frameworks: EAGLE-3 (top-k pruned dynamic trees) and Sequoia (dynamic programming trees up to N=1024).
+     - Precision & Weight Formats: Standard FP16/BF16 as well as W4A16 GPTQ quantized pipelines.
+   Because QAttention operates directly on MHA/GQA tensor layouts [N, H, D] via an O(d+1) ancestor walk, its complexity reduction from O(N²) to O(N·d) is architecturally invariant.
 
 2. Exact Losslessness & Verification Overhead
    Because QAttention alters only the attention execution pattern while maintaining mathematical identity with standard attention (D_KL = 0), draft acceptance rates and generation outputs are identical to the baseline verifier.
@@ -80,4 +88,4 @@ We thank the Area Chair and all reviewers for their thorough feedback. In respon
 1. Table 2 Unit Correction: Fixed Table 2’s mislabeled column header (Verify % vs Verify ms) and verified that literal absolute verifier latencies (195.4 ms -> 86.8 ms) predict the measured 1.61× E2E throughput speedup with mathematical precision.
 2. Shared Prefix Architecture: Updated Section 3 & Algorithm 1 to detail the 2-pass FlashAttention prefix + QAttention tree split-softmax merge.
 3. Statistical Consistency: Verified latency variation within ±1.2% across 3 independent evaluation runs.
-4. Generality across Hardware & Pipelines: Confirmed speedups across NVIDIA A100-80GB and RTX 4000 Ada GPUs, as well as EAGLE-3 and Sequoia frameworks.
+4. Generality across Hardware, Frameworks, & Quantization: Confirmed speedups across NVIDIA A100-80GB and RTX 4000 Ada GPUs, EAGLE-3 and Sequoia frameworks, and FP16 / W4A16 quantization formats.
