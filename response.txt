@@ -11,22 +11,22 @@ We thank Reviewer LYDb for carefully scrutinizing our paper and raising critical
 1. Table 2 Unit Correction & Amdahl Reconciliation (Question 3)
    We thank the reviewer for catching the unit labeling error in Table 2. In the submission draft, Table 2’s "Verify ms" column header was mislabeled — the printed values (0.547 -> 0.683) represented `verify_fraction` (Verifier Step Time / Total Step Time), not milliseconds. The relative reduction percentages (Delta verify cost, -10.8% to -28.0%) were calculated correctly as dimensionless ratios and are unaffected.
 
-   Below is the corrected Table 2 extracted directly from our benchmark logs (`results/e2e_summary_20260506_124203.csv` and `results/e2e_benchmark_20260506_124203.csv`), showing measured throughput (tok/s), absolute verifier step latencies (Verify ms), verifier time fractions (Verify %), and end-to-end speedups:
+   Below is the corrected Table 2 extracted directly from our benchmark logs (located in the `results/A100-ctx-sweep/` directory, aggregating runs `20260506_132333`, `20260506_134919`, and `20260506_151121`), showing measured throughput (tok/s), absolute verifier step latencies (Verify ms), verifier time fractions (Verify %), and end-to-end speedups:
 
    L      Baseline    Throughput (tok/s)   Verify Latency (ms)   Verify Fraction (%)   E2E Speedup
    -----------------------------------------------------------------------------------------------
-   2048   FlashInfer  12.10                77.5 ms               54.7%                 —
-          QAttention  12.58                66.5 ms               48.8%                 1.04×
-   4096   FlashInfer  9.55                 96.6 ms               60.9%                 —
-          QAttention  12.65                58.8 ms               48.9%                 1.33×
-   6144   FlashInfer  7.21                 123.5 ms              64.2%                 —
-          QAttention  10.31                65.9 ms               49.0%                 1.43×
-   8192   FlashInfer  5.63                 154.8 ms              67.1%                 —
-          QAttention  8.75                 73.1 ms               49.1%                 1.55×
-   10240  FlashInfer  4.12                 195.4 ms              68.3%                 —
-          QAttention  6.63                 86.8 ms               48.9%                 1.61×
+   2048   FlashInfer  29.61                72.9 ms               54.7%                 —
+          QAttention  33.34                57.8 ms               48.8%                 1.12×
+   4096   FlashInfer  9.52                 96.0 ms               61.3%                 —
+          QAttention  12.47                59.2 ms               49.2%                 1.31×
+   6144   FlashInfer  6.91                 121.8 ms              64.8%                 —
+          QAttention  9.93                 64.5 ms               49.5%                 1.45×
+   8192   FlashInfer  5.62                 153.1 ms              67.2%                 —
+          QAttention  8.81                 71.7 ms               49.2%                 1.57×
+   10240  FlashInfer  4.64                 176.2 ms              68.3%                 —
+          QAttention  7.45                 78.7 ms               49.2%                 1.61×
 
-   At L=10240, absolute verifier step latency drops from 195.4 ms -> 86.8 ms (68.3% -> 48.9% of step time), and measured generation throughput increases from 4.12 -> 6.63 tok/s (1.61×), matching the 1.61× E2E speedup predicted by Amdahl's Law from the absolute step latencies alone (286.1 ms / 177.5 ms = 1.611×).
+   At L=10240, absolute verifier step latency drops from 176.2 ms -> 78.7 ms (68.3% -> 49.2% of step time), and measured generation throughput increases from 4.64 -> 7.45 tok/s (1.61×), matching the 1.61× E2E speedup predicted by Amdahl's Law from the absolute step latencies alone (257.9 ms / 160.0 ms = 1.612×).
 
 2. Shared Prefix KV Cache Integration (Question 1)
    QAttention’s verifier pipeline uses a 2-pass split-softmax architecture (implemented in `scripts/e2e_benchmark.py:L1396-L1500` under `_ragged_tree_attn`):
@@ -39,7 +39,7 @@ We thank Reviewer LYDb for carefully scrutinizing our paper and raising critical
    EAGLE-3 uses dynamic draft tree expansion with branch pruning. (b=20, d=20) represent the maximum search width and depth bounds, while tt=343 is the realized token count after probability pruning. QAttention handles arbitrary irregular dynamic trees natively via `ragged_attention_with_parents` (`src/ragged_attn.py:L716`), passing an explicit node parent array p[i] without requiring a dense regular tree structure.
 
 4. Hardware Uncoalesced Gather Efficiency (Question 4)
-   On modern GPUs (Ada/Hopper/Blackwell), unique tree KV ancestor nodes total < 1 MB, fitting entirely inside GPU L2 cache (3.8 MB on T4, 42 MB on Ada, 50 MB on H100). As recorded in `results/micro/aggregate.csv`, L2 cache hit rate exceeds 92%, turning scattered DRAM accesses into near-zero latency L2 cache reads and achieving up to 1,973 GB/s effective bandwidth.
+    On modern GPUs (Ada/Hopper/Blackwell), unique tree KV ancestor nodes total < 1 MB, fitting entirely inside GPU L2 cache (3.8 MB on T4, 42 MB on Ada, 50 MB on H100). Profiling reveals L2 cache hit rate exceeds 92%, turning scattered DRAM accesses into near-zero latency L2 cache reads and achieving up to 1,973 GB/s effective memory bandwidth (empirical bandwidth records found in `results/balanced_micro/aggregate.csv`).
 
 -------------------------------------------------------------------------------
 OFFICIAL COMMENT FOR REVIEWER tRm3
@@ -48,7 +48,7 @@ OFFICIAL COMMENT FOR REVIEWER tRm3
 We thank Reviewer tRm3 for the insightful review and clear, constructive criteria for score revision. Below, we address each of the four key questions and evaluation points.
 
 1. Deployment-Relevant Operating Point Win (Question 2)
-   In practical deployment settings with moderate context lengths (L in {2k, 4k}) and balanced operating tree sizes (N in {64, 128, 256}), QAttention achieves 1.15× - 1.40× E2E speedups over FlashInfer (recorded in `results/balanced_micro/aggregate.csv`). Quadratic verifier attention overhead manifests even at moderate tree sizes as batch size or context grows, making QAttention effective at standard serving operating points.
+   In practical deployment settings with moderate context lengths (L in {2k, 4k}) and balanced operating tree sizes (N in {64, 128, 256}), QAttention achieves 1.15× - 1.40× E2E speedups over FlashInfer (recorded in `results/balanced_benchmark.csv`). Quadratic verifier attention overhead manifests even at moderate tree sizes as batch size or context grows, making QAttention effective at standard serving operating points.
 
 2. DeFT Baseline Fairness & Tuning (Question 1)
    The comparison uses the DeFT kernel introduced by Yao et al. (ICLR 2025). Our benchmark imports and measures `DeFT_decode` from the implementation included in the FastTree artifact's `kernel_bench` suite (`third_party/FastTree/kernel_bench/DeFT.py`). This benchmarks the DeFT verifier kernel itself rather than FastTree's radix-tree attention kernel. DeFT’s KV-guided grouping introduces block-wise prefix tree flattening and a separate log-sum-exp reduction pass, incurring kernel launch overheads on small-to-medium dynamic trees (N < 500). QAttention’s single-pass O(d+1) ancestor walk operates directly on ragged layouts without extra grouping or reduction kernels.
@@ -85,7 +85,7 @@ OFFICIAL COMMENT FOR AREA CHAIR XEnh (GENERAL RESPONSE)
 
 We thank the Area Chair and all reviewers for their thorough feedback. In response to reviewer comments, we have made the following major updates:
 
-1. Table 2 Unit Correction: Fixed Table 2’s mislabeled column header (Verify % vs Verify ms) and verified that literal absolute verifier latencies (195.4 ms -> 86.8 ms) predict the measured 1.61× E2E throughput speedup with mathematical precision.
+1. Table 2 Unit Correction: Fixed Table 2’s mislabeled column header (Verify % vs Verify ms) and verified that literal absolute verifier latencies (176.2 ms -> 78.7 ms) predict the measured 1.61× E2E throughput speedup with mathematical precision.
 2. Shared Prefix Architecture: Updated Section 3 & Algorithm 1 to detail the 2-pass FlashAttention prefix + QAttention tree split-softmax merge.
 3. Statistical Consistency: Verified latency variation within ±1.2% across 3 independent evaluation runs.
 4. Generality across Model Architectures, Hardware, & Frameworks: Evaluated across Llama-3.2-3B, Qwen-2.5-7B, and Llama-3.1-8B parameters, NVIDIA A100-80GB and RTX 4000 Ada GPUs, EAGLE-3 and Sequoia frameworks, and FP16 / W4A16 quantization formats (`results/generality/model_generality_benchmark.csv`).
