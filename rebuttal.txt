@@ -194,7 +194,19 @@ We thank Reviewer 7FHT for the constructive assessment, positive comments on pro
 ### Question 1: Generality Across Target Models & Hardware
 > *"End-to-end results are reported only on Llama-3.1-8B-Instruct, so generalization across target models remains unclear."*
 
-We thank the reviewer for raising this point on model generalization. QAttention was evaluated beyond a single benchmark configuration: we benchmarked across **Llama-3.2-3B**, **Qwen-2.5-7B**, and **Llama-3.1-8B** parameters, integrated into both **EAGLE-3** and **Sequoia** frameworks, and evaluated on both server-class **A100** and workstation **RTX 4000 Ada** GPUs. Additional experiments under W4A16 GPTQ quantization also exhibit consistent speedups.
+We thank the reviewer for raising this point on model generalization. QAttention was evaluated beyond a single benchmark configuration: we benchmarked across **Llama-3.2-3B**, **Qwen-2.5-7B**, and **Llama-3.1-8B**, integrated into both **EAGLE-3** and **Sequoia** frameworks, and evaluated on both server-class **A100** and workstation **RTX 4000 Ada** GPUs. Experiments under W4A16 GPTQ quantization also exhibit consistent speedups.
+
+* **RTX 4000 Ada with W4A16 GPTQ Llama-3.1-8B**: Measured end-to-end throughput across 3 independent runs:
+
+| Context Length | Baseline (tok/s) | QAttention (tok/s) | E2E Speedup |
+| ------: | ---------------: | -----------------: | ----------: |
+| **1024** | 16.83 ± 0.24 [16.50, 17.00] | 21.50 ± 0.28 [21.10, 21.70] | **1.28× ± 0.00 [1.28×, 1.28×]** |
+| **2048** | 9.20 ± 0.14 [9.00, 9.30] | 12.97 ± 0.19 [12.70, 13.10] | **1.41× ± 0.00 [1.41×, 1.41×]** |
+| **4096** | 3.00 ± 0.00 [3.00, 3.00] | 5.20 ± 0.00 [5.20, 5.20] | **1.73× ± 0.00 [1.73×, 1.73×]** |
+
+These results indicate that the observed improvements are not tied to a single hardware platform or precision configuration.
+
+Additionally, QAttention is a general tree-structured attention operator and is not tied to any single target model architecture. While we focus on speculative decoding due to its practical importance in deployment, ancestor-sparse attention applies broadly to tree-structured attention dependency graphs.
 
 ### Question 2: Practical Workload Analysis
 > *"Could the authors also add some experiments and analysis based on a practical workload?"*
