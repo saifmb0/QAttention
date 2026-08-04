@@ -156,7 +156,7 @@ Below are the complete empirical results for **Table 3 (Sequoia Tree-Size Sweep)
 ### Question 6: Generality Across Model Architectures, Hardware, & Quantization
 > *"Baselines/generality: one target model, two GPUs. Any second target model and/or H100 to show the 1.4–1.6x gain generalizes?"*
 
-We thank the reviewer for suggesting broader generality evaluations across target models and hardware platforms. To evaluate generality, we benchmarked QAttention across multiple deployment settings:
+We thank the reviewer for the suggestion. We benchmarked QAttention across multiple target models (Llama-3.2-3B, Qwen-2.5-7B, Llama-3.1-8B), GPU platforms (A100 and RTX 4000 Ada), and precision configurations (FP16 and W4A16 GPTQ). While we do not currently have physical access to an H100 GPU to perform additional H100 runs, our results across server-class (A100) and workstation (RTX 4000 Ada) GPUs demonstrate consistent gains across hardware platforms:
 
 * **Model Architectures**: To evaluate execution stability across target model architectures, we benchmarked QAttention's verifier attention latency across Llama-3.2-3B-Instruct ($H = 24$, 28 layers), Qwen-2.5-7B-Instruct ($H = 28$, 28 layers), and Llama-3.1-8B-Instruct ($H = 32$, 32 layers) at tree size $N = 1024$. The measured verifier attention latencies demonstrate consistent, predictable scaling proportional to head count and layer depth:
 
