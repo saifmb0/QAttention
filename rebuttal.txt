@@ -201,6 +201,8 @@ We thank the reviewer for raising this point on model generalization. QAttention
 
 We appreciate the reviewer's question regarding practical workloads. Our central claim is not that today's draft models already favor very large speculative trees, but rather that verifier complexity acts as an independent systems bottleneck. By reducing verification from quadratic to ancestor-linear complexity while preserving exact attention semantics, QAttention removes one of the principal computational barriers to scaling tree-based decoding.
 
+We believe that current deployment trees are often kept small due to two distinct limitations: (1) acceptance rate decay with tree depth, and (2) quadratic verification latency. While ongoing modeling research focuses on drafting trees faster and increasing accepted token lengths, QAttention directly eliminates the quadratic latency bottleneck that previously disincentivized scaling tree sizes in practical workloads.
+
 ### Question 3: Verification Behavior & Output Fidelity
 > *"Verification behavior and draft acceptance rates in practical deployment."*
 
