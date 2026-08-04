@@ -1,10 +1,11 @@
 # OFFICIAL COMMENT FOR REVIEWER LYDb
 
-We thank the reviewer for the careful reading and for raising several important technical questions. We address each point below.
+We thank Reviewer LYDb for the careful reading and for raising several important technical questions regarding Table 2, shared prefix handling, notation, and hardware efficiency. We address each point in detail below.
 
-### 1. Table 2 and the reported end-to-end speedup
+### Question 1: Table 2 Unit Labeling & Amdahl's Law Reconciliation
+> *"The long-context end-to-end results appear internally inconsistent with the verifier timings in Table 2... How do you reconcile the Table 2 results with the Amdahl-law bound?"*
 
-The reviewer correctly identified an error in the Table 2 column label. The values shown as "Verify ms" (0.547–0.683) correspond to the **fraction of total step time spent in verifier attention**, not milliseconds. The underlying benchmark logs contain the measured verifier latencies used to compute the reported speedups.
+We thank the reviewer for carefully scrutinizing Table 2 and pointing out the column labeling issue. We agree that the column header was mislabeled in the submission draft — the printed values represented `verify_fraction` (Verifier Step Time / Total Step Time), not milliseconds. The relative reduction percentages were calculated correctly as dimensionless ratios and are unaffected.
 
 For completeness, the measured verifier latencies are shown below.
 
@@ -27,11 +28,12 @@ The labeling error does not affect the reported measurements or conclusions; it 
 
 ---
 
-### 2. Shared prefix KV cache
+### Question 2: Shared Prefix KV Cache Integration
+> *"It is unclear how QAttention incorporates the shared prefix KV cache... How is the shared prefix KV cache incorporated into QAttention? Algorithm 1 appears to attend only to tree ancestors; is prefix attention computed separately?"*
 
-QAttention does not attend only to tree nodes.
+We appreciate the reviewer raising this important point of clarification. We would like to clarify that QAttention does not attend only to tree nodes.
 
-Verification is implemented as a **two-pass split-softmax pipeline**.
+Verification is implemented as a **two-pass split-softmax pipeline**:
 
 * The shared prefix is processed using standard FlashAttention over the prefix KV cache.
 * The speculative tree is processed using the ancestor-sparse QAttention kernel.
@@ -43,9 +45,10 @@ Correctness is verified against PyTorch SDPA over the complete prefix-plus-tree 
 
 ---
 
-### 3. Dynamic trees
+### Question 3: Dynamic Trees & Parameter Notation ($b=20, d=20, tt=343$)
+> *"The definitions of branching factor, depth, and tree size are inconsistent—for example, b=d=20 is reported with only 343 nodes—and the regular-tree parent formula does not directly support dynamic trees."*
 
-The reported parameters correspond to EAGLE-3's dynamic tree construction.
+We thank the reviewer for raising this question regarding tree notation and parameter definitions. We agree that the distinction between theoretical search bounds and realized tree size requires explicit clarification.
 
 The quantities **b** and **d** denote the maximum branching factor and maximum search depth, while **tt** denotes the realized number of speculative tokens after probability pruning.
 
@@ -55,11 +58,10 @@ QAttention operates directly on an explicit parent array and therefore supports 
 
 ---
 
-### 4. Hardware efficiency of ancestor gathers
+### Question 4: Hardware Efficiency & Memory Access Uncoalescing
+> *"How efficient are the ancestor-gather accesses at the hardware level? Will it decrease the memory loading efficiency due to uncoalesced and duplicate KV loads?"*
 
-Although QAttention replaces dense KV sweeps with ancestor gathers, the working set remains very small.
-
-For the evaluated configurations, the unique ancestor KV working set is less than **1 MB**, allowing it to reside almost entirely in GPU L2 cache. Profiling shows L2 hit rates above **92%**, substantially reducing DRAM traffic despite the irregular access pattern.
+We appreciate the reviewer highlighting this key memory efficiency concern. We agree that scattered memory accesses can degrade bandwidth if working sets overflow cache limits. However, for the evaluated configurations, the unique ancestor KV working set is less than **1 MB**, allowing it to reside almost entirely in GPU L2 cache. Profiling shows L2 hit rates above **92%**, substantially reducing DRAM traffic despite the irregular access pattern.
 
 Consequently, the reduction in logical memory accesses translates into measured bandwidth and latency improvements rather than being offset by uncoalesced memory accesses.
 
@@ -67,11 +69,12 @@ Consequently, the reduction in logical memory accesses translates into measured 
 
 # OFFICIAL COMMENT FOR REVIEWER tRm3
 
-We thank the reviewer for the detailed evaluation and for clearly identifying the evidence that would most strengthen the paper.
+We thank Reviewer tRm3 for the insightful review, detailed evaluation, and clear, constructive criteria for score revision. Below, we address each point in detail.
 
-### 1. Deployment-relevant operating points
+### Question 1: Deployment-Relevant Operating Points & Speedups
+> *"Can you show an E2E win at a deployment-used op point (throughput-maximizing tree size, moderate context) rather than at sizes your own acceptance analysis dominates?"*
 
-The paper emphasizes long-context workloads because verifier attention increasingly dominates decoding time as context grows. However, QAttention is not limited to extreme operating points.
+We thank the reviewer for providing this clear and constructive criterion for score revision. We agree that demonstrating speedups at moderate context lengths and operating tree sizes is essential for practical deployment.
 
 Representative verifier benchmarks at moderate context lengths and moderate tree sizes are shown below.
 
@@ -88,9 +91,10 @@ These results demonstrate that the kernel advantage is present well before the l
 
 ---
 
-### 2. Significance
+### Question 2: Significance & Acceptance-Rate Plateauing
+> *"Significance undercut by own analysis: headline 7.75x/16.99x at b=d=28, but Sec 4.4 shows acceptance plateaus by N≈50... Kernel makes bad points less bad; optimal point (1.0x) unchanged."*
 
-We agree that today's speculative decoding systems typically operate with relatively shallow trees. Our interpretation is that this reflects **two independent bottlenecks** rather than a single limitation.
+We appreciate the reviewer's insightful analysis regarding tree size optimization and acceptance-rate plateauing. We agree that today's standard draft models often exhibit declining acceptance rates as depth increases. Our interpretation is that this reflects **two independent bottlenecks** rather than a single limitation.
 
 The first is verifier complexity. Existing verifier kernels scale quadratically with tree size, making larger trees increasingly expensive regardless of acceptance rate. QAttention removes this systems bottleneck by reducing verifier complexity from **O(N²)** to **O(N·d)** while preserving exact attention semantics.
 
@@ -104,9 +108,10 @@ More broadly, the algorithm is not specific to speculative decoding. It exploits
 
 ---
 
-### 3. Originality
+### Question 3: Algorithmic Originality & Novelty
+> *"Modest originality: ancestor sparsity follows directly from the mask; DeFT already factorizes on topology; the acceptance-decay reframing is attributed to EAGLE-3/[14], so synthesis not new finding."*
 
-We agree that the observation that a query attends only to its ancestors is conceptually straightforward.
+We appreciate the reviewer's candid perspective on algorithmic originality. We agree that the observation that a query attends only to its ancestors is conceptually straightforward.
 
 Our contribution is demonstrating that this sparsity can be realized efficiently inside an exact FlashAttention-compatible online softmax implementation for **dynamic ragged trees**, while preserving mathematical equivalence with standard attention.
 
@@ -114,9 +119,10 @@ Accordingly, we view QAttention primarily as a systems contribution rather than 
 
 ---
 
-### 4. DeFT comparison
+### Question 4: DeFT Baseline Fairness & Tuning
+> *"DeFT < FlashInfer everywhere: how was it tuned, and is the comparison on its intended balanced-tree regime fair?"*
 
-Our comparison evaluates the published **DeFT** verifier kernel (Yao et al., ICLR 2025).
+We thank the reviewer for raising this important question regarding baseline fairness and tuning. Our comparison evaluates the published **DeFT** verifier kernel (Yao et al., ICLR 2025).
 
 The benchmark imports and measures **DeFT_decode** from the implementation distributed with the FastTree benchmarking artifact. The measured baseline is therefore the DeFT verification kernel itself rather than FastTree's radix-tree attention implementation.
 
@@ -124,15 +130,17 @@ DeFT performs additional grouping and reduction operations before attention. QAt
 
 ---
 
-### 5. Statistical stability
+### Question 5: Statistical Stability & Error Bars
+> *"No error bars (self-reported [No], Q7) despite specific x-claims. Add CIs (or min/max over 3 runs) to Tables 2–3 and E2E figures."*
 
-Across repeated benchmark runs, latency variation remained within approximately **±1.2%**, and the relative ordering of all methods remained unchanged, indicating that the reported improvements are stable.
+We thank the reviewer for emphasizing the importance of statistical rigor and error bars. Across repeated benchmark runs, latency variation remained within approximately **±1.2%**, and the relative ordering of all methods remained unchanged, indicating that the reported improvements are stable.
 
 ---
 
-### 6. Generality
+### Question 6: Generality Across Model Architectures, Hardware, & Quantization
+> *"Baselines/generality: one target model, two GPUs. Any second target model and/or H100 to show the 1.4–1.6x gain generalizes?"*
 
-To evaluate generality, we additionally benchmarked QAttention across multiple deployment settings.
+We thank the reviewer for suggesting broader generality evaluations across target models and hardware platforms. To evaluate generality, we benchmarked QAttention across multiple deployment settings:
 
 * **Model Architectures**: Evaluated across Llama-3.2-3B-Instruct ($H = 24$, 28 layers), Llama-3.1-8B-Instruct ($H = 32$, 32 layers), and Qwen-2.5-7B-Instruct ($H = 28$, 28 layers). Measured single-layer and full model verifier attention latencies at $N = 1024$ are:
 
@@ -153,11 +161,11 @@ To evaluate generality, we additionally benchmarked QAttention across multiple d
 
 * **RTX 4000 Ada with W4A16 GPTQ**: Measured end-to-end throughput is:
 
-| Context |     Baseline |   QAttention | Speedup |
+| Context | Baseline | QAttention | Speedup |
 | ------: | -----------: | -----------: | ------: |
-|    1024 | 16.83 ± 0.24 | 21.50 ± 0.28 |   1.28× |
-|    2048 |  9.20 ± 0.14 | 12.97 ± 0.19 |   1.41× |
-|    4096 |  3.00 ± 0.00 |  5.20 ± 0.00 |   1.73× |
+| 1024 | 16.83 ± 0.24 | 21.50 ± 0.28 | 1.28× |
+| 2048 | 9.20 ± 0.14 | 12.97 ± 0.19 | 1.41× |
+| 4096 | 3.00 ± 0.00 | 5.20 ± 0.00 | 1.73× |
 
 These results indicate that the observed improvements are not tied to a single hardware platform or precision configuration.
 
@@ -165,27 +173,29 @@ These results indicate that the observed improvements are not tied to a single h
 
 # OFFICIAL COMMENT FOR REVIEWER 7FHT
 
-We thank the reviewer for the constructive assessment and suggestions.
+We thank Reviewer 7FHT for the constructive assessment, positive comments on problem formulation, and helpful suggestions.
 
-Regarding generality, QAttention was evaluated beyond a single benchmark configuration. We integrated the kernel into both **EAGLE-3** and **Sequoia**, evaluated multiple Llama-family configurations, and benchmarked on both **A100** and **RTX 4000 Ada** GPUs. Additional experiments under W4A16 GPTQ quantization also exhibit consistent speedups, indicating that the performance improvements are not specific to one hardware platform or precision format.
+### Question 1: Generality Across Target Models & Hardware
+> *"End-to-end results are reported only on Llama-3.1-8B-Instruct, so generalization across target models remains unclear."*
 
-Regarding practical workloads, our central claim is not that today's draft models already favor very large speculative trees. Rather, we identify verifier complexity as an independent systems bottleneck that limits exploration of larger tree structures. By reducing verification from quadratic to ancestor-linear complexity while preserving exact attention semantics, QAttention removes one of the principal computational barriers to scaling tree-based decoding. Future improvements in draft-model quality can therefore translate directly into inference gains without remaining constrained by verifier cost.
+We thank the reviewer for raising this point on model generalization. QAttention was evaluated beyond a single benchmark configuration: we benchmarked across **Llama-3.2-3B**, **Qwen-2.5-7B**, and **Llama-3.1-8B** parameters, integrated into both **EAGLE-3** and **Sequoia** frameworks, and evaluated on both server-class **A100** and workstation **RTX 4000 Ada** GPUs. Additional experiments under W4A16 GPTQ quantization also exhibit consistent speedups.
 
-Finally, because QAttention changes only the execution schedule of attention while preserving the underlying computation, it is mathematically identical to the baseline verifier. Consequently, generation outputs and draft acceptance behavior remain unchanged.
+### Question 2: Practical Workload Analysis
+> *"Could the authors also add some experiments and analysis based on a practical workload?"*
+
+We appreciate the reviewer's question regarding practical workloads. Our central claim is not that today's draft models already favor very large speculative trees, but rather that verifier complexity acts as an independent systems bottleneck. By reducing verification from quadratic to ancestor-linear complexity while preserving exact attention semantics, QAttention removes one of the principal computational barriers to scaling tree-based decoding.
+
+### Question 3: Verification Behavior & Output Fidelity
+> *"Verification behavior and draft acceptance rates in practical deployment."*
+
+We thank the reviewer for asking about verification behavior and output fidelity. Because QAttention changes only the execution schedule of attention while preserving the underlying computation, it is mathematically identical to the baseline verifier ($D_{KL} = 0$). Consequently, generation outputs and draft acceptance behavior remain unchanged.
 
 ---
 
 # OFFICIAL COMMENT FOR THE AREA CHAIR
 
-We thank the Area Chair and all reviewers for the detailed and constructive discussion.
+We thank the Area Chair for summarizing the discussion and highlighting the key areas of review focus. Below is a summary of how we have addressed all reviewer feedback:
 
-The reviewer feedback primarily focused on correctness, evaluation, and significance.
-
-Regarding correctness, we clarified the labeling issue in Table 2 and provided the underlying verifier latency measurements, which satisfy the reported Amdahl speedups when computed from the measured step times. We also clarified how the shared prefix is incorporated through a two-pass split-softmax pipeline and explained how QAttention naturally supports dynamic ragged trees using explicit parent representations.
-
-Regarding evaluation, we provided deployment-oriented benchmark results at moderate context lengths and tree sizes, clarified that the DeFT comparison evaluates the published DeFT verification kernel, and reported repeated-run statistics demonstrating stable performance across runs. Additional measurements on RTX 4000 Ada under W4A16 quantization indicate that the observed improvements are not limited to a single hardware or precision configuration.
-
-Regarding significance, our contribution is not that QAttention alone resolves acceptance-rate degradation. Rather, we argue that practical tree scaling is currently constrained by two independent factors: verifier complexity and draft-model quality. QAttention removes the former by reducing verifier attention from quadratic to ancestor-linear complexity while preserving exact attention semantics. This removes an important systems barrier and allows future advances in draft modeling to translate directly into end-to-end inference improvements rather than remaining masked by verification overhead.
-
-Finally, although speculative decoding is the motivating application, the underlying execution strategy applies to a broader class of ancestor-sparse tree attention problems. We therefore view QAttention as a general systems contribution for efficiently executing dynamic tree-structured attention while preserving exact computation.
-
+1. **Correctness & Mathematical Rigor**: We clarified the column labeling issue in Table 2, provided standard deviation/range bounds across repeated runs, and reconciled the absolute verifier step latencies with the 1.61× Amdahl speedups. We also detailed how the shared prefix is incorporated via a two-pass split-softmax pipeline.
+2. **Evaluation & Generality**: We provided deployment-oriented benchmarks at moderate context lengths and tree sizes, clarified the DeFT verification kernel comparison, and demonstrated consistent speedups across model families (Llama-3.2-3B, Qwen-2.5-7B, Llama-3.1-8B), GPU platforms (A100, RTX 4000 Ada), frameworks (EAGLE-3, Sequoia), and precision formats (FP16, W4A16 GPTQ).
+3. **Significance**: We emphasized that verifier complexity and draft model quality are independent bottlenecks; QAttention eliminates the computational barrier of quadratic verifier scaling, enabling future improvements in draft quality to directly yield end-to-end inference gains.
