@@ -134,7 +134,23 @@ Across repeated benchmark runs, latency variation remained within approximately 
 
 To evaluate generality, we additionally benchmarked QAttention across multiple deployment settings.
 
-* **Model Architectures**: Evaluated across Llama-3.2-3B-Instruct (H = 24, 28 layers), Llama-3.1-8B-Instruct (H = 32, 32 layers), and Qwen-2.5-7B-Instruct parameters (H = 28, 28 layers). Total model verifier attention latency scales linearly with head count and layer depth: **2.81 ms** for 3B, **2.95 ms** for 7B, and **3.66 ms** for 8B at $N = 1024, L = 10240$ (metrics recorded in [`model_generality_benchmark.csv`](file:///home/202311016/sd-ragged/results/generality/model_generality_benchmark.csv)).
+* **Model Architectures**: Evaluated across Llama-3.2-3B-Instruct ($H = 24$, 28 layers), Llama-3.1-8B-Instruct ($H = 32$, 32 layers), and Qwen-2.5-7B-Instruct ($H = 28$, 28 layers). Measured single-layer and full model verifier attention latencies at $N = 1024$ are:
+
+| Model Name | Config ($b, d$) | Context Len $L$ | QA Layer (ms) | QA Model (ms) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Llama-3.2-3B-Instruct** | $b=10, d=7$ | 4096 | 0.102 ms | 2.85 ms |
+| | $b=20, d=20$ | 4096 | 0.101 ms | 2.83 ms |
+| | $b=20, d=20$ | 8192 | 0.102 ms | 2.87 ms |
+| | $b=20, d=20$ | 10240 | 0.100 ms | **2.81 ms** |
+| **Qwen-2.5-7B-Instruct** | $b=10, d=7$ | 4096 | 0.107 ms | 3.01 ms |
+| | $b=20, d=20$ | 4096 | 0.107 ms | 3.01 ms |
+| | $b=20, d=20$ | 8192 | 0.105 ms | 2.95 ms |
+| | $b=20, d=20$ | 10240 | 0.105 ms | **2.95 ms** |
+| **Llama-3.1-8B-Instruct** | $b=10, d=7$ | 4096 | 0.113 ms | 3.62 ms |
+| | $b=20, d=20$ | 4096 | 0.113 ms | 3.60 ms |
+| | $b=20, d=20$ | 8192 | 0.112 ms | 3.57 ms |
+| | $b=20, d=20$ | 10240 | 0.115 ms | **3.66 ms** |
+
 * **RTX 4000 Ada with W4A16 GPTQ**: Measured end-to-end throughput is:
 
 | Context |     Baseline |   QAttention | Speedup |
